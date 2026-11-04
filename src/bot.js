@@ -50,6 +50,15 @@ export class Bot {
     return this.settings.mode;
   }
 
+  // Risico-instellingen uit het dashboard, aangevuld met vaste waarden (fee) uit de config.
+  get risk() {
+    return { ...this.config.risk, ...this.settings.risk };
+  }
+
+  get strategy() {
+    return { ...this.config.strategy, ...this.settings.strategy };
+  }
+
   get broker() {
     return this.brokers[this.mode];
   }
@@ -87,6 +96,35 @@ export class Bot {
       .sort((a, b) => (b.volumeEur ?? 0) - (a.volumeEur ?? 0));
     this.marketCache = { at: Date.now(), list };
     return list;
+  }
+
+  setStrategy(values) {
+    return this.#exclusive(async () => {
+      this.settings.setStrategy(values);
+      this.lastSignalCandle = {};
+      const s = this.strategy;
+      this.#event('info', null, `Strategie: EMA ${s.emaFast}/${s.emaSlow}, RSI ${s.rsiPeriod}, max RSI ${s.rsiMaxEntry}`);
+    });
+  }
+
+  // Begint het paper-account opnieuw met een nieuw startsaldo.
+  resetPaper(startBalanceEur) {
+    return this.#exclusive(async () => {
+      const n = Number(startBalanceEur);
+      if (!Number.isFinite(n) || n < 5 || n > 100000000) throw new Error('Startsaldo moet tussen 5 en 100.000.000 liggen');
+      this.stores.paper.reset(Math.round(n * 100) / 100);
+      if (this.mode === 'paper') this.lastSignalCandle = {};
+      this.#event('warn', null, `Paper-account opnieuw begonnen met ${n.toFixed(2)} EUR`);
+    });
+  }
+
+  setRisk(values) {
+    return this.#exclusive(async () => {
+      this.settings.setRisk(values);
+      const r = this.risk;
+      this.#event('info', null, `Risico: € ${r.stakeEur} per trade, max ${r.maxOpenTrades} open, ` +
+        `stop-loss ${r.stopLossPct}%, take-profit ${r.takeProfitPct}%, daglimiet € ${r.maxDailyLossEur}`);
+    });
   }
 
   // Past candle-tijd en check-interval aan. De timer in index.js luistert via onScheduleChange.
@@ -218,7 +256,8 @@ export class Bot {
   }
 
   async #handlePair(pair) {
-    const { strategy, risk } = this.config;
+    const strategy = this.strategy;
+    const risk = this.risk;
     const timeframe = this.settings.timeframe;
     const position = this.store.state.positions[pair];
 
@@ -229,8 +268,9 @@ export class Bot {
       const price = await fetchPrice(this.ex, pair);
       const changePct = ((price - position.entryPrice) / position.entryPrice) * 100;
       positionChangePct = changePct;
-      const exit = changePct <= -risk.stopLossPct ? `Stop-loss (${changePct.toFixed(2)}%)`
-        : changePct >= risk.takeProfitPct ? `Take-profit (${changePct.toFixed(2)}%)` : null;
+      // 0 = uit
+      const exit = risk.stopLossPct > 0 && changePct <= -risk.stopLossPct ? `Stop-loss (${changePct.toFixed(2)}%)`
+        : risk.takeProfitPct > 0 && changePct >= risk.takeProfitPct ? `Take-profit (${changePct.toFixed(2)}%)` : null;
       if (exit) {
         await this.#close(pair, exit);
         this.pairStatus[pair] = {
@@ -274,7 +314,7 @@ export class Bot {
     this.lastSignalCandle[pair] = lastCandleTs;
     this.#event('info', pair, `Koopsignaal: ${result.reason}`);
 
-    const blocked = checkEntry(this.store, this.config, this.broker.mode, this.ex);
+    const blocked = checkEntry(this.store, { risk: this.risk }, this.broker.mode, this.ex, this.liveBalance);
     if (blocked) {
       this.store.addDecision({ pair, signal: 'buy', outcome: 'blocked', reason: blocked, indicators: result.indicators });
       this.#event('warn', pair, `Geblokkeerd door risicoregels: ${blocked}`);
@@ -307,7 +347,7 @@ export class Bot {
 
   async #open(pair, reason) {
     this.#step(`${pair}: kopen`);
-    const stake = this.config.risk.stakeEur;
+    const stake = this.risk.stakeEur;
     const fill = await this.broker.buy(pair, stake);
     if (this.broker.mode === 'paper') this.store.state.balanceEur -= fill.costEur;
     this.store.state.positions[pair] = {
@@ -345,7 +385,7 @@ export class Bot {
     this.#event(pnlEur >= 0 ? 'info' : 'warn', pair, `Verkocht @ ${fill.price}, resultaat ${pnlEur.toFixed(2)} EUR (${reason})`);
 
     const today = this.store.realizedTodayEur();
-    if (today <= -this.config.risk.maxDailyLossEur && !this.store.state.halted) {
+    if (this.risk.maxDailyLossEur > 0 && today <= -this.risk.maxDailyLossEur && !this.store.state.halted) {
       this.store.state.halted = { at: new Date().toISOString(), reason: `Dagverlies ${today.toFixed(2)} EUR` };
       this.#event('warn', null, 'Dagelijkse verlieslimiet bereikt. Geen nieuwe trades tot morgen.');
     }

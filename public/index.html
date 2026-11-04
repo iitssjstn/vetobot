@@ -157,7 +157,7 @@
   .msg { font-size: 13px; }
   .msg.err { color: var(--down); } .msg.ok { color: var(--up); }
   .help { color: var(--muted); font-size: 12.5px; margin-top: 8px; }
-  .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 0 16px; }
+  .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px 16px; }
   .fields > div > label { margin-top: 0; }
   .fields > div { margin-bottom: 4px; }
   .kstate { float: right; font-size: 12px; }
@@ -379,6 +379,13 @@
           <div><div class="big" id="mc-title"></div><p id="mc-text"></p></div>
           <div><button class="btn" id="mc-switch"></button></div>
         </div>
+        <div class="panel-b" id="paper-reset" style="border-top:1px solid var(--line)">
+          <div class="fields" style="max-width:640px">
+            <div><label for="paper-start">Paper-startsaldo (€)</label><input id="paper-start" type="number" min="5" step="any" value="500"></div>
+            <div style="display:flex;align-items:flex-end"><button class="btn" id="paper-reset-btn" type="button">Paper opnieuw beginnen</button></div>
+          </div>
+          <div class="help">Wist alle paper-trades en -posities en begint met dit saldo. Live wordt niet aangeraakt. <span class="msg" id="paper-msg"></span></div>
+        </div>
       </div>
 
       <div class="panel gap" id="schedule">
@@ -400,6 +407,40 @@
           </div>
           <div class="help" id="sch-help"></div>
           <div class="row-actions"><button class="btn primary" type="submit">Opslaan</button><span class="msg" id="sch-msg"></span></div>
+        </form>
+      </div>
+
+      <div class="panel gap" id="risk">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-shield"/></svg>Risico &amp; inzet</h2>
+          <span class="hint">Jij bepaalt deze waarden; de AI kan er niet aan komen</span></div>
+        <form class="panel-b" id="risk-form">
+          <div class="fields">
+            <div><label for="r-stake">Inzet per trade (€)</label><input id="r-stake" type="number" min="5" step="any" required></div>
+            <div><label for="r-max">Maximaal open trades</label><input id="r-max" type="number" min="1" max="100" step="1" required></div>
+            <div><label for="r-daily">Dagelijkse verlieslimiet (€, 0 = uit)</label><input id="r-daily" type="number" min="0" step="any" required></div>
+            <div><label for="r-sl">Stop-loss (%, 0 = uit)</label><input id="r-sl" type="number" min="0" max="100" step="any" required></div>
+            <div><label for="r-tp">Take-profit (%, 0 = uit)</label><input id="r-tp" type="number" min="0" step="any" required></div>
+            <div><label for="r-fee">Fee per order (%)</label><input id="r-fee" type="number" min="0" max="5" step="any" required></div>
+            <div id="r-pass-wrap"><label for="r-pass">Je wachtwoord (verplicht in live)</label><input id="r-pass" type="password" autocomplete="current-password"></div>
+          </div>
+          <div class="help" id="risk-help"></div>
+          <div class="row-actions"><button class="btn primary" type="submit">Opslaan</button><span class="msg" id="risk-msg"></span></div>
+        </form>
+      </div>
+
+      <div class="panel gap" id="strategy">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-pulse"/></svg>Strategie</h2>
+          <span class="hint">Koopsignaal: EMA fast kruist boven EMA slow en RSI onder het maximum</span></div>
+        <form class="panel-b" id="strat-form">
+          <div class="fields">
+            <div><label for="st-fast">EMA fast (candles)</label><input id="st-fast" type="number" min="2" max="500" step="1" required></div>
+            <div><label for="st-slow">EMA slow (candles)</label><input id="st-slow" type="number" min="3" max="1000" step="1" required></div>
+            <div><label for="st-rsi">RSI-periode (candles)</label><input id="st-rsi" type="number" min="2" max="200" step="1" required></div>
+            <div><label for="st-rsimax">Max RSI bij instap</label><input id="st-rsimax" type="number" min="1" max="100" step="any" required></div>
+            <div id="st-pass-wrap"><label for="st-pass">Je wachtwoord (verplicht in live)</label><input id="st-pass" type="password" autocomplete="current-password"></div>
+          </div>
+          <div class="help">Lagere EMA-waarden reageren sneller maar geven meer valse signalen. Een max RSI van 100 schakelt het RSI-filter uit.</div>
+          <div class="row-actions"><button class="btn primary" type="submit">Opslaan</button><span class="msg" id="strat-msg"></span></div>
         </form>
       </div>
 
@@ -434,6 +475,8 @@
               </select></div>
             <div><label for="ai-model">Model</label><input id="ai-model" placeholder="leeg = standaardmodel"></div>
             <div id="ai-base-wrap"><label for="ai-base">Base-URL</label><input id="ai-base" placeholder="https://api.groq.com/openai/v1"></div>
+            <div><label for="ai-fail">Als de AI faalt of geen key heeft</label>
+              <select id="ai-fail"><option value="reject">Trade afwijzen (veilig)</option><option value="approve">Trade doorlaten</option></select></div>
           </div>
           <div class="help">De AI mag alleen koopsignalen afwijzen. Bedragen, stop-loss en verkopen bepaalt hij nooit. De AI-key stel je hieronder in.</div>
           <div class="row-actions"><button class="btn primary" type="submit">Opslaan</button><span class="msg" id="ai-msg"></span></div>
@@ -620,6 +663,7 @@ async function load() {
   if (s.halted) alerts.push(['', `Nieuwe trades gepauzeerd: ${esc(s.halted.reason)}. Open posities worden nog bewaakt.`]);
   if (live && !s.bitvavoKeysSet) alerts.push(['err', 'Live-modus, maar de Bitvavo-keys ontbreken. Vul ze in bij Instellingen.']);
   if (s.ai.provider !== 'none' && !s.aiKeySet) alerts.push(['', `AI-provider "${esc(s.ai.provider)}" is gekozen, maar er is geen AI-key. Koopsignalen worden afgewezen.`]);
+  if (s.risk.stopLossPct === 0) alerts.push(['', 'Stop-loss staat uit. Posities worden alleen verkocht bij een verkoopsignaal of take-profit.']);
   if (s.lastError) alerts.push(['err', `Fout bij laatste check (${esc(s.lastError.pair)}): ${esc(s.lastError.message)}`]);
   $('alerts').innerHTML = alerts.map(([c, t]) => `<div class="alert ${c}">${icon('alert')}<div>${t}</div></div>`).join('');
 
@@ -629,7 +673,7 @@ async function load() {
   else tiles.push(['Paper-saldo', eur2(s.balanceEur), `start ${eur2(s.startBalanceEur)}`, 'var(--accent)', 'wallet']);
   tiles.push(
     ['Resultaat totaal', `<span class="${cls(s.stats.realizedEur)}">${eur2(s.stats.realizedEur)}</span>`, `${s.stats.totalTrades} afgesloten trades`, 'var(--up)', 'chart'],
-    ['Resultaat vandaag', `<span class="${cls(s.stats.realizedTodayEur)}">${eur2(s.stats.realizedTodayEur)}</span>`, `daglimiet −${eur2(s.risk.maxDailyLossEur)}`, 'var(--info)', 'target'],
+    ['Resultaat vandaag', `<span class="${cls(s.stats.realizedTodayEur)}">${eur2(s.stats.realizedTodayEur)}</span>`, s.risk.maxDailyLossEur ? `daglimiet −${eur2(s.risk.maxDailyLossEur)}` : 'daglimiet uit', 'var(--info)', 'target'],
     ['Open posities', `${s.positions.length} / ${s.risk.maxOpenTrades}`, `${eur2(s.risk.stakeEur)} per trade`, 'var(--warn)', 'brief'],
     ['Winrate', s.stats.winRate == null ? '–' : `${s.stats.winRate.toFixed(0)}%`, s.stats.totalTrades ? 'van afgesloten trades' : 'nog geen trades', 'var(--up)', 'pulse'],
     ['AI goed / af', `${s.stats.approved} / ${s.stats.vetoed}`, `${s.stats.blocked} geblokkeerd door regels`, 'var(--accent)', 'cpu'],
@@ -671,7 +715,7 @@ async function load() {
   const posEmpty = 'Geen open posities. De bot opent er een bij een koopsignaal dat door de regels en de AI komt.';
   $('dash-positions').innerHTML = table(s.positions, posCols, posEmpty, 'brief');
   $('positions').innerHTML = table(s.positions, posCols, posEmpty, 'brief');
-  $('pos-hint').textContent = `Stop-loss −${s.risk.stopLossPct}% · take-profit +${s.risk.takeProfitPct}%`;
+  $('pos-hint').textContent = `Stop-loss ${s.risk.stopLossPct ? `−${s.risk.stopLossPct}%` : 'uit'} · take-profit ${s.risk.takeProfitPct ? `+${s.risk.takeProfitPct}%` : 'uit'}`;
 
   const outcome = { approved: ['Goedgekeurd', 'ok'], vetoed: ['Afgewezen door AI', 'bad'], blocked: ['Geblokkeerd', 'wait'] };
   $('signals').innerHTML = table(s.decisions, [
@@ -764,8 +808,27 @@ function renderSettings() {
   $('mc-text').textContent = live
     ? `De bot plaatst echte orders met je Bitvavo-saldo: ${eur2(s.risk.stakeEur)} per trade, maximaal ${s.risk.maxOpenTrades} tegelijk.`
     : `De bot gebruikt echte koersen, maar handelt met een nep-saldo van ${eur2(s.startBalanceEur)}. Er gaat geen echt geld om.`;
+  if (document.activeElement !== $('paper-start') && !$('paper-start').dataset.touched) $('paper-start').value = s.startBalanceEur ?? 500;
   $('mc-switch').className = live ? 'btn' : 'btn live';
   $('mc-switch').innerHTML = live ? `${icon('shield')}Terug naar paper` : `${icon('bolt')}Overschakelen naar live`;
+  $('r-pass-wrap').hidden = !live;
+  $('st-pass-wrap').hidden = !live;
+  $('paper-reset').hidden = live;
+  if (!document.activeElement?.closest('#strat-form') && !stratDirty) {
+    $('st-fast').value = s.strategy.emaFast;
+    $('st-slow').value = s.strategy.emaSlow;
+    $('st-rsi').value = s.strategy.rsiPeriod;
+    $('st-rsimax').value = s.strategy.rsiMaxEntry;
+  }
+  if (!document.activeElement?.closest('#risk-form') && !riskDirty) {
+    $('r-stake').value = s.risk.stakeEur;
+    $('r-max').value = s.risk.maxOpenTrades;
+    $('r-daily').value = s.risk.maxDailyLossEur;
+    $('r-sl').value = s.risk.stopLossPct;
+    $('r-tp').value = s.risk.takeProfitPct;
+    $('r-fee').value = s.risk.feePct;
+    riskHelp();
+  }
   if (!document.activeElement?.closest('#sched-form') && !schedDirty) {
     setSelect($('sch-interval'), s.checkIntervalMinutes, `${s.checkIntervalMinutes} minuten`);
     $('sch-tf').value = s.timeframe;
@@ -775,6 +838,7 @@ function renderSettings() {
   $('ai-provider').value = s.ai.provider;
   $('ai-model').value = s.ai.model ?? '';
   $('ai-base').value = s.ai.baseUrl ?? '';
+  $('ai-fail').value = s.ai.failMode ?? 'reject';
   $('ai-base-wrap').hidden = s.ai.provider !== 'openai';
 }
 
@@ -786,7 +850,7 @@ $('mc-switch').onclick = () => {
   $('md-sub').textContent = toLive ? 'Hierna plaatst de bot echte orders met echt geld.' : 'De bot stopt met echte orders.';
   const items = toLive ? [
     `${eur2(s.risk.stakeEur)} per trade, maximaal ${s.risk.maxOpenTrades} posities tegelijk`,
-    `Stop-loss −${s.risk.stopLossPct}%, take-profit +${s.risk.takeProfitPct}%, daglimiet −${eur2(s.risk.maxDailyLossEur)}`,
+    `Stop-loss ${s.risk.stopLossPct ? `−${s.risk.stopLossPct}%` : 'uit'}, take-profit ${s.risk.takeProfitPct ? `+${s.risk.takeProfitPct}%` : 'uit'}, daglimiet ${s.risk.maxDailyLossEur ? `−${eur2(s.risk.maxDailyLossEur)}` : 'uit'}`,
     s.bitvavoKeysSet ? 'Je Bitvavo-keys worden eerst getest' : '<span class="down">Je Bitvavo-keys zijn nog niet ingesteld</span>',
     'Je paper-resultaten blijven apart bewaard',
   ] : ['Live-trades en -historie blijven bewaard', 'Alleen mogelijk als er geen live posities open staan'];
@@ -869,6 +933,67 @@ $('coin-save').onclick = async () => {
   } catch (err) { $('coin-msg').className = 'msg err'; $('coin-msg').textContent = err.message; }
 };
 
+// ---------- Instellingen: risico ----------
+let riskDirty = false;
+function riskHelp() {
+  const stake = Number($('r-stake').value), max = Number($('r-max').value), sl = Number($('r-sl').value);
+  const tp = Number($('r-tp').value), daily = Number($('r-daily').value);
+  const total = stake * max;
+  const parts = [
+    `Elke trade is precies ${eur2(stake)}, en per coin staat er hooguit één positie open.`,
+    `Maximaal tegelijk ingezet: <b>${eur2(total)}</b> (${max} × ${eur2(stake)}).`,
+    sl > 0 ? `Verlies per trade bij de stop-loss: ongeveer ${eur2(stake * sl / 100)}, plus fees.`
+      : '<span class="warnc">Stop-loss staat uit: een positie wordt alleen verkocht bij een verkoopsignaal of take-profit.</span>',
+  ];
+  if (tp === 0) parts.push('<span class="muted">Take-profit staat uit.</span>');
+  if (daily === 0) parts.push('<span class="warnc">De dagelijkse verlieslimiet staat uit.</span>');
+  const bal = state?.mode === 'live' ? state.liveBalance?.eurFree : state?.balanceEur;
+  if (bal != null && total > bal) parts.push(`<span class="warnc">Dat is meer dan je ${state.mode === 'live' ? 'Bitvavo-' : 'paper-'}saldo van ${eur2(bal)}; de bot slaat trades over als het saldo op is.</span>`);
+  if (state?.pairs && max > state.pairs.length) parts.push(`<span class="muted">Je volgt ${state.pairs.length} coins, dus meer dan ${state.pairs.length} open trades kan niet.</span>`);
+  $('risk-help').innerHTML = parts.join(' ');
+}
+document.querySelectorAll('#risk-form input[type=number]').forEach(i => i.oninput = () => { riskDirty = true; riskHelp(); });
+$('risk-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const risk = { stakeEur: $('r-stake').value, maxOpenTrades: $('r-max').value, maxDailyLossEur: $('r-daily').value,
+    stopLossPct: $('r-sl').value, takeProfitPct: $('r-tp').value, feePct: $('r-fee').value };
+  if (state.mode === 'live' && !$('r-pass').value) { $('risk-msg').className = 'msg err'; $('risk-msg').textContent = 'Vul je wachtwoord in'; return; }
+  try {
+    await api('api/settings/risk', { risk, password: $('r-pass').value });
+    riskDirty = false; $('r-pass').value = '';
+    $('risk-msg').className = 'msg ok'; $('risk-msg').textContent = 'Opgeslagen. Geldt direct, ook voor de stop-loss van open posities.';
+    document.activeElement?.blur(); await load();
+  } catch (err) { $('risk-msg').className = 'msg err'; $('risk-msg').textContent = err.message; }
+};
+
+// ---------- Instellingen: strategie ----------
+let stratDirty = false;
+document.querySelectorAll('#strat-form input[type=number]').forEach(i => i.oninput = () => { stratDirty = true; });
+$('strat-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const strategy = { emaFast: $('st-fast').value, emaSlow: $('st-slow').value, rsiPeriod: $('st-rsi').value, rsiMaxEntry: $('st-rsimax').value };
+  if (state.mode === 'live' && !$('st-pass').value) { $('strat-msg').className = 'msg err'; $('strat-msg').textContent = 'Vul je wachtwoord in'; return; }
+  try {
+    await api('api/settings/strategy', { strategy, password: $('st-pass').value });
+    stratDirty = false; $('st-pass').value = '';
+    $('strat-msg').className = 'msg ok'; $('strat-msg').textContent = 'Opgeslagen. Geldt vanaf de volgende check.';
+    document.activeElement?.blur(); await load();
+  } catch (err) { $('strat-msg').className = 'msg err'; $('strat-msg').textContent = err.message; }
+};
+
+// ---------- Paper opnieuw beginnen ----------
+$('paper-start').oninput = () => { $('paper-start').dataset.touched = '1'; };
+$('paper-reset-btn').onclick = async () => {
+  const start = $('paper-start').value;
+  const pass = prompt(`Paper-account opnieuw beginnen met ${start} EUR? Alle paper-trades en -posities worden gewist.\n\nVul je wachtwoord in om te bevestigen:`);
+  if (!pass) return;
+  try {
+    await api('api/paper/reset', { startBalanceEur: start, password: pass });
+    $('paper-msg').className = 'msg ok'; $('paper-msg').textContent = 'Paper-account opnieuw begonnen.';
+    await load();
+  } catch (err) { $('paper-msg').className = 'msg err'; $('paper-msg').textContent = err.message; }
+};
+
 // ---------- Instellingen: planning ----------
 const TF_MIN = { '1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120, '4h': 240, '1d': 1440 };
 let schedDirty = false;
@@ -902,7 +1027,7 @@ $('ai-provider').onchange = () => { $('ai-base-wrap').hidden = $('ai-provider').
 $('ai-form').onsubmit = async (e) => {
   e.preventDefault();
   try {
-    await api('api/settings/ai', { provider: $('ai-provider').value, model: $('ai-model').value, baseUrl: $('ai-base').value });
+    await api('api/settings/ai', { provider: $('ai-provider').value, model: $('ai-model').value, baseUrl: $('ai-base').value, failMode: $('ai-fail').value });
     $('ai-msg').className = 'msg ok'; $('ai-msg').textContent = 'Opgeslagen.';
     document.activeElement?.blur(); await load();
   } catch (err) { $('ai-msg').className = 'msg err'; $('ai-msg').textContent = err.message; }

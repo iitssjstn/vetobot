@@ -32,6 +32,21 @@ export class Store {
     }
   }
 
+  // Begint opnieuw met een leeg paper-account. Alleen voor paper.
+  reset(startBalanceEur) {
+    this.state = {
+      mode: this.state.mode,
+      createdAt: new Date().toISOString(),
+      balanceEur: startBalanceEur,
+      startBalanceEur,
+      positions: {},
+      trades: [],
+      decisions: [],
+      halted: null,
+    };
+    this.save();
+  }
+
   save() {
     const tmp = `${this.file}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(this.state, null, 2));

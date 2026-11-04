@@ -40,7 +40,7 @@ function setup(exOpts) {
     risk: { stakeEur: 25, maxOpenTrades: 2, stopLossPct: 50, takeProfitPct: 50, maxDailyLossEur: 100, feePct: 0.25 },
     ai: { provider: 'none', failMode: 'reject' },
   };
-  const settings = new Settings(dir, { liveTrading: false, pairs: ['BTC/EUR'], timeframe: '1h', checkIntervalMinutes: 15, ai: { provider: 'none', model: '', baseUrl: '' } });
+  const settings = new Settings(dir, { liveTrading: false, pairs: ['BTC/EUR'], timeframe: '1h', checkIntervalMinutes: 15, risk: { stakeEur: 25, maxOpenTrades: 2, stopLossPct: 50, takeProfitPct: 50, maxDailyLossEur: 100, feePct: 0.25 }, strategy: { emaFast: 3, emaSlow: 8, rsiPeriod: 5, rsiMaxEntry: 100 }, ai: { provider: 'none', model: '', baseUrl: '' } });
   const stores = { paper: new Store(dir, 'paper', 500), live: new Store(dir, 'live', 500) };
   const live = { mode: 'live', buy: async () => { throw new Error('geen echte orders in tests'); } };
   const bot = new Bot({
@@ -132,4 +132,41 @@ test('planning aanpassen valideert en roept de herplanning aan', async () => {
   await assert.rejects(bot.setSchedule({ timeframe: '5m', checkIntervalMinutes: 0 }), /tussen 1 en 240/);
   await assert.rejects(bot.setSchedule({ timeframe: '5m', checkIntervalMinutes: 2.5 }), /tussen 1 en 240/);
   assert.equal(rescheduled, 1);
+});
+
+test('risico-instellingen worden gevalideerd en gelden direct voor de inzet', async () => {
+  const { bot, ex } = setup({});
+  await assert.rejects(bot.setRisk({ stakeEur: 2, maxOpenTrades: 2, stopLossPct: 3, takeProfitPct: 6, maxDailyLossEur: 20, feePct: 0.25 }), /Inzet per trade/);
+  await assert.rejects(bot.setRisk({ stakeEur: 10, maxOpenTrades: 0, stopLossPct: 3, takeProfitPct: 6, maxDailyLossEur: 20, feePct: 0.25 }), /open trades/);
+  await bot.setRisk({ stakeEur: 10, maxOpenTrades: 1, stopLossPct: 0, takeProfitPct: 0, maxDailyLossEur: 0, feePct: 0.25 });
+  await openPaperPosition(bot, ex);
+  assert.equal(bot.store.state.positions['BTC/EUR'].costEur, 10, 'inzet komt uit de instelling');
+  assert.equal(bot.store.state.balanceEur, 490);
+});
+
+test('stop-loss 0 = uit: een grote daling sluit de positie niet', async () => {
+  const { bot, ex } = setup({});
+  await bot.setRisk({ stakeEur: 25, maxOpenTrades: 1, stopLossPct: 0, takeProfitPct: 0, maxDailyLossEur: 0, feePct: 0 });
+  await openPaperPosition(bot, ex);
+  // Alleen de actuele koers zakt 85%; de candles blijven gelijk (geen verkoopsignaal).
+  ex.fetchTicker = async () => ({ last: 10 });
+  await bot.tick();
+  assert.ok(bot.store.state.positions['BTC/EUR'], 'positie staat nog open');
+
+  // Met stop-loss aan gaat hij wel dicht.
+  await bot.setRisk({ stakeEur: 25, maxOpenTrades: 1, stopLossPct: 5, takeProfitPct: 0, maxDailyLossEur: 0, feePct: 0 });
+  await bot.tick();
+  assert.match(bot.store.state.trades[0].exitReason, /Stop-loss/);
+});
+
+test('strategie aanpassen en paper opnieuw beginnen', async () => {
+  const { bot, ex } = setup({});
+  await assert.rejects(bot.setStrategy({ emaFast: 20, emaSlow: 10, rsiPeriod: 14, rsiMaxEntry: 70 }), /kleiner/);
+  await bot.setStrategy({ emaFast: 5, emaSlow: 9, rsiPeriod: 7, rsiMaxEntry: 100 });
+  assert.equal(bot.strategy.emaFast, 5);
+  await openPaperPosition(bot, ex);
+  await bot.resetPaper(1000);
+  assert.equal(bot.store.state.balanceEur, 1000);
+  assert.deepEqual(bot.store.state.positions, {});
+  await assert.rejects(bot.resetPaper(1), /Startsaldo/);
 });

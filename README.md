@@ -92,13 +92,16 @@ In het dashboard onder **Instellingen** regel je:
 
 - **Handelsmodus**: paper of live (zie hieronder)
 - **Planning**: hoe vaak de bot checkt (1 tot 60 minuten) en de candle-tijd (1 minuut tot 1 dag)
-- **Coins**: kies uit alle EUR-markten op Bitvavo, gesorteerd op volume, maximaal 30
-- **AI-veto**: provider, model en base-URL
+- **Risico & inzet**: inzet per trade, maximaal aantal open trades, stop-loss, take-profit, dagelijkse verlieslimiet en fee. Stop-loss, take-profit en daglimiet kun je met 0 uitzetten
+- **Strategie**: EMA fast, EMA slow, RSI-periode en de maximale RSI bij instap
+- **Paper-account**: opnieuw beginnen met een zelfgekozen startsaldo
+- **Coins**: kies uit alle EUR-markten op Bitvavo, gesorteerd op volume, maximaal 100
+- **AI-veto**: provider, model, base-URL en wat er gebeurt als de AI faalt
 - **API-keys** en je **wachtwoord**
 
 Deze keuzes worden opgeslagen in `data/settings.json` en blijven bewaard na een herstart.
 
-De risicolimieten en de strategie stel je in met environment variables in je compose. Geen ervan is geheim. `LIVE_TRADING`, `PAIRS`, `TIMEFRAME`, `CHECK_INTERVAL_MINUTES` en `AI_*` gelden alleen als beginwaarde bij de allereerste start; daarna gaat het dashboard voor.
+De environment variables hieronder zijn alleen beginwaarden voor de allereerste start; daarna gaat het dashboard voor. Geen ervan is geheim. In live-modus vraagt het dashboard je wachtwoord bij het wijzigen van risico of strategie.
 
 | Variabele | Standaard | Betekenis |
 |---|---|---|

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { COOKIE, readCookie } from './auth.js';
 import { SECRET_NAMES } from './secrets.js';
-import { AI_PROVIDERS, MAX_PAIRS, TIMEFRAMES } from './settings.js';
+import { AI_PROVIDERS, MAX_PAIRS, TIMEFRAMES, RISK_LIMITS, STRATEGY_LIMITS } from './settings.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -131,7 +131,10 @@ export function startServer({ config, bot, settings, secrets, auth, log = consol
       aiProviders: AI_PROVIDERS,
       aiKeySet: keys.aiApiKey.set,
       bitvavoKeysSet: keys.bitvavoApiKey.set && keys.bitvavoApiSecret.set,
-      risk: config.risk,
+      risk: bot.risk,
+      riskLimits: RISK_LIMITS,
+      strategy: bot.strategy,
+      strategyLimits: STRATEGY_LIMITS,
       balanceEur: s.balanceEur,
       startBalanceEur: s.startBalanceEur,
       liveBalance: bot.liveBalance,
@@ -195,6 +198,26 @@ export function startServer({ config, bot, settings, secrets, auth, log = consol
     await bot.switchMode(mode);
     log.warn(`Modus gewijzigd naar ${mode} door ${req.user}`);
     return { ok: true, mode: bot.mode, liveBalance: bot.liveBalance };
+  }));
+
+  // In live-modus gaat het om echt geld, dus dan is je wachtwoord nodig.
+  app.post('/api/settings/risk', wrap(async (req) => {
+    if (bot.mode === 'live') auth.confirmPassword(req.body?.password, req.ip);
+    await bot.setRisk(req.body?.risk);
+    log.info(`Risico gewijzigd door ${req.user}: ${JSON.stringify(settings.risk)}`);
+    return { ok: true, risk: bot.risk };
+  }));
+
+  app.post('/api/settings/strategy', wrap(async (req) => {
+    if (bot.mode === 'live') auth.confirmPassword(req.body?.password, req.ip);
+    await bot.setStrategy(req.body?.strategy);
+    return { ok: true, strategy: bot.strategy };
+  }));
+
+  app.post('/api/paper/reset', wrap(async (req) => {
+    auth.confirmPassword(req.body?.password, req.ip);
+    await bot.resetPaper(req.body?.startBalanceEur);
+    log.warn(`Paper-account gereset door ${req.user}`);
   }));
 
   app.post('/api/settings/schedule', wrap(async (req) => {

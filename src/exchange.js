@@ -34,10 +34,15 @@ export async function fetchPrice(ex, pair) {
 // Beide brokers geven { amount, price, costEur, feeEur } terug.
 
 export class PaperBroker {
+  // feePct mag een getal of een functie zijn, zodat de fee uit het dashboard direct geldt.
   constructor(ex, feePct) {
     this.ex = ex;
-    this.feePct = feePct;
+    this.fee = typeof feePct === 'function' ? feePct : () => feePct;
     this.mode = 'paper';
+  }
+
+  get feePct() {
+    return this.fee();
   }
 
   async buy(pair, stakeEur) {

@@ -1,6 +1,6 @@
 // Harde risicoregels voor nieuwe posities. Geeft een reden terug als het niet mag, anders null.
 
-export function checkEntry(store, config, mode, exchange) {
+export function checkEntry(store, config, mode, exchange, liveBalance) {
   const { risk } = config;
   const s = store.state;
 
@@ -13,8 +13,11 @@ export function checkEntry(store, config, mode, exchange) {
   if (open >= risk.maxOpenTrades) return `Maximum van ${risk.maxOpenTrades} open trades bereikt`;
 
   const today = store.realizedTodayEur();
-  if (today <= -risk.maxDailyLossEur) return `Dagverlies ${today.toFixed(2)} EUR bereikt limiet`;
+  if (risk.maxDailyLossEur > 0 && today <= -risk.maxDailyLossEur) return `Dagverlies ${today.toFixed(2)} EUR bereikt limiet`;
 
+  if (mode === 'live' && liveBalance && liveBalance.eurFree < risk.stakeEur) {
+    return `Bitvavo-saldo ${liveBalance.eurFree.toFixed(2)} EUR is lager dan de inzet`;
+  }
   if (mode === 'paper' && s.balanceEur < risk.stakeEur) {
     return `Paper-saldo ${s.balanceEur.toFixed(2)} EUR is lager dan de inzet`;
   }

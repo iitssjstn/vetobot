@@ -6,7 +6,47 @@ import path from 'node:path';
 // de environment variables (LIVE_TRADING, AI_PROVIDER, ...), daarna uit dit bestand.
 
 export const AI_PROVIDERS = ['none', 'gemini', 'openai'];
-export const MAX_PAIRS = 30;
+export const MAX_PAIRS = 100;
+// Grenzen die alleen onzin tegenhouden (negatieve bedragen, typfouten met tien nullen).
+// Binnen deze grenzen bepaal je alles zelf. 0 betekent "uit" bij stop-loss,
+// take-profit en de dagelijkse verlieslimiet. Bitvavo hanteert een minimum order van € 5.
+export const RISK_LIMITS = {
+  stakeEur: [5, 1000000],
+  maxOpenTrades: [1, 100],
+  stopLossPct: [0, 100],
+  takeProfitPct: [0, 10000],
+  maxDailyLossEur: [0, 100000000],
+  feePct: [0, 5],
+};
+export const STRATEGY_LIMITS = {
+  emaFast: [2, 500],
+  emaSlow: [3, 1000],
+  rsiPeriod: [2, 200],
+  rsiMaxEntry: [1, 100],
+};
+export const AI_FAIL_MODES = ['reject', 'approve'];
+const RISK_LABELS = {
+  stakeEur: 'Inzet per trade',
+  maxOpenTrades: 'Maximaal open trades',
+  stopLossPct: 'Stop-loss',
+  takeProfitPct: 'Take-profit',
+  maxDailyLossEur: 'Dagelijkse verlieslimiet',
+  feePct: 'Fee',
+  emaFast: 'EMA fast',
+  emaSlow: 'EMA slow',
+  rsiPeriod: 'RSI-periode',
+  rsiMaxEntry: 'Max RSI bij instap',
+};
+
+function validated(values, limits, integers) {
+  const next = {};
+  for (const [key, [min, max]] of Object.entries(limits)) {
+    const n = Number(values?.[key]);
+    if (!Number.isFinite(n) || n < min || n > max) throw new Error(`${RISK_LABELS[key]} moet tussen ${min} en ${max} liggen`);
+    next[key] = integers.includes(key) ? Math.round(n) : Math.round(n * 10000) / 10000;
+  }
+  return next;
+}
 export const TIMEFRAMES = ['1m', '5m', '15m', '30m', '1h', '2h', '4h', '1d'];
 export const TIMEFRAME_MINUTES = { '1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120, '4h': 240, '1d': 1440 };
 
@@ -21,10 +61,13 @@ export class Settings {
         provider: saved.ai?.provider ?? defaults.ai.provider,
         model: saved.ai?.model ?? defaults.ai.model,
         baseUrl: saved.ai?.baseUrl ?? defaults.ai.baseUrl,
+        failMode: saved.ai?.failMode ?? defaults.ai.failMode ?? 'reject',
       },
+      strategy: Object.fromEntries(Object.keys(STRATEGY_LIMITS).map((k) => [k, saved.strategy?.[k] ?? defaults.strategy[k]])),
       pairs: saved.pairs ?? defaults.pairs,
       timeframe: saved.timeframe ?? defaults.timeframe,
       checkIntervalMinutes: saved.checkIntervalMinutes ?? defaults.checkIntervalMinutes,
+      risk: Object.fromEntries(Object.keys(RISK_LIMITS).map((k) => [k, saved.risk?.[k] ?? defaults.risk[k]])),
       modeChangedAt: saved.modeChangedAt ?? null,
     };
   }
@@ -47,6 +90,26 @@ export class Settings {
 
   get checkIntervalMinutes() {
     return this.data.checkIntervalMinutes;
+  }
+
+  get risk() {
+    return this.data.risk;
+  }
+
+  setRisk(values) {
+    this.data.risk = validated(values, RISK_LIMITS, ['maxOpenTrades']);
+    this.#save();
+  }
+
+  get strategy() {
+    return this.data.strategy;
+  }
+
+  setStrategy(values) {
+    const next = validated(values, STRATEGY_LIMITS, ['emaFast', 'emaSlow', 'rsiPeriod']);
+    if (next.emaFast >= next.emaSlow) throw new Error('EMA fast moet kleiner zijn dan EMA slow');
+    this.data.strategy = next;
+    this.#save();
   }
 
   setSchedule({ timeframe, checkIntervalMinutes }) {
@@ -83,13 +146,14 @@ export class Settings {
     this.#save();
   }
 
-  setAi({ provider, model, baseUrl }) {
+  setAi({ provider, model, baseUrl, failMode }) {
     if (!AI_PROVIDERS.includes(provider)) throw new Error(`Onbekende AI-provider "${provider}"`);
     if (baseUrl && !/^https?:\/\/[^\s]+$/.test(baseUrl)) throw new Error('Base-URL moet met http:// of https:// beginnen');
     this.data.ai = {
       provider,
       model: String(model ?? '').trim().slice(0, 100),
       baseUrl: String(baseUrl ?? '').trim() || 'https://api.groq.com/openai/v1',
+      failMode: AI_FAIL_MODES.includes(failMode) ? failMode : 'reject',
     };
     this.#save();
   }
