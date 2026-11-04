@@ -243,6 +243,24 @@
   dialog .d-f { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--line);
     background: var(--panel-2); border-radius: 0 0 14px 14px; }
 
+  /* Toasts */
+  #toasts { position: fixed; right: 16px; bottom: 16px; z-index: 50; display: grid; gap: 8px; max-width: min(380px, calc(100vw - 32px)); }
+  .toast { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: 10px; background: var(--panel);
+    border: 1px solid var(--line-2); box-shadow: 0 12px 30px rgba(0,0,0,.35); font-size: 13.5px; animation: toastIn .2s ease-out; }
+  .toast.ok { border-color: color-mix(in srgb, var(--up) 45%, transparent); }
+  .toast.ok svg { color: var(--up); }
+  .toast.err { border-color: color-mix(in srgb, var(--down) 45%, transparent); }
+  .toast.err svg { color: var(--down); }
+  .toast.out { opacity: 0; transform: translateY(6px); transition: opacity .25s, transform .25s; }
+  @keyframes toastIn { from { opacity: 0; transform: translateY(8px); } }
+  @media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
+  .ask-rows { margin: 12px 0 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .ask-rows div { display: flex; justify-content: space-between; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: 13.5px; }
+  .ask-rows div:last-child { border-bottom: 0; }
+  .ask-rows > div > span:first-child { color: var(--muted); }
+  .spin { width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%;
+    display: inline-block; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .menu-btn { display: none; }
   @media (max-width: 860px) {
     .app { grid-template-columns: minmax(0, 1fr); }
@@ -281,6 +299,7 @@
   <symbol id="i-menu" viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h18"/></symbol>
   <symbol id="i-wallet" viewBox="0 0 24 24"><path d="M20 7V5a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H5a2 2 0 0 1-2-2V6"/><path d="M17 13h.01"/></symbol>
  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></symbol>
   <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></symbol>
 </svg>
 
@@ -677,6 +696,25 @@
   </form>
 </dialog>
 
+<dialog id="ask-dialog">
+  <form method="dialog" id="ask-form">
+    <div class="d-h" id="ask-head">
+      <span class="ic" id="ask-icon"></span>
+      <div><h3 id="ask-title"></h3><div class="muted" id="ask-sub" style="font-size:13.5px"></div></div>
+    </div>
+    <div class="d-b">
+      <div id="ask-body"></div>
+      <div id="ask-pass-wrap" hidden><label for="ask-pass">Je wachtwoord</label><input id="ask-pass" type="password" autocomplete="current-password"></div>
+      <div class="msg err" id="ask-error" style="margin-top:10px"></div>
+    </div>
+    <div class="d-f">
+      <button class="btn" value="cancel" type="submit" id="ask-cancel">Annuleren</button>
+      <button class="btn" value="go" type="submit" id="ask-go"></button>
+    </div>
+  </form>
+</dialog>
+<div id="toasts" aria-live="polite"></div>
+
 <script>
 const $ = (id) => document.getElementById(id);
 const eur = (n, d) => n == null ? '–' : new Intl.NumberFormat('nl-NL', { style: 'currency', currency: 'EUR',
@@ -691,6 +729,56 @@ const cls = (n) => n > 0 ? 'up' : n < 0 ? 'down' : '';
 const time = (s) => s ? new Date(s).toLocaleString('nl-NL', { dateStyle: 'short', timeStyle: 'short' }) : '–';
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const icon = (n) => `<svg class="i"><use href="#i-${n}"/></svg>`;
+
+// Melding rechtsonder die na een paar seconden verdwijnt.
+function toast(html, type = 'ok', ms = 5000) {
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.innerHTML = `${icon(type === 'err' ? 'alert' : 'check')}<div>${html}</div>`;
+  $('toasts').appendChild(el);
+  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 300); }, ms);
+}
+
+// Eigen bevestigingsvenster in plaats van de browserpopup. action(password) wordt uitgevoerd
+// terwijl het venster open blijft: de knop toont dan een laadteken en een fout verschijnt in het
+// venster zelf. Geeft het resultaat van action terug, of null bij annuleren.
+function ask({ title, sub = '', body = '', confirmText = 'Doorgaan', danger = false, password = false, action }) {
+  return new Promise((resolve) => {
+    const d = $('ask-dialog');
+    $('ask-head').className = danger ? 'd-h' : 'd-h safe';
+    $('ask-icon').innerHTML = icon(danger ? 'alert' : 'check');
+    $('ask-title').textContent = title;
+    $('ask-sub').textContent = sub;
+    $('ask-body').innerHTML = body;
+    $('ask-pass-wrap').hidden = !password;
+    $('ask-pass').value = '';
+    $('ask-error').textContent = '';
+    $('ask-go').className = danger ? 'btn live' : 'btn primary';
+    $('ask-go').textContent = confirmText;
+    $('ask-go').disabled = false; $('ask-cancel').disabled = false;
+    let busy = false;
+    const finish = (val) => { d.removeEventListener('cancel', onCancel); $('ask-form').onsubmit = null; d.close(); resolve(val); };
+    const onCancel = (e) => { if (busy) e.preventDefault(); else finish(null); };
+    d.addEventListener('cancel', onCancel);
+    $('ask-form').onsubmit = async (e) => {
+      e.preventDefault();
+      if (e.submitter?.value !== 'go') return finish(null);
+      if (password && !$('ask-pass').value) { $('ask-error').textContent = 'Vul je wachtwoord in'; return; }
+      if (!action) return finish(true);
+      busy = true;
+      $('ask-go').disabled = true; $('ask-cancel').disabled = true; $('ask-error').textContent = '';
+      $('ask-go').innerHTML = `<span class="spin"></span> ${esc(confirmText)}…`;
+      try { finish((await action($('ask-pass').value)) ?? true); }
+      catch (err) {
+        busy = false; $('ask-error').textContent = err.message;
+        $('ask-go').disabled = false; $('ask-cancel').disabled = false; $('ask-go').textContent = confirmText;
+      }
+    };
+    d.showModal();
+    (password ? $('ask-pass') : $('ask-go')).focus();
+  });
+}
+const askRows = (rows) => `<div class="ask-rows">${rows.map(([k, v]) => `<div><span>${k}</span><span class="num">${v}</span></div>`).join('')}</div>`;
 const compact = (n) => n == null ? '–' : new Intl.NumberFormat('nl-NL', { notation: 'compact', maximumFractionDigits: 1 }).format(n);
 const pairHtml = (p) => { const [b, q] = String(p).split('/'); return `<span class="pair">${esc(b)}<small>/${esc(q)}</small></span>`; };
 
@@ -984,13 +1072,18 @@ document.addEventListener('click', async (e) => {
   const msg = (t, c) => { $('sug-msg').className = `msg ${c ?? ''}`; $('sug-msg').textContent = t; };
   if (!keys.length) return msg('Vink minimaal één voorstel aan.', 'err');
   if (state.mode === 'live' && !$('sug-pass')?.value) return msg('Vul je wachtwoord in.', 'err');
-  if (!confirm(`${keys.length} instelling(en) overnemen? Dit geldt vanaf de volgende check.`)) return;
-  $('sug-apply').disabled = true;
-  try {
-    await api('api/summary/apply', { keys, password: $('sug-pass')?.value });
-    riskDirty = stratDirty = schedDirty = false;
-    await load();
-  } catch (err) { msg(err.message, 'err'); $('sug-apply').disabled = false; }
+  const sum = state.lastSummary;
+  const done = await ask({
+    title: 'AI-voorstel overnemen',
+    sub: 'Geldt vanaf de volgende check.',
+    body: askRows(sum.suggestions.filter(x => keys.includes(x.key)).map(x => [esc(x.label), `${esc(x.from)} → <b>${esc(x.to)}</b>`])),
+    confirmText: 'Overnemen',
+    action: () => api('api/summary/apply', { keys, password: $('sug-pass')?.value }),
+  });
+  if (!done) return;
+  riskDirty = stratDirty = schedDirty = false;
+  toast(`${keys.length} instelling${keys.length === 1 ? '' : 'en'} overgenomen.`);
+  await load();
 });
 // Niet overschrijven tijdens het aanvinken of typen in het voorstel.
 const sumBox = () => document.activeElement?.closest('#dash-summary');
@@ -1038,10 +1131,20 @@ document.addEventListener('click', async (e) => {
   const b = e.target.closest('[data-close]'); if (!b) return;
   const pair = b.dataset.close;
   const live = state?.mode === 'live';
-  if (!confirm(`${pair} nu verkopen tegen de marktprijs?${live ? '\n\nLet op: dit is een ECHTE order op Bitvavo.' : ''}`)) return;
-  b.disabled = true;
-  try { await api('api/positions/close', { pair }); await load(); }
-  catch (err) { alert(err.message); b.disabled = false; }
+  const p = state?.positions.find(x => x.pair === pair);
+  const trade = await ask({
+    title: `${pair} verkopen`,
+    sub: live ? 'Dit is een echte order op Bitvavo, tegen de marktprijs.' : 'Paper: tegen de huidige marktprijs.',
+    body: p ? askRows([
+      ['Instapkoers', eur(p.entryPrice)], ['Huidige koers', eur(p.currentPrice)], ['Inzet', eur2(p.costEur)],
+      ['Verwacht resultaat', `${signEur(p.pnlEur)} <span class="${cls(p.pnlPct)}">(${pct(p.pnlPct)})</span>`],
+    ]) + '<div class="help">Het echte resultaat kan iets afwijken door koersbeweging tijdens de verkoop.</div>' : '',
+    confirmText: 'Verkopen', danger: live,
+    action: async () => (await api('api/positions/close', { pair })).trade,
+  });
+  if (!trade) return;
+  toast(`<b>${esc(pair)} verkocht</b> · ${signEur(trade.pnlEur)} <span class="${cls(trade.pnlPct)}">(${pct(trade.pnlPct)})</span>`, 'ok');
+  await load();
 });
 
 // ---------- Instellingen: modus ----------
@@ -1385,19 +1488,23 @@ $('presets').addEventListener('click', async (e) => {
   const b = e.target.closest('[data-preset]'); if (!b) return;
   const p = PRESETS[Number(b.dataset.preset)];
   const msg = (t, c) => { $('preset-msg').className = `msg ${c ?? ''}`; $('preset-msg').textContent = t; };
-  if (!confirm(`Voorbeeld "${p.name}" toepassen? Planning, stop-loss, take-profit, afkoelperiode en strategie worden aangepast. Je inzet en limieten blijven gelijk.`)) return;
-  let password;
-  if (state.mode === 'live') { password = prompt('Je staat op LIVE. Vul je wachtwoord in om te bevestigen:'); if (!password) return; }
-  b.disabled = true; msg('Toepassen…');
-  try {
-    await api('api/settings/schedule', p.schedule);
-    await api('api/settings/risk', { risk: { ...state.risk, ...p.risk }, password });
-    await api('api/settings/strategy', { strategy: p.strategy, password });
-    riskDirty = stratDirty = schedDirty = false;
-    msg(`"${p.name}" is toegepast. Geldt vanaf de volgende check.`, 'ok');
-    await load(); renderSettings();
-  } catch (err) { msg(err.message, 'err'); }
-  finally { b.disabled = false; }
+  const done = await ask({
+    title: `Voorbeeld "${p.name}" toepassen`,
+    sub: 'Planning, stops, take-profit, afkoelperiode, filters en strategie worden aangepast. Je inzet en limieten blijven gelijk.',
+    body: $('presets').children[Number(b.dataset.preset)].querySelector('ul').outerHTML,
+    confirmText: 'Toepassen',
+    password: state.mode === 'live',
+    action: async (password) => {
+      await api('api/settings/schedule', p.schedule);
+      await api('api/settings/risk', { risk: { ...state.risk, ...p.risk }, password });
+      await api('api/settings/strategy', { strategy: p.strategy, password });
+    },
+  });
+  if (!done) return;
+  riskDirty = stratDirty = schedDirty = false;
+  msg('');
+  toast(`<b>"${esc(p.name)}" toegepast.</b> Geldt vanaf de volgende check.`);
+  await load(); renderSettings();
 });
 
 // ---------- Instellingen: strategie ----------
@@ -1420,12 +1527,16 @@ $('strat-form').onsubmit = async (e) => {
 $('paper-start').oninput = () => { $('paper-start').dataset.touched = '1'; };
 $('paper-reset-btn').onclick = async () => {
   const start = $('paper-start').value;
-  if (!confirm(`Paper-account opnieuw beginnen met € ${start}? Alle paper-trades en -posities worden gewist. Live wordt niet aangeraakt.`)) return;
-  try {
-    await api('api/paper/reset', { startBalanceEur: start });
-    $('paper-msg').className = 'msg ok'; $('paper-msg').textContent = 'Paper-account opnieuw begonnen.';
-    await load();
-  } catch (err) { $('paper-msg').className = 'msg err'; $('paper-msg').textContent = err.message; }
+  const done = await ask({
+    title: 'Paper opnieuw beginnen',
+    sub: 'Alle paper-trades en -posities worden gewist. Live wordt niet aangeraakt.',
+    body: askRows([['Nieuw startsaldo', eur2(Number(start))], ['Huidige paper-trades', String(state?.stats.totalTrades ?? 0)]]),
+    confirmText: 'Opnieuw beginnen', danger: true,
+    action: () => api('api/paper/reset', { startBalanceEur: start }),
+  });
+  if (!done) return;
+  toast(`Paper-account opnieuw begonnen met ${eur2(Number(start))}.`);
+  await load();
 };
 
 // ---------- Instellingen: planning ----------
@@ -1667,11 +1778,14 @@ $('keys-test').onclick = async () => {
 };
 $('keys-clear').onclick = async () => {
   if (state?.mode === 'live') return keyMsg('Schakel eerst terug naar paper voordat je de keys verwijdert.', 'err');
-  if (!confirm('Alle API-keys verwijderen?')) return;
-  try {
-    renderKeyStatus(await api('api/settings/keys', { bitvavoApiKey: null, bitvavoApiSecret: null, aiApiKey: null, aiApiKey2: null, aiApiKey3: null, aiApiKey4: null, aiApiKey5: null }));
-    keyMsg('Verwijderd.', 'ok'); load();
-  } catch (err) { keyMsg(err.message, 'err'); }
+  const res = await ask({
+    title: 'Alle API-keys verwijderen',
+    sub: 'Bitvavo-keys en alle AI-keys worden gewist. Discord-webhook en heartbeat blijven staan.',
+    confirmText: 'Verwijderen', danger: true,
+    action: () => api('api/settings/keys', { bitvavoApiKey: null, bitvavoApiSecret: null, aiApiKey: null, aiApiKey2: null, aiApiKey3: null, aiApiKey4: null, aiApiKey5: null }),
+  });
+  if (!res) return;
+  renderKeyStatus(res); toast('Alle API-keys zijn verwijderd.'); load();
 };
 
 init().catch((e) => { document.body.innerHTML = `<div class="auth-wrap"><div class="alert err">Kan vetobot niet bereiken: ${esc(e.message)}</div></div>`; });

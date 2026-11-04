@@ -193,8 +193,9 @@ export function startServer({ config, bot, settings, secrets, auth, notifier, lo
 
   app.post('/api/positions/close', wrap(async (req) => {
     const pair = String(req.body?.pair ?? '');
-    await bot.closeManual(pair);
+    const trade = await bot.closeManual(pair);
     log.info(`Positie ${pair} handmatig gesloten door ${req.user}`);
+    return { ok: true, trade };
   }));
 
   // Overschakelen tussen paper en live. Live vereist het wachtwoord en het woord LIVE.

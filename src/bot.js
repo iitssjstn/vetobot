@@ -493,6 +493,7 @@ export class Bot {
         await this.#close(pair, 'Handmatig gesloten');
         if (this.pairStatus[pair]) this.pairStatus[pair].inPosition = false;
         this.store.save();
+        return this.store.state.trades[0];
       } finally {
         this.#step(null);
       }
