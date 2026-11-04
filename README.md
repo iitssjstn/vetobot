@@ -98,6 +98,8 @@ De image is publiek, dus inloggen bij ghcr.io is niet nodig. Krijg je bij `docke
 
 ## Instellingen
 
+Naast elk veld bij Planning, Risico & inzet en Strategie staat een **?** met uitleg: wat het doet, wat hoger of lager betekent en een gebruikelijke waarde. Bij Strategie staat ook een uitleg in gewone taal over candles, EMA, kruisingen en RSI, plus drie voorbeeldinstellingen (rustig, gemiddeld, actief) om mee te beginnen. Die passen alleen planning, stop-loss, take-profit, afkoelperiode en strategie aan, nooit je inzet of limieten.
+
 In het dashboard onder **Instellingen** regel je:
 
 - **Handelsmodus**: paper of live (zie hieronder)

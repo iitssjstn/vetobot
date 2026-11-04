@@ -166,6 +166,23 @@
   .fields > div > label { margin-top: 0; }
   .fields > div { margin-bottom: 4px; }
   .kstate { float: right; font-size: 12px; }
+  .tip { display: inline-grid; place-items: center; width: 17px; height: 17px; margin-left: 5px; border-radius: 50%;
+    border: 1px solid var(--line-2); background: var(--panel-2); color: var(--muted); font: 600 11px/1 inherit; cursor: pointer;
+    vertical-align: 1px; padding: 0; }
+  .tip:hover, .tip[aria-expanded="true"] { color: var(--accent); border-color: var(--accent); }
+  .tipbox { margin-top: 8px; padding: 10px 12px; border-radius: 9px; background: var(--accent-soft);
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); font-size: 13px; line-height: 1.5; }
+  .tipbox b { font-weight: 600; }
+  .explain { margin-bottom: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); }
+  .explain summary { cursor: pointer; padding: 11px 14px; font-weight: 600; font-size: 13.5px; }
+  .explain .body { padding: 0 14px 14px; font-size: 13.5px; line-height: 1.55; color: var(--muted); }
+  .explain .body p { margin: 0 0 10px; }
+  .explain .body b { color: var(--text); font-weight: 600; }
+  .presets { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 12px; }
+  .preset { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--panel); }
+  .preset h4 { margin: 0 0 4px; font-size: 14px; color: var(--text); }
+  .preset .muted { font-size: 12.5px; }
+  .preset ul { margin: 8px 0 10px; padding-left: 16px; font-size: 12.5px; }
   .picker { margin-top: 10px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--panel); overflow: hidden; }
   .picker .ph { display: flex; gap: 8px; align-items: center; padding: 8px; border-bottom: 1px solid var(--line); }
   .picker .ph input { flex: 1; }
@@ -465,6 +482,19 @@
         <div class="panel-h"><h2><svg class="i"><use href="#i-pulse"/></svg>Strategie</h2>
           <span class="hint">Koopsignaal: EMA fast kruist boven EMA slow en RSI onder het maximum</span></div>
         <form class="panel-b" id="strat-form">
+          <details class="explain">
+            <summary>Hoe werkt de strategie? Uitleg en voorbeeldinstellingen</summary>
+            <div class="body">
+              <p><b>Candles.</b> De koers wordt opgedeeld in blokjes van een vaste tijd, bijvoorbeeld 15 minuten. Elk blokje (een candle) heeft een begin-, hoogste, laagste en slotkoers. De bot kijkt alleen naar afgesloten candles, zodat hij nooit beslist op een koers die nog verandert.</p>
+              <p><b>EMA (gemiddelde).</b> Een EMA is het gemiddelde van de slotkoersen over een aantal candles, waarbij de nieuwste zwaarder tellen. De <b>EMA fast</b> (bijv. 12) volgt de koers snel, de <b>EMA slow</b> (bijv. 26) is rustiger en laat de grote lijn zien.</p>
+              <p><b>Kruising = signaal.</b> Gaat de snelle lijn bóven de trage lijn, dan begint de koers waarschijnlijk te stijgen: een <b>koopsignaal</b>. Gaat hij eronder, dan een <b>verkoopsignaal</b>. Kleinere getallen geven sneller signalen, maar ook vaker een vals alarm.</p>
+              <p><b>RSI (oververhit).</b> De RSI loopt van 0 tot 100 en laat zien hoe hard een coin de laatste tijd gestegen is. Boven de 70 geldt een coin vaak als "oververhit": de kans op een terugval is groter. Met <b>Max RSI bij instap</b> koopt de bot niet meer als de RSI boven die grens ligt.</p>
+              <p><b>Daarna de AI.</b> Komt een koopsignaal door je regels en limieten, dan mag de AI het nog afwijzen. Verkopen (signaal, stop-loss, take-profit) gaat altijd zonder AI.</p>
+              <p><b>Voorbeeldinstellingen.</b> Een startpunt om mee te experimenteren, geen advies. Toepassen past alleen planning, stop-loss, take-profit, afkoelperiode en strategie aan; je inzet en limieten blijven gelijk.</p>
+              <div class="presets" id="presets"></div>
+              <div class="msg" id="preset-msg" style="margin-top:8px"></div>
+            </div>
+          </details>
           <div class="fields">
             <div><label for="st-fast">EMA fast (candles)</label><input id="st-fast" type="number" min="2" max="500" step="1" required></div>
             <div><label for="st-slow">EMA slow (candles)</label><input id="st-slow" type="number" min="3" max="1000" step="1" required></div>
@@ -1231,6 +1261,88 @@ $('hb-test').onclick = async () => {
   try { await api('api/settings/heartbeat/test', {}); msg('Ontvangen door de monitor. Op healthchecks.io staat de check nu op "up".', 'ok'); load(); }
   catch (err) { msg(err.message, 'err'); }
 };
+
+// ---------- Uitleg per veld ----------
+const HELP = {
+  'sch-interval': 'Hoe vaak de bot alle coins nakijkt. Bij elke check bekijkt hij nieuwe candles en controleert hij de stop-loss en take-profit van open posities. <b>Vuistregel:</b> even vaak of vaker dan je candle-tijd, bijv. elke 5 min bij 5m- of 15m-candles.',
+  'sch-tf': 'De lengte van één candle. <b>Korter</b> (1m, 5m) = meer signalen en sneller reageren, maar ook meer ruis, valse signalen en fees. <b>Langer</b> (1h, 4h) = minder en betrouwbaardere signalen, maar je zit langer in een positie. Veel bots beginnen rond 15m tot 1h.',
+  'r-stake': 'Het vaste bedrag per aankoop. De AI kan dit nooit veranderen. Bitvavo heeft een minimum van € 5 per order. <b>Tip:</b> houd het klein, zeker in het begin, zodat één slechte trade weinig kost.',
+  'r-max': 'Hoeveel posities er maximaal tegelijk open mogen staan, elk in een andere coin. Inzet × dit getal = het bedrag dat maximaal tegelijk in de markt zit.',
+  'r-daily': 'Als je vandaag zoveel verloren hebt (gesloten trades plus open verlies), opent de bot tot morgen geen nieuwe posities. Open posities worden nog wel bewaakt. 0 = uit. <b>Tip:</b> zet hem op een bedrag dat je op één dag kunt missen.',
+  'r-sl': 'Verkoop automatisch als een positie zoveel procent onder de aankoopprijs zakt. Beperkt je verlies per trade. <b>Te krap</b> (bijv. 1% op 5m-candles) en je wordt vaak door normale schommelingen uitgestopt. 0 = uit, dan verkoopt hij alleen op een signaal of take-profit.',
+  'r-tp': 'Verkoop automatisch als een positie zoveel procent winst staat. Zet je hem uit (0), dan verkoopt hij pas op een verkoopsignaal, waardoor je winst langer kan doorlopen maar ook weer kan verdampen. Vaak ongeveer 2× de stop-loss.',
+  'r-fee': 'De fee die Bitvavo per order rekent, voor paper trading en de P/L-berekening. Bij Bitvavo ligt dit rond 0,15 tot 0,25%, afhankelijk van je handelsvolume. Een volledige ronde (kopen en verkopen) kost dus twee keer de fee.',
+  'r-cool': 'Na een verkoop koopt de bot dezelfde coin zoveel minuten niet opnieuw. Voorkomt dat hij bij schommelingen steeds in en uit stapt en dubbel fee betaalt. 0 = uit. <b>Vuistregel:</b> een paar candles lang, bijv. 30 min bij 5m-candles.',
+  'r-slip': 'Alleen voor paper. Live koop je iets duurder en verkoop je iets goedkoper dan de laatste koers (de spread). Met slippage doet paper dat ook na, zodat je resultaten eerlijker zijn. Grote coins: 0,05 tot 0,1%. Kleine coins: soms 0,3% of meer.',
+  'st-fast': 'Aantal candles voor de snelle gemiddelde lijn. <b>Lager</b> = reageert sneller op koersbewegingen, maar geeft meer valse signalen. Gebruikelijk: 5 tot 12.',
+  'st-slow': 'Aantal candles voor de trage gemiddelde lijn, die de grote trend laat zien. Moet groter zijn dan de EMA fast. Gebruikelijk: 2 tot 3× de EMA fast, bijv. 21 of 26.',
+  'st-rsi': 'Over hoeveel candles de RSI wordt berekend. 14 is de standaard. Lager = gevoeliger, hoger = rustiger.',
+  'st-rsimax': 'Boven deze RSI koopt de bot niet, omdat de coin dan al hard gestegen is en de kans op terugval groter is. 70 is gebruikelijk; 100 = filter uit.',
+  'paper-start': 'Het nep-saldo waarmee paper trading begint. Kies een bedrag dat lijkt op wat je live zou inzetten, dan zijn de resultaten beter te vergelijken.',
+  'ai-fail': 'Wat er met een koopsignaal gebeurt als geen enkel AI-model antwoordt (fouten, tegoed op). <b>Afwijzen</b> is het veiligst: geen AI, geen trade. <b>Doorlaten</b> betekent dat alleen je eigen regels beslissen.',
+};
+function initHelp() {
+  for (const [id, text] of Object.entries(HELP)) {
+    const label = document.querySelector(`label[for="${id}"]`);
+    if (!label || label.querySelector('.tip')) continue;
+    const btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'tip'; btn.textContent = '?';
+    btn.setAttribute('aria-label', 'Uitleg'); btn.setAttribute('aria-expanded', 'false');
+    btn.dataset.tip = id;
+    // Voor het statuslabel (kstate) zetten, zodat het rechts blijft staan.
+    const k = label.querySelector('.kstate');
+    k ? label.insertBefore(btn, k) : label.appendChild(btn);
+  }
+}
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.tip'); if (!btn) return;
+  e.preventDefault();
+  const field = $(btn.dataset.tip)?.closest('div');
+  const open = field?.querySelector(`.tipbox[data-for="${btn.dataset.tip}"]`);
+  if (open) { open.remove(); btn.setAttribute('aria-expanded', 'false'); return; }
+  const box = document.createElement('div');
+  box.className = 'tipbox'; box.dataset.for = btn.dataset.tip; box.innerHTML = HELP[btn.dataset.tip];
+  field?.appendChild(box); btn.setAttribute('aria-expanded', 'true');
+});
+initHelp();
+
+// ---------- Voorbeeldinstellingen ----------
+const PRESETS = [
+  { name: 'Rustig', desc: 'Weinig trades, volgt de grote trend.',
+    schedule: { timeframe: '1h', checkIntervalMinutes: 15 }, risk: { stopLossPct: 4, takeProfitPct: 8, cooldownMinutes: 120 },
+    strategy: { emaFast: 12, emaSlow: 26, rsiPeriod: 14, rsiMaxEntry: 70 } },
+  { name: 'Gemiddeld', desc: 'Een paar trades per dag per coin.',
+    schedule: { timeframe: '15m', checkIntervalMinutes: 5 }, risk: { stopLossPct: 2.5, takeProfitPct: 5, cooldownMinutes: 45 },
+    strategy: { emaFast: 9, emaSlow: 21, rsiPeriod: 14, rsiMaxEntry: 70 } },
+  { name: 'Actief', desc: 'Veel trades, reageert snel. Meer ruis en fees.',
+    schedule: { timeframe: '5m', checkIntervalMinutes: 5 }, risk: { stopLossPct: 1.5, takeProfitPct: 3, cooldownMinutes: 15 },
+    strategy: { emaFast: 5, emaSlow: 13, rsiPeriod: 14, rsiMaxEntry: 75 } },
+];
+const TF_LABEL = { '1m': '1 min', '5m': '5 min', '15m': '15 min', '30m': '30 min', '1h': '1 uur', '2h': '2 uur', '4h': '4 uur', '1d': '1 dag' };
+$('presets').innerHTML = PRESETS.map((p, i) => `<div class="preset"><h4>${p.name}</h4><div class="muted">${p.desc}</div><ul class="muted">
+  <li>${TF_LABEL[p.schedule.timeframe]}-candles, check elke ${p.schedule.checkIntervalMinutes} min</li>
+  <li>EMA ${p.strategy.emaFast} / ${p.strategy.emaSlow}, max RSI ${p.strategy.rsiMaxEntry}</li>
+  <li>Stop-loss ${String(p.risk.stopLossPct).replace('.', ',')}%, take-profit ${String(p.risk.takeProfitPct).replace('.', ',')}%</li>
+  <li>Afkoelperiode ${p.risk.cooldownMinutes} min</li></ul>
+  <button class="btn sm" type="button" data-preset="${i}">Toepassen</button></div>`).join('');
+$('presets').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-preset]'); if (!b) return;
+  const p = PRESETS[Number(b.dataset.preset)];
+  const msg = (t, c) => { $('preset-msg').className = `msg ${c ?? ''}`; $('preset-msg').textContent = t; };
+  if (!confirm(`Voorbeeld "${p.name}" toepassen? Planning, stop-loss, take-profit, afkoelperiode en strategie worden aangepast. Je inzet en limieten blijven gelijk.`)) return;
+  let password;
+  if (state.mode === 'live') { password = prompt('Je staat op LIVE. Vul je wachtwoord in om te bevestigen:'); if (!password) return; }
+  b.disabled = true; msg('Toepassen…');
+  try {
+    await api('api/settings/schedule', p.schedule);
+    await api('api/settings/risk', { risk: { ...state.risk, ...p.risk }, password });
+    await api('api/settings/strategy', { strategy: p.strategy, password });
+    riskDirty = stratDirty = schedDirty = false;
+    msg(`"${p.name}" is toegepast. Geldt vanaf de volgende check.`, 'ok');
+    await load(); renderSettings();
+  } catch (err) { msg(err.message, 'err'); }
+  finally { b.disabled = false; }
+});
 
 // ---------- Instellingen: strategie ----------
 let stratDirty = false;
