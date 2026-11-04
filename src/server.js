@@ -223,8 +223,8 @@ export function startServer({ config, bot, settings, secrets, auth, notifier, lo
     return { ok: true, strategy: bot.strategy };
   }));
 
+  // Geen wachtwoord nodig: het is nepgeld. Het dashboard vraagt wel om bevestiging.
   app.post('/api/paper/reset', wrap(async (req) => {
-    auth.confirmPassword(req.body?.password, req.ip);
     await bot.resetPaper(req.body?.startBalanceEur);
     log.warn(`Paper-account gereset door ${req.user}`);
   }));

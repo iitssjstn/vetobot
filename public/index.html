@@ -1420,10 +1420,9 @@ $('strat-form').onsubmit = async (e) => {
 $('paper-start').oninput = () => { $('paper-start').dataset.touched = '1'; };
 $('paper-reset-btn').onclick = async () => {
   const start = $('paper-start').value;
-  const pass = prompt(`Paper-account opnieuw beginnen met ${start} EUR? Alle paper-trades en -posities worden gewist.\n\nVul je wachtwoord in om te bevestigen:`);
-  if (!pass) return;
+  if (!confirm(`Paper-account opnieuw beginnen met € ${start}? Alle paper-trades en -posities worden gewist. Live wordt niet aangeraakt.`)) return;
   try {
-    await api('api/paper/reset', { startBalanceEur: start, password: pass });
+    await api('api/paper/reset', { startBalanceEur: start });
     $('paper-msg').className = 'msg ok'; $('paper-msg').textContent = 'Paper-account opnieuw begonnen.';
     await load();
   } catch (err) { $('paper-msg').className = 'msg err'; $('paper-msg').textContent = err.message; }
