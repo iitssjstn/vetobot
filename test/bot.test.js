@@ -141,7 +141,7 @@ test('planning aanpassen valideert en roept de herplanning aan', async () => {
 
 test('risico-instellingen worden gevalideerd en gelden direct voor de inzet', async () => {
   const { bot, ex } = setup({});
-  await assert.rejects(bot.setRisk({ stakeEur: 2, maxOpenTrades: 2, stopLossPct: 3, takeProfitPct: 6, maxDailyLossEur: 20, feePct: 0.25 }), /Inzet per trade/);
+  await assert.rejects(bot.setRisk({ stakeEur: 0.05, maxOpenTrades: 2, stopLossPct: 3, takeProfitPct: 6, maxDailyLossEur: 20, feePct: 0.25 }), /Inzet per trade/);
   await assert.rejects(bot.setRisk({ stakeEur: 10, maxOpenTrades: 0, stopLossPct: 3, takeProfitPct: 6, maxDailyLossEur: 20, feePct: 0.25 }), /open trades/);
   await bot.setRisk({ stakeEur: 10, maxOpenTrades: 1, stopLossPct: 0, takeProfitPct: 0, maxDailyLossEur: 0, feePct: 0.25 });
   await openPaperPosition(bot, ex);
@@ -364,4 +364,16 @@ test('bij checks onder de minuut worden rustige checks maar eens per minuut gelo
   await bot.tick(); await bot.tick(); await bot.tick();
   assert.equal(bot.activity.filter((a) => a.message.startsWith('Check klaar')).length, 1);
   assert.ok(bot.activity.length - before <= 1);
+});
+
+test('onder de € 5 kan alleen in paper', async () => {
+  const { bot, ex } = setup({ keys: true });
+  await bot.setRisk({ stakeEur: 1, maxOpenTrades: 2 });
+  await openPaperPosition(bot, ex);
+  assert.equal(bot.store.state.positions['BTC/EUR'].costEur, 1);
+  await bot.closeManual('BTC/EUR');
+  await assert.rejects(bot.switchMode('live'), /minimaal € 5/);
+  await bot.setRisk({ stakeEur: 5, maxOpenTrades: 2 });
+  await bot.switchMode('live');
+  await assert.rejects(bot.setRisk({ stakeEur: 2 }), /minimaal € 5/);
 });

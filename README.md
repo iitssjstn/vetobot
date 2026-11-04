@@ -171,7 +171,7 @@ Doe dit pas na weken paper trading met resultaten waar je tevreden over bent.
 1. Maak bij Bitvavo een API-key aan met **alleen handelsrechten, zonder opnamerechten**, en koppel hem aan het IP-adres van je server.
 2. Vul de key en het secret in bij Instellingen → API-keys en klik op **Bitvavo-keys testen**.
 3. Klik bij Handelsmodus op **Overschakelen naar live**, vul je wachtwoord in en typ `LIVE`.
-4. Begin met een kleine `STAKE_EUR` en een lage `MAX_DAILY_LOSS_EUR`.
+4. Begin met een kleine inzet (minimaal € 5, het minimum van Bitvavo) en een lage daglimiet. De bot gebruikt nooit meer dan inzet × maximaal open trades; met € 5 en 2 trades heb je genoeg aan zo'n € 15 tot € 20 op Bitvavo. In paper kan de inzet vanaf € 0,10.
 
 Beveiligingen bij het wisselen:
 

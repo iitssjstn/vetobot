@@ -1,6 +1,6 @@
 import { evaluate } from './strategy.js';
 import { askVetoChain, testChain, listModels, writeSummaryChain, aiLabel } from './ai.js';
-import { TIMEFRAME_MINUTES, fmtInterval } from './settings.js';
+import { TIMEFRAME_MINUTES, fmtInterval, LIVE_MIN_STAKE_EUR } from './settings.js';
 import { cleanSuggestions, currentValues, applySuggestions } from './suggest.js';
 import { fetchClosedCandles, fetchPrice, hasTradingKeys } from './exchange.js';
 import { checkEntry } from './risk.js';
@@ -328,6 +328,10 @@ export class Bot {
 
   setRisk(values) {
     return this.#exclusive(async () => {
+      const stake = Number(values?.stakeEur ?? this.settings.risk.stakeEur);
+      if (this.mode === 'live' && stake < LIVE_MIN_STAKE_EUR) {
+        throw new Error(`In live is de inzet minimaal € ${LIVE_MIN_STAKE_EUR}; Bitvavo weigert kleinere orders`);
+      }
       this.settings.setRisk(values);
       const r = this.risk;
       this.#event('info', null, `Risico: ${fmtEur(r.stakeEur)} per trade, max ${r.maxOpenTrades} open, ` +
@@ -436,6 +440,9 @@ export class Bot {
       const open = Object.keys(this.store.state.positions);
       if (open.length) {
         throw new Error(`Er staan nog ${open.length} positie(s) open in ${this.mode} (${open.join(', ')}). Sluit die eerst.`);
+      }
+      if (mode === 'live' && this.risk.stakeEur < LIVE_MIN_STAKE_EUR) {
+        throw new Error(`Je inzet per trade is € ${this.risk.stakeEur}. Live is minimaal € ${LIVE_MIN_STAKE_EUR} nodig (minimum van Bitvavo); verhoog eerst je inzet.`);
       }
       if (mode === 'live') {
         this.#step('Bitvavo-keys testen');

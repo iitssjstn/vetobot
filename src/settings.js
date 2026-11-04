@@ -11,7 +11,8 @@ export const MAX_PAIRS = 100;
 // Binnen deze grenzen bepaal je alles zelf. 0 betekent "uit" bij stop-loss,
 // take-profit en de dagelijkse verlieslimiet. Bitvavo hanteert een minimum order van € 5.
 export const RISK_LIMITS = {
-  stakeEur: [5, 1000000],
+  // In paper vanaf € 0,10; live geldt het minimum van Bitvavo (LIVE_MIN_STAKE_EUR), dat controleert de bot.
+  stakeEur: [0.1, 1000000],
   maxOpenTrades: [1, 100],
   stopLossPct: [0, 100],
   takeProfitPct: [0, 10000],
@@ -20,6 +21,7 @@ export const RISK_LIMITS = {
   cooldownMinutes: [0, 10080],
   slippagePct: [0, 5],
 };
+export const LIVE_MIN_STAKE_EUR = 5;
 export const STRATEGY_LIMITS = {
   emaFast: [2, 500],
   emaSlow: [3, 1000],

@@ -459,7 +459,7 @@
           <span class="hint">Jij bepaalt deze waarden; de AI kan er niet aan komen</span></div>
         <form class="panel-b" id="risk-form">
           <div class="fields">
-            <div><label for="r-stake">Inzet per trade (€)</label><input id="r-stake" type="number" min="5" step="any" required></div>
+            <div><label for="r-stake">Inzet per trade (€)</label><input id="r-stake" type="number" min="0.1" step="any" required></div>
             <div><label for="r-max">Maximaal open trades</label><input id="r-max" type="number" min="1" max="100" step="1" required></div>
             <div><label for="r-daily">Dagelijkse verlieslimiet (€, 0 = uit)</label><input id="r-daily" type="number" min="0" step="any" required></div>
             <div><label for="r-sl">Stop-loss (%, 0 = uit)</label><input id="r-sl" type="number" min="0" max="100" step="any" required></div>
@@ -1192,6 +1192,7 @@ function riskHelp() {
   parts.push(`Een volledige ronde (kopen + verkopen) kost ongeveer ${((fee + (state?.mode === 'live' ? 0 : slip)) * 2).toFixed(2).replace('.', ',')}%${state?.mode === 'live' ? ' aan fees, plus de spread' : ' aan fee en slippage'}.`);
   if (daily === 0) parts.push('<span class="warnc">De dagelijkse verlieslimiet staat uit.</span>');
   const bal = state?.mode === 'live' ? state.liveBalance?.eurFree : state?.balanceEur;
+  if (state?.mode !== 'live' && stake < 5) parts.push('<span class="muted">Onder de € 5 kan alleen in paper; voor live moet je de inzet eerst verhogen.</span>');
   if (bal != null && total > bal) parts.push(`<span class="warnc">Dat is meer dan je ${state.mode === 'live' ? 'Bitvavo-' : 'paper-'}saldo van ${eur2(bal)}; de bot slaat trades over als het saldo op is.</span>`);
   if (state?.pairs && max > state.pairs.length) parts.push(`<span class="muted">Je volgt ${state.pairs.length} coins, dus meer dan ${state.pairs.length} open trades kan niet.</span>`);
   $('risk-help').innerHTML = parts.join(' ');
@@ -1288,7 +1289,7 @@ $('hb-test').onclick = async () => {
 const HELP = {
   'sch-interval': 'Hoe vaak de bot alle coins nakijkt. Bij elke check bekijkt hij nieuwe candles en controleert hij de stop-loss en take-profit van open posities. <b>Vuistregel:</b> even vaak of vaker dan je candle-tijd, bijv. elke 5 min bij 5m- of 15m-candles. Sneller dan elke minuut kan ook (vanaf 10 seconden): dat geeft geen extra signalen, maar je stop-loss reageert sneller. Let met veel coins op de rate limit van Bitvavo.',
   'sch-tf': 'De lengte van één candle. <b>Korter</b> (1m, 5m) = meer signalen en sneller reageren, maar ook meer ruis, valse signalen en fees. <b>Langer</b> (1h, 4h) = minder en betrouwbaardere signalen, maar je zit langer in een positie. Veel bots beginnen rond 15m tot 1h.',
-  'r-stake': 'Het vaste bedrag per aankoop. De AI kan dit nooit veranderen. Bitvavo heeft een minimum van € 5 per order. <b>Tip:</b> houd het klein, zeker in het begin, zodat één slechte trade weinig kost.',
+  'r-stake': 'Het vaste bedrag per aankoop. De AI kan dit nooit veranderen. In paper kan het vanaf € 0,10; live is het minimaal € 5, omdat Bitvavo kleinere orders weigert. <b>Tip:</b> houd het klein, zeker in het begin. De bot gebruikt nooit meer dan inzet × maximaal open trades, dus met € 5 en 2 trades heb je live genoeg aan zo’n € 15 tot € 20 op Bitvavo.',
   'r-max': 'Hoeveel posities er maximaal tegelijk open mogen staan, elk in een andere coin. Inzet × dit getal = het bedrag dat maximaal tegelijk in de markt zit.',
   'r-daily': 'Als je vandaag zoveel verloren hebt (gesloten trades plus open verlies), opent de bot tot morgen geen nieuwe posities. Open posities worden nog wel bewaakt. 0 = uit. <b>Tip:</b> zet hem op een bedrag dat je op één dag kunt missen.',
   'r-sl': 'Verkoop automatisch als een positie zoveel procent onder de aankoopprijs zakt. Beperkt je verlies per trade. <b>Te krap</b> (bijv. 1% op 5m-candles) en je wordt vaak door normale schommelingen uitgestopt. 0 = uit, dan verkoopt hij alleen op een signaal of take-profit.',
