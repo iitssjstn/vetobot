@@ -25,6 +25,11 @@ export const STRATEGY_LIMITS = {
   rsiMaxEntry: [1, 100],
 };
 export const AI_FAIL_MODES = ['reject', 'approve'];
+const NOTIFY_DEFAULTS = {
+  discordUserId: '',
+  events: { startup: true, trades: true, stoploss: true, errors: true, dailyLimit: true, mode: true, aiVeto: false },
+  mentions: { startup: true, trades: false, stoploss: true, errors: true, dailyLimit: true, mode: true, aiVeto: false },
+};
 const RISK_LABELS = {
   stakeEur: 'Inzet per trade',
   maxOpenTrades: 'Maximaal open trades',
@@ -68,6 +73,11 @@ export class Settings {
       timeframe: saved.timeframe ?? defaults.timeframe,
       checkIntervalMinutes: saved.checkIntervalMinutes ?? defaults.checkIntervalMinutes,
       risk: Object.fromEntries(Object.keys(RISK_LIMITS).map((k) => [k, saved.risk?.[k] ?? defaults.risk[k]])),
+      notify: {
+        discordUserId: saved.notify?.discordUserId ?? NOTIFY_DEFAULTS.discordUserId,
+        events: { ...NOTIFY_DEFAULTS.events, ...saved.notify?.events },
+        mentions: { ...NOTIFY_DEFAULTS.mentions, ...saved.notify?.mentions },
+      },
       modeChangedAt: saved.modeChangedAt ?? null,
     };
   }
@@ -98,6 +108,22 @@ export class Settings {
 
   setRisk(values) {
     this.data.risk = validated(values, RISK_LIMITS, ['maxOpenTrades']);
+    this.#save();
+  }
+
+  get notify() {
+    return this.data.notify;
+  }
+
+  setNotify({ discordUserId, events, mentions }) {
+    const id = String(discordUserId ?? '').trim();
+    if (id && !/^\d{15,22}$/.test(id)) throw new Error('Een Discord user ID bestaat uit 15 tot 22 cijfers');
+    const pick = (src, def) => Object.fromEntries(Object.keys(def).map((k) => [k, Boolean(src?.[k])]));
+    this.data.notify = {
+      discordUserId: id,
+      events: pick(events, NOTIFY_DEFAULTS.events),
+      mentions: pick(mentions, NOTIFY_DEFAULTS.mentions),
+    };
     this.#save();
   }
 

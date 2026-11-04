@@ -5,6 +5,7 @@ import { SecretStore } from './secrets.js';
 import { Settings } from './settings.js';
 import { Auth } from './auth.js';
 import { Bot } from './bot.js';
+import { Notifier } from './notify.js';
 import { startServer } from './server.js';
 
 const errors = validateConfig();
@@ -24,7 +25,8 @@ const stores = {
   paper: new Store(config.dataDir, 'paper', config.paper.startBalanceEur),
   live: new Store(config.dataDir, 'live', config.paper.startBalanceEur),
 };
-const bot = new Bot({ config, exchange, brokers, stores, settings, secrets });
+const notifier = new Notifier({ secrets, settings });
+const bot = new Bot({ config, exchange, brokers, stores, settings, secrets, notifier });
 
 console.info(
   `vetobot start in ${settings.mode.toUpperCase()}-modus | pairs: ${settings.pairs.join(', ')} | ` +
@@ -40,7 +42,22 @@ if (!auth.isSetUp()) {
   console.warn('==================================================================');
 }
 
-const server = startServer({ config, bot, settings, secrets, auth });
+const server = startServer({ config, bot, settings, secrets, auth, notifier });
+
+{
+  const open = Object.keys(bot.store.state.positions);
+  notifier.send('startup', {
+    title: 'vetobot is gestart',
+    message: open.length
+      ? `Weer online. Er staan ${open.length} positie(s) open die weer bewaakt worden: ${open.join(', ')}.`
+      : 'Weer online. Er staan geen posities open.',
+    level: settings.mode === 'live' ? 'live' : 'ok',
+    fields: [
+      { name: 'Modus', value: settings.mode === 'live' ? 'LIVE' : 'paper' },
+      { name: 'Coins', value: String(settings.pairs.length) },
+    ],
+  }).catch(() => {});
+}
 
 // Timer met instelbaar interval. Na een wijziging in het dashboard wordt de
 // volgende check opnieuw ingepland vanaf nu.

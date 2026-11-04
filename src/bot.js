@@ -14,13 +14,14 @@ import { checkEntry } from './risk.js';
 export class Bot {
   // brokers en stores: { paper, live }. De actieve modus komt uit settings en
   // kan via het dashboard gewisseld worden (zie switchMode).
-  constructor({ config, exchange, brokers, stores, settings, secrets, log = console }) {
+  constructor({ config, exchange, brokers, stores, settings, secrets, notifier = null, log = console }) {
     this.config = config;
     this.ex = exchange;
     this.brokers = brokers;
     this.stores = stores;
     this.settings = settings;
     this.secrets = secrets;
+    this.notifier = notifier;
     this.liveBalance = null;
     this.queue = Promise.resolve();
     this.log = log;
@@ -41,6 +42,12 @@ export class Bot {
     (this.log[level] ?? this.log.info).call(this.log, text);
     this.activity.unshift({ at: new Date().toISOString(), level, pair, message });
     this.activity.length = Math.min(this.activity.length, 100);
+  }
+
+  // Meldingen gaan op de achtergrond en mogen een check nooit ophouden of laten mislukken.
+  #notify(event, payload) {
+    if (!this.notifier) return;
+    this.notifier.send(event, payload).catch(() => {});
   }
 
   #step(text) {
@@ -216,6 +223,10 @@ export class Bot {
       this.#event('warn', null, mode === 'live'
         ? 'Overgeschakeld naar LIVE trading. Er worden nu echte orders geplaatst.'
         : 'Overgeschakeld naar paper trading.');
+      this.#notify('mode', mode === 'live'
+        ? { title: 'vetobot staat nu op LIVE', message: 'Er worden echte orders geplaatst op Bitvavo.', level: 'live',
+            fields: this.liveBalance ? [{ name: 'Beschikbaar saldo', value: `€ ${this.liveBalance.eurFree.toFixed(2)}` }] : [] }
+        : { title: 'vetobot staat nu op paper', message: 'Er worden geen echte orders meer geplaatst.', level: 'info' });
     });
   }
 
@@ -254,6 +265,7 @@ export class Bot {
         } catch (err) {
           errors++;
           this.#event('error', pair, err.message);
+          this.#notify('errors', { title: `Fout bij ${pair}`, message: err.message, level: 'error' });
           this.lastError = { at: new Date().toISOString(), pair, message: err.message };
           this.pairStatus[pair] = { ...this.pairStatus[pair], at: new Date().toISOString(), error: err.message };
         }
@@ -263,6 +275,7 @@ export class Bot {
         await this.refreshLiveBalance().catch((err) => {
           errors++;
           this.#event('error', null, `Saldo ophalen mislukt: ${err.message}`);
+          this.#notify('errors', { title: 'Saldo ophalen bij Bitvavo mislukt', message: err.message, level: 'error' });
         });
       }
       this.lastTickAt = new Date().toISOString();
@@ -270,6 +283,7 @@ export class Bot {
       this.store.save();
       this.#event('info', null, `Check klaar in ${((Date.now() - started) / 1000).toFixed(1)}s` +
         (errors ? ` met ${errors} fout(en)` : ''));
+      this.notifier?.heartbeat(errors === 0).catch(() => {});
     } finally {
       this.running = false;
       this.#step(null);
@@ -374,6 +388,9 @@ export class Bot {
     });
     this.#event(veto.decision === 'approve' ? 'info' : 'warn', pair,
       `AI (${veto.provider}) ${veto.decision === 'approve' ? 'keurt goed' : 'wijst af'}: ${veto.reason}`);
+    if (veto.decision !== 'approve') {
+      this.#notify('aiVeto', { title: `${pair}: koopsignaal afgewezen`, message: veto.reason, level: 'warn' });
+    }
 
     if (veto.decision === 'approve') await this.#open(pair, result.reason);
   }
@@ -393,6 +410,16 @@ export class Bot {
       reason,
     };
     this.#event('info', pair, `Gekocht: ${fill.amount} @ ${fill.price} (${this.broker.mode})`);
+    this.#notify('trades', {
+      title: `Gekocht: ${pair}`,
+      message: reason,
+      level: this.broker.mode === 'live' ? 'live' : 'info',
+      fields: [
+        { name: 'Koers', value: `€ ${fill.price}` },
+        { name: 'Inzet', value: `€ ${fill.costEur.toFixed(2)}` },
+        { name: 'Hoeveelheid', value: String(fill.amount) },
+      ],
+    });
   }
 
   async #close(pair, reason) {
@@ -416,11 +443,26 @@ export class Bot {
       exitReason: reason,
     });
     this.#event(pnlEur >= 0 ? 'info' : 'warn', pair, `Verkocht @ ${fill.price}, resultaat ${pnlEur.toFixed(2)} EUR (${reason})`);
+    const isStop = reason.startsWith('Stop-loss');
+    this.#notify(isStop ? 'stoploss' : 'trades', {
+      title: `${isStop ? 'Stop-loss' : 'Verkocht'}: ${pair}`,
+      message: reason,
+      level: pnlEur >= 0 ? 'ok' : 'warn',
+      fields: [
+        { name: 'Resultaat', value: `${pnlEur >= 0 ? '+' : '−'}€ ${Math.abs(pnlEur).toFixed(2)} (${((pnlEur / pos.costEur) * 100).toFixed(2)}%)` },
+        { name: 'In → uit', value: `€ ${pos.entryPrice} → € ${fill.price}` },
+      ],
+    });
 
     const today = this.store.realizedTodayEur();
     if (this.risk.maxDailyLossEur > 0 && today <= -this.risk.maxDailyLossEur && !this.store.state.halted) {
       this.store.state.halted = { at: new Date().toISOString(), reason: `Dagverlies ${today.toFixed(2)} EUR` };
       this.#event('warn', null, 'Dagelijkse verlieslimiet bereikt. Geen nieuwe trades tot morgen.');
+      this.#notify('dailyLimit', {
+        title: 'Dagelijkse verlieslimiet bereikt',
+        message: `Verlies vandaag: € ${today.toFixed(2)}. Geen nieuwe trades tot morgen; open posities worden nog bewaakt.`,
+        level: 'error',
+      });
     }
   }
 }

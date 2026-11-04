@@ -161,6 +161,15 @@
   .fields > div > label { margin-top: 0; }
   .fields > div { margin-bottom: 4px; }
   .kstate { float: right; font-size: 12px; }
+  .evtable td, .evtable th { padding: 8px 12px; }
+  .evtable input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
+  .steps { margin: 8px 0 0; padding-left: 20px; color: var(--muted); font-size: 13px; }
+  .steps li { margin: 4px 0; }
+  .steps b { color: var(--text); font-weight: 600; }
+  .sub-h { font-size: 13px; font-weight: 650; margin: 22px 0 4px; display: flex; align-items: center; gap: 8px; }
+  .sub-h:first-child { margin-top: 0; }
+  details.how { margin-top: 10px; }
+  details.how summary { cursor: pointer; color: var(--accent); font-size: 13px; }
 
   .modecard { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: center; }
   .modecard .big { font-size: 18px; font-weight: 700; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -237,6 +246,7 @@
   <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
   <symbol id="i-menu" viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h18"/></symbol>
   <symbol id="i-wallet" viewBox="0 0 24 24"><path d="M20 7V5a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H5a2 2 0 0 1-2-2V6"/><path d="M17 13h.01"/></symbol>
+ <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></symbol>
   <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></symbol>
 </svg>
 
@@ -491,6 +501,65 @@
         </form>
       </div>
 
+      <div class="panel gap" id="notify">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-bell"/></svg>Meldingen</h2>
+          <span class="hint">Discord-meldingen en een waarschuwing als de server offline gaat</span></div>
+        <div class="panel-b">
+          <div class="sub-h">Discord</div>
+          <form id="notify-form">
+            <div class="fields">
+              <div><label for="n-webhook">Discord-webhook <span class="kstate" id="st-discordWebhook"></span></label>
+                <input id="n-webhook" type="password" autocomplete="off" placeholder="https://discord.com/api/webhooks/… (leeg = niet wijzigen)"></div>
+              <div><label for="n-user">Jouw Discord user ID (voor de tag)</label>
+                <input id="n-user" inputmode="numeric" autocomplete="off" placeholder="bijv. 123456789012345678"></div>
+            </div>
+            <details class="how"><summary>Waar vind ik die?</summary>
+              <ol class="steps">
+                <li><b>Webhook:</b> in je Discord-server naar <b>Server Settings → Integrations → Webhooks → New Webhook</b>, kies het kanaal en klik op <b>Copy Webhook URL</b>.</li>
+                <li><b>User ID:</b> zet <b>User Settings → Advanced → Developer Mode</b> aan, klik daarna met rechts op je eigen naam en kies <b>Copy User ID</b>.</li>
+                <li>Een tag geeft een push-melding op je mobiel en pc, ook als je het kanaal gedempt hebt.</li>
+              </ol>
+            </details>
+            <div class="scroll" style="margin-top:14px;border:1px solid var(--line);border-radius:10px">
+              <table class="evtable" id="n-events"></table>
+            </div>
+            <div class="row-actions">
+              <button class="btn primary" type="submit">Opslaan</button>
+              <button class="btn" type="button" id="n-test">Testmelding sturen</button>
+              <span class="msg" id="n-msg"></span>
+            </div>
+          </form>
+
+          <div class="sub-h" style="margin-top:26px">Server offline-melding (heartbeat)</div>
+          <div class="help" style="margin-top:0">Als je server uitvalt, kan vetobot zelf niets meer sturen. Daarom stuurt hij na elke check een seintje naar een externe dienst.
+            Blijven die uit, dan stuurt díe dienst jou een melding.</div>
+          <form id="hb-form">
+            <div class="fields" style="margin-top:12px">
+              <div><label for="hb-url">Heartbeat-URL <span class="kstate" id="st-heartbeatUrl"></span></label>
+                <input id="hb-url" type="password" autocomplete="off" placeholder="https://hc-ping.com/… (leeg = niet wijzigen)"></div>
+              <div><label>Laatste heartbeat</label><div id="hb-last" class="muted" style="padding:9px 0">–</div></div>
+            </div>
+            <details class="how"><summary>Zo stel je het in met healthchecks.io (gratis)</summary>
+              <ol class="steps">
+                <li>Maak een account op <b>healthchecks.io</b> en klik op <b>Add Check</b>.</li>
+                <li>Zet bij <b>Period</b> je check-interval (<span id="hb-period"></span>) en bij <b>Grace Time</b> bijvoorbeeld 10 minuten.</li>
+                <li>Kopieer de <b>ping URL</b> (https://hc-ping.com/…) en plak hem hierboven.</li>
+                <li>Ga naar <b>Integrations</b> en kies <b>Webhook</b>. Zet bij <b>Execute when a check goes down</b>: method <b>POST</b>, URL = je Discord-webhook,
+                  header <code>Content-Type: application/json</code> en als body:<br>
+                  <code id="hb-body">{"content": "&lt;@JOUW_ID&gt; vetobot is offline ($NAME)"}</code></li>
+                <li>Doe hetzelfde bij <b>Execute when a check goes up</b> met bijvoorbeeld <code>{"content": "vetobot is weer online"}</code>.</li>
+              </ol>
+              <div class="help">Liever zonder tag? Kies bij Integrations dan gewoon <b>Discord</b>.</div>
+            </details>
+            <div class="row-actions">
+              <button class="btn primary" type="submit">Opslaan</button>
+              <button class="btn" type="button" id="hb-test">Heartbeat testen</button>
+              <span class="msg" id="hb-msg"></span>
+            </div>
+          </form>
+        </div>
+      </div>
+
       <div class="panel gap">
         <div class="panel-h"><h2><svg class="i"><use href="#i-key"/></svg>API-keys</h2>
           <span class="hint">Versleuteld opgeslagen, nooit meer volledig zichtbaar</span></div>
@@ -672,6 +741,7 @@ async function load() {
   if (live && !s.bitvavoKeysSet) alerts.push(['err', 'Live-modus, maar de Bitvavo-keys ontbreken. Vul ze in bij Instellingen.']);
   if (s.ai.provider !== 'none' && !s.aiKeySet) alerts.push(['', `AI-provider "${esc(s.ai.provider)}" is gekozen, maar er is geen AI-key. Koopsignalen worden afgewezen.`]);
   if (s.risk.stopLossPct === 0) alerts.push(['', 'Stop-loss staat uit. Posities worden alleen verkocht bij een verkoopsignaal of take-profit.']);
+  if (s.heartbeatSet && s.lastHeartbeat?.error) alerts.push(['', `De heartbeat kon niet worden verstuurd: ${esc(s.lastHeartbeat.error)}. Je krijgt dan mogelijk een onterechte offline-melding.`]);
   if (s.lastError) alerts.push(['err', `Fout bij laatste check (${esc(s.lastError.pair)}): ${esc(s.lastError.message)}`]);
   $('alerts').innerHTML = alerts.map(([c, t]) => `<div class="alert ${c}">${icon('alert')}<div>${t}</div></div>`).join('');
 
@@ -777,7 +847,8 @@ function renderStatus() {
   if (next && next > now) {
     const left = Math.round((next - now) / 1000);
     $('st-main').textContent = s.halted ? 'Gepauzeerd, bewaakt open posities' : 'Actief, wacht op de volgende check';
-    $('st-sub').textContent = `Volgende check over ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} · laatste ${time(s.lastTickAt)}`;
+    $('st-sub').textContent = `Volgende check over ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} · laatste ${time(s.lastTickAt)}` +
+      (s.heartbeatSet ? (s.lastHeartbeat?.error ? ' · heartbeat mislukt' : s.lastHeartbeat ? ' · heartbeat ok' : '') : '');
     $('st-bar').style.width = `${Math.min(100, (1 - (next - now) / total) * 100)}%`;
   } else {
     $('st-main').textContent = 'Check start zo';
@@ -822,6 +893,7 @@ function renderSettings() {
   $('r-pass-wrap').hidden = !live;
   $('st-pass-wrap').hidden = !live;
   $('paper-reset').hidden = live;
+  renderNotify();
   if (!document.activeElement?.closest('#strat-form') && !stratDirty) {
     $('st-fast').value = s.strategy.emaFast;
     $('st-slow').value = s.strategy.emaSlow;
@@ -972,6 +1044,66 @@ $('risk-form').onsubmit = async (e) => {
     $('risk-msg').className = 'msg ok'; $('risk-msg').textContent = 'Opgeslagen. Geldt direct, ook voor de stop-loss van open posities.';
     document.activeElement?.blur(); await load();
   } catch (err) { $('risk-msg').className = 'msg err'; $('risk-msg').textContent = err.message; }
+};
+
+// ---------- Instellingen: meldingen ----------
+let notifyDirty = false;
+function renderNotify() {
+  const s = state; if (!s?.notify) return;
+  $('hb-period').textContent = `${s.checkIntervalMinutes} minuten`;
+  const id = (notifyDirty ? $('n-user').value : s.notify.discordUserId) || 'JOUW_ID';
+  $('hb-body').textContent = `{"content": "<@${id}> vetobot is offline ($NAME)"}`;
+  const hb = s.lastHeartbeat;
+  $('hb-last').innerHTML = !s.heartbeatSet ? 'Niet ingesteld'
+    : !hb ? 'Nog niet verstuurd (na de volgende check)'
+    : hb.error ? `<span class="down">${time(hb.at)} mislukt: ${esc(hb.error)}</span>`
+    : `<span class="up">${time(hb.at)} ${hb.ok ? 'ok' : 'met fouten (/fail)'}</span>`;
+  if (notifyDirty || document.activeElement?.closest('#notify-form')) return;
+  $('n-user').value = s.notify.discordUserId ?? '';
+  $('n-events').innerHTML = '<thead><tr><th>Melding</th><th class="r">Sturen</th><th class="r">Tag mij</th></tr></thead><tbody>' +
+    Object.entries(s.notifyEvents).map(([k, label]) => `<tr><td>${esc(label)}</td>` +
+      `<td class="r"><input type="checkbox" data-ev="${k}" ${s.notify.events[k] ? 'checked' : ''} aria-label="${esc(label)} sturen"></td>` +
+      `<td class="r"><input type="checkbox" data-mn="${k}" ${s.notify.mentions[k] ? 'checked' : ''} aria-label="${esc(label)} taggen"></td></tr>`).join('') +
+    '</tbody>';
+}
+$('notify-form').addEventListener('input', () => { notifyDirty = true; if (document.activeElement === $('n-user')) renderNotify(); });
+$('notify-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const msg = (t, c) => { $('n-msg').className = `msg ${c ?? ''}`; $('n-msg').textContent = t; };
+  try {
+    if ($('n-webhook').value.trim()) {
+      renderKeyStatus(await api('api/settings/keys', { discordWebhook: $('n-webhook').value.trim() }));
+      $('n-webhook').value = '';
+    }
+    const events = {}, mentions = {};
+    document.querySelectorAll('[data-ev]').forEach(c => events[c.dataset.ev] = c.checked);
+    document.querySelectorAll('[data-mn]').forEach(c => mentions[c.dataset.mn] = c.checked);
+    await api('api/settings/notify', { discordUserId: $('n-user').value, events, mentions });
+    notifyDirty = false; msg('Opgeslagen.', 'ok');
+    document.activeElement?.blur(); await load();
+  } catch (err) { msg(err.message, 'err'); }
+};
+$('n-test').onclick = async () => {
+  const msg = (t, c) => { $('n-msg').className = `msg ${c ?? ''}`; $('n-msg').textContent = t; };
+  if (notifyDirty || $('n-webhook').value.trim()) return msg('Sla eerst op, dan stuurt hij de test met die instellingen.', 'err');
+  msg('Versturen…');
+  try { await api('api/settings/notify/test', {}); msg('Verstuurd. Kijk in je Discord-kanaal.', 'ok'); }
+  catch (err) { msg(err.message, 'err'); }
+};
+$('hb-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const msg = (t, c) => { $('hb-msg').className = `msg ${c ?? ''}`; $('hb-msg').textContent = t; };
+  if (!$('hb-url').value.trim()) return msg('Niets ingevuld.');
+  try {
+    renderKeyStatus(await api('api/settings/keys', { heartbeatUrl: $('hb-url').value.trim() }));
+    $('hb-url').value = ''; msg('Opgeslagen. Klik op Heartbeat testen om te controleren.', 'ok'); load();
+  } catch (err) { msg(err.message, 'err'); }
+};
+$('hb-test').onclick = async () => {
+  const msg = (t, c) => { $('hb-msg').className = `msg ${c ?? ''}`; $('hb-msg').textContent = t; };
+  msg('Versturen…');
+  try { await api('api/settings/heartbeat/test', {}); msg('Ontvangen door de monitor. Op healthchecks.io staat de check nu op "up".', 'ok'); load(); }
+  catch (err) { msg(err.message, 'err'); }
 };
 
 // ---------- Instellingen: strategie ----------

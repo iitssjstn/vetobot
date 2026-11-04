@@ -170,3 +170,21 @@ test('strategie aanpassen en paper opnieuw beginnen', async () => {
   assert.deepEqual(bot.store.state.positions, {});
   await assert.rejects(bot.resetPaper(1), /Startsaldo/);
 });
+
+test('de bot stuurt meldingen bij kopen, stop-loss en een heartbeat na elke check', async () => {
+  const { bot, ex } = setup({});
+  const sent = [];
+  const beats = [];
+  bot.notifier = {
+    send: async (event, payload) => { sent.push({ event, title: payload.title }); return true; },
+    heartbeat: async (ok) => { beats.push(ok); return { ok }; },
+  };
+  await bot.setRisk({ stakeEur: 25, maxOpenTrades: 1, stopLossPct: 5, takeProfitPct: 0, maxDailyLossEur: 0, feePct: 0 });
+  await openPaperPosition(bot, ex);
+  ex.fetchTicker = async () => ({ last: 10 });
+  await bot.tick();
+  await new Promise((r) => setImmediate(r));
+  assert.ok(sent.some((s) => s.event === 'trades' && s.title.startsWith('Gekocht')));
+  assert.ok(sent.some((s) => s.event === 'stoploss'));
+  assert.ok(beats.length >= 2 && beats.every((b) => b === true));
+});

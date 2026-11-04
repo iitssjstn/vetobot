@@ -12,7 +12,15 @@ import path from 'node:path';
 // Dit beschermt tegen uitlekken via git, backups van losse bestanden of het dashboard.
 // Wie root is op de server kan bij beide bestanden; dat is bij elke opslag op disk zo.
 
-export const SECRET_NAMES = ['bitvavoApiKey', 'bitvavoApiSecret', 'aiApiKey'];
+export const SECRET_NAMES = ['bitvavoApiKey', 'bitvavoApiSecret', 'aiApiKey', 'discordWebhook', 'heartbeatUrl'];
+
+// Extra controle voor secrets die een URL zijn, zodat een typfout direct opvalt.
+const VALIDATORS = {
+  discordWebhook: (v) =>
+    /^https:\/\/(?:(?:canary|ptb)\.)?(?:discord|discordapp)\.com\/api\/webhooks\/\d+\/[\w-]+\/?$/.test(v) ||
+    'Dat is geen Discord-webhook-URL (https://discord.com/api/webhooks/...)',
+  heartbeatUrl: (v) => /^https:\/\/[^\s]+$/.test(v) || 'De heartbeat-URL moet met https:// beginnen',
+};
 
 export class SecretStore {
   constructor(dataDir) {
@@ -64,7 +72,11 @@ export class SecretStore {
     for (const [name, value] of Object.entries(updates)) {
       if (!SECRET_NAMES.includes(name)) throw new Error(`Onbekende key "${name}"`);
       if (value === null || value === '') delete this.values[name];
-      else if (typeof value === 'string') this.values[name] = value.trim();
+      else if (typeof value === 'string') {
+        const check = VALIDATORS[name]?.(value.trim());
+        if (typeof check === 'string') throw new Error(check);
+        this.values[name] = value.trim();
+      }
       else throw new Error(`Ongeldige waarde voor "${name}"`);
     }
     this.#save();

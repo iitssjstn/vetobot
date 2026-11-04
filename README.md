@@ -124,6 +124,24 @@ De environment variables hieronder zijn alleen beginwaarden voor de allereerste 
 | `AI_TIMEOUT_MS` | `45000` | Hoe lang de bot op de AI wacht (ms) |
 | `PORT` | `3000` | Poort in de container |
 
+## Meldingen (Discord) en offline-waarschuwing
+
+Bij Instellingen → Meldingen stel je in:
+
+- **Discord-webhook**: vetobot stuurt meldingen naar een kanaal naar keuze. De webhook wordt versleuteld opgeslagen, net als de API-keys.
+- **Jouw Discord user ID**: dan word je getagd en krijg je een push-melding op je mobiel en pc.
+- **Per soort melding** of hij gestuurd wordt en of je getagd wordt: herstart, trades, stop-loss, fouten (maximaal één keer per 30 minuten per soort), dagelijkse verlieslimiet, wisselen van modus en AI-afwijzingen.
+
+Met **Testmelding sturen** controleer je of het werkt.
+
+### Melding als de server offline gaat
+
+Valt je server uit, dan kan vetobot zelf niets meer sturen. Daarom stuurt hij na elke check een heartbeat naar een externe monitor, bijvoorbeeld [healthchecks.io](https://healthchecks.io) (gratis). Bij een check met fouten gaat de ping naar `<url>/fail`. Komen de heartbeats niet meer binnen, dan stuurt de monitor de melding.
+
+1. Maak op healthchecks.io een check aan. Zet **Period** op je check-interval en **Grace Time** op bijvoorbeeld 10 minuten.
+2. Plak de ping-URL bij Heartbeat-URL in vetobot en klik op **Heartbeat testen**.
+3. Kies in healthchecks.io bij **Integrations** de **Webhook**-integratie met als URL je Discord-webhook, methode POST, header `Content-Type: application/json` en body `{"content": "<@JOUW_ID> vetobot is offline ($NAME)"}`. Dan word je getagd. Zonder tag kun je ook de Discord-integratie gebruiken.
+
 ## Live trading
 
 Doe dit pas na weken paper trading met resultaten waar je tevreden over bent.

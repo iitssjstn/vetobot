@@ -3,11 +3,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { COOKIE, readCookie } from './auth.js';
 import { SECRET_NAMES } from './secrets.js';
+import { NOTIFY_EVENTS } from './notify.js';
 import { AI_PROVIDERS, MAX_PAIRS, TIMEFRAMES, RISK_LIMITS, STRATEGY_LIMITS } from './settings.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
-export function startServer({ config, bot, settings, secrets, auth, log = console }) {
+export function startServer({ config, bot, settings, secrets, auth, notifier, log = console }) {
   const app = express();
   app.disable('x-powered-by');
   // Achter Nginx Proxy Manager: echte client-IP voor de login-blokkade.
@@ -163,6 +164,11 @@ export function startServer({ config, bot, settings, secrets, auth, log = consol
       checkIntervalMinutes: settings.checkIntervalMinutes,
       pairStatus: settings.pairs.map((pair) => ({ pair, ...bot.pairStatus[pair] })),
       activity: bot.activity.slice(0, 100),
+      notify: settings.notify,
+      notifyEvents: NOTIFY_EVENTS,
+      discordSet: keys.discordWebhook.set,
+      heartbeatSet: keys.heartbeatUrl.set,
+      lastHeartbeat: notifier?.lastHeartbeat ?? null,
       serverTime: new Date().toISOString(),
     });
   });
@@ -224,6 +230,22 @@ export function startServer({ config, bot, settings, secrets, auth, log = consol
     await bot.setSchedule({ timeframe: req.body?.timeframe, checkIntervalMinutes: req.body?.checkIntervalMinutes });
     log.info(`Planning gewijzigd door ${req.user}: ${settings.checkIntervalMinutes} min, ${settings.timeframe}`);
     return { ok: true, timeframe: settings.timeframe, checkIntervalMinutes: settings.checkIntervalMinutes, nextTickAt: bot.nextTickAt };
+  }));
+
+  app.post('/api/settings/notify', wrap((req) => {
+    settings.setNotify(req.body ?? {});
+    return { ok: true, notify: settings.notify };
+  }));
+
+  app.post('/api/settings/notify/test', wrap(async () => {
+    await notifier.test();
+  }));
+
+  app.post('/api/settings/heartbeat/test', wrap(async () => {
+    const r = await notifier.heartbeat(true);
+    if (!r) throw new Error('Er is nog geen heartbeat-URL ingesteld');
+    if (r.error) throw new Error(`Heartbeat mislukt: ${r.error}`);
+    return { ok: true, lastHeartbeat: r };
   }));
 
   app.get('/api/markets', wrap(async () => ({ markets: await bot.listMarkets() })));
