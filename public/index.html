@@ -468,6 +468,8 @@
             <div><label for="r-cool">Afkoelperiode na verkoop (min, 0 = uit)</label><input id="r-cool" type="number" min="0" max="10080" step="1" required></div>
             <div><label for="r-slip">Slippage in paper (%)</label><input id="r-slip" type="number" min="0" max="5" step="any" required></div>
             <div><label for="r-budget">Live budgetplafond (€, 0 = uit)</label><input id="r-budget" type="number" min="0" step="any" required></div>
+            <div><label for="r-trail">Trailing stop (% vanaf top, 0 = uit)</label><input id="r-trail" type="number" min="0" max="100" step="any" required></div>
+            <div><label for="r-atr">ATR-stop (× ATR, 0 = uit)</label><input id="r-atr" type="number" min="0" max="20" step="any" required></div>
             <div id="r-pass-wrap"><label for="r-pass">Je wachtwoord (verplicht in live)</label><input id="r-pass" type="password" autocomplete="current-password"></div>
           </div>
           <div class="help" id="risk-help"></div>
@@ -486,8 +488,10 @@
               <p><b>EMA (gemiddelde).</b> Een EMA is het gemiddelde van de slotkoersen over een aantal candles, waarbij de nieuwste zwaarder tellen. De <b>EMA fast</b> (bijv. 12) volgt de koers snel, de <b>EMA slow</b> (bijv. 26) is rustiger en laat de grote lijn zien.</p>
               <p><b>Kruising = signaal.</b> Gaat de snelle lijn bóven de trage lijn, dan begint de koers waarschijnlijk te stijgen: een <b>koopsignaal</b>. Gaat hij eronder, dan een <b>verkoopsignaal</b>. Kleinere getallen geven sneller signalen, maar ook vaker een vals alarm.</p>
               <p><b>RSI (oververhit).</b> De RSI loopt van 0 tot 100 en laat zien hoe hard een coin de laatste tijd gestegen is. Boven de 70 geldt een coin vaak als "oververhit": de kans op een terugval is groter. Met <b>Max RSI bij instap</b> koopt de bot niet meer als de RSI boven die grens ligt.</p>
+              <p><b>Extra filters (optioneel).</b> Ze houden alleen koopsignalen tegen, nooit verkopen. Het <b>trendfilter</b> koopt alleen boven een lange gemiddelde lijn, de <b>ADX</b> slaat zijwaartse markten over, het <b>volumefilter</b> wil meer handel dan normaal en het <b>BTC-filter</b> koopt geen altcoins als Bitcoin daalt. Elk filter geeft minder, maar meestal betere signalen.</p>
+              <p><b>Slimmer uitstappen (bij Risico &amp; inzet).</b> Een <b>trailing stop</b> schuift mee omhoog met de koers, zodat een sterke stijging niet te vroeg wordt afgekapt. Een <b>ATR-stop</b> past de stop-loss aan de beweeglijkheid van de coin aan.</p>
               <p><b>Daarna de AI.</b> Komt een koopsignaal door je regels en limieten, dan mag de AI het nog afwijzen. Verkopen (signaal, stop-loss, take-profit) gaat altijd zonder AI.</p>
-              <p><b>Voorbeeldinstellingen.</b> Een startpunt om mee te experimenteren, geen advies. Toepassen past alleen planning, stop-loss, take-profit, afkoelperiode en strategie aan; je inzet en limieten blijven gelijk.</p>
+              <p><b>Voorbeeldinstellingen.</b> Een startpunt om mee te experimenteren, geen advies. Toepassen past alleen planning, stops, take-profit, afkoelperiode, filters en strategie aan; je inzet en limieten blijven gelijk.</p>
               <div class="presets" id="presets"></div>
               <div class="msg" id="preset-msg" style="margin-top:8px"></div>
             </div>
@@ -497,6 +501,10 @@
             <div><label for="st-slow">EMA slow (candles)</label><input id="st-slow" type="number" min="3" max="1000" step="1" required></div>
             <div><label for="st-rsi">RSI-periode (candles)</label><input id="st-rsi" type="number" min="2" max="200" step="1" required></div>
             <div><label for="st-rsimax">Max RSI bij instap</label><input id="st-rsimax" type="number" min="1" max="100" step="any" required></div>
+            <div><label for="st-trend">Trendfilter: EMA (candles, 0 = uit)</label><input id="st-trend" type="number" min="0" max="1000" step="1" required></div>
+            <div><label for="st-adx">Minimale ADX (0 = uit)</label><input id="st-adx" type="number" min="0" max="100" step="any" required></div>
+            <div><label for="st-vol">Volumefilter (× normaal, 0 = uit)</label><input id="st-vol" type="number" min="0" max="20" step="any" required></div>
+            <div><label for="st-btc">BTC-filter (geen altcoins als BTC daalt)</label><select id="st-btc"><option value="0">Uit</option><option value="1">Aan</option></select></div>
             <div id="st-pass-wrap"><label for="st-pass">Je wachtwoord (verplicht in live)</label><input id="st-pass" type="password" autocomplete="current-password"></div>
           </div>
           <div class="help">Lagere EMA-waarden reageren sneller maar geven meer valse signalen. Een max RSI van 100 schakelt het RSI-filter uit.</div>
@@ -878,6 +886,7 @@ async function load() {
     ['24 candles', p => `<span class="num ${cls(p.change24)}">${pct(p.change24)}</span>`, 'r'],
     ['Trend', trend],
     ['RSI', p => `<span class="num">${p.rsi != null ? p.rsi.toFixed(1) : '–'}</span>`, 'r'],
+    ['ADX', p => `<span class="num">${p.adx != null ? p.adx.toFixed(0) : '–'}</span>`, 'r'],
     ['Laatste beoordeling', p => `<div class="reason">${judgement(p)}</div>`],
     ['Gecheckt', p => `<span class="muted">${time(p.at)}</span>`],
   ], 'Nog geen data. De eerste check loopt.', 'chart');
@@ -1057,6 +1066,10 @@ function renderSettings() {
     $('st-slow').value = s.strategy.emaSlow;
     $('st-rsi').value = s.strategy.rsiPeriod;
     $('st-rsimax').value = s.strategy.rsiMaxEntry;
+    $('st-trend').value = s.strategy.trendEma ?? 0;
+    $('st-adx').value = s.strategy.adxMin ?? 0;
+    $('st-vol').value = s.strategy.volumeMult ?? 0;
+    $('st-btc').value = String(s.strategy.btcFilter ?? 0);
   }
   if (!document.activeElement?.closest('#risk-form') && !riskDirty) {
     $('r-stake').value = s.risk.stakeEur;
@@ -1068,6 +1081,8 @@ function renderSettings() {
     $('r-cool').value = s.risk.cooldownMinutes ?? 0;
     $('r-slip').value = s.risk.slippagePct ?? 0;
     $('r-budget').value = s.risk.liveBudgetEur ?? 0;
+    $('r-trail').value = s.risk.trailingStopPct ?? 0;
+    $('r-atr').value = s.risk.atrStopMult ?? 0;
     riskHelp();
   }
   if (!document.activeElement?.closest('#sched-form') && !schedDirty) {
@@ -1183,11 +1198,18 @@ function riskHelp() {
   const total = stake * max;
   const parts = [
     `Elke trade is precies ${eur2(stake)}, en per coin staat er hooguit één positie open.`,
-    `Maximaal tegelijk ingezet: <b>${eur2(Number($('r-budget').value) > 0 ? Math.min(total, Number($('r-budget').value)) : total)}</b> (${max} × ${eur2(stake)}${Number($('r-budget').value) > 0 && Number($('r-budget').value) < total ? `, begrensd door je live budgetplafond van ${eur2(Number($('r-budget').value))}` : ''}).`,
-    sl > 0 ? `Verlies per trade bij de stop-loss: ongeveer ${eur2(stake * sl / 100)}, plus fees.`
+    (() => {
+      const budget = state?.mode === 'live' ? Number($('r-budget').value) : 0;
+      const capped = budget > 0 && budget < total;
+      return `Maximaal tegelijk ingezet: <b>${eur2(capped ? budget : total)}</b> (${max} × ${eur2(stake)}${capped ? `, begrensd door je live budgetplafond van ${eur2(budget)}` : ''}).` +
+        (state?.mode !== 'live' && Number($('r-budget').value) > 0 ? ` Live begrenst het budgetplafond dit op ${eur2(Math.min(total, Number($('r-budget').value)))}.` : '');
+    })(),
+    Number($('r-atr').value) > 0 ? `De ATR-stop vervangt de vaste stop-loss: hij ligt op instapkoers − ${$('r-atr').value} × ATR, dus ruimer bij beweeglijke coins en krapper bij rustige.`
+    : sl > 0 ? `Verlies per trade bij de stop-loss: ongeveer ${eur2(stake * sl / 100)}, plus fees.`
       : '<span class="warnc">Stop-loss staat uit: een positie wordt alleen verkocht bij een verkoopsignaal of take-profit.</span>',
   ];
   if (tp === 0) parts.push('<span class="muted">Take-profit staat uit.</span>');
+  if (Number($('r-trail').value) > 0) parts.push(`Trailing stop: verkoopt als de koers ${String($('r-trail').value).replace('.', ',')}% onder het hoogste punt sinds aankoop zakt.`);
   const cool = Number($('r-cool').value), slip = Number($('r-slip').value), fee = Number($('r-fee').value);
   parts.push(cool > 0 ? `Na een verkoop wordt dezelfde coin ${cool} min niet opnieuw gekocht.`
     : '<span class="warnc">Afkoelperiode uit: na een verkoop kan hij dezelfde coin direct weer kopen.</span>');
@@ -1204,7 +1226,8 @@ $('risk-form').onsubmit = async (e) => {
   e.preventDefault();
   const risk = { stakeEur: $('r-stake').value, maxOpenTrades: $('r-max').value, maxDailyLossEur: $('r-daily').value,
     stopLossPct: $('r-sl').value, takeProfitPct: $('r-tp').value, feePct: $('r-fee').value,
-    cooldownMinutes: $('r-cool').value, slippagePct: $('r-slip').value, liveBudgetEur: $('r-budget').value };
+    cooldownMinutes: $('r-cool').value, slippagePct: $('r-slip').value, liveBudgetEur: $('r-budget').value,
+    trailingStopPct: $('r-trail').value, atrStopMult: $('r-atr').value };
   if (state.mode === 'live' && !$('r-pass').value) { $('risk-msg').className = 'msg err'; $('risk-msg').textContent = 'Vul je wachtwoord in'; return; }
   try {
     await api('api/settings/risk', { risk, password: $('r-pass').value });
@@ -1304,6 +1327,12 @@ const HELP = {
   'st-slow': 'Aantal candles voor de trage gemiddelde lijn, die de grote trend laat zien. Moet groter zijn dan de EMA fast. Gebruikelijk: 2 tot 3× de EMA fast, bijv. 21 of 26.',
   'st-rsi': 'Over hoeveel candles de RSI wordt berekend. 14 is de standaard. Lager = gevoeliger, hoger = rustiger.',
   'st-rsimax': 'Boven deze RSI koopt de bot niet, omdat de coin dan al hard gestegen is en de kans op terugval groter is. 70 is gebruikelijk; 100 = filter uit.',
+  'st-trend': 'Koop alleen als de koers boven een lange gemiddelde lijn ligt, zodat de bot niet koopt op een kort opveren in een dalende markt. <b>Gebruikelijk:</b> 200 candles bij 15m- of 1h-candles, 50 tot 100 bij 5m. 0 = uit. Hoe groter, hoe meer candles hij moet ophalen.',
+  'st-adx': 'De ADX (0–100) meet hoe sterk een trend is, ongeacht de richting. Onder de 20 beweegt de markt meestal zijwaarts, en dan kruisen de lijnen vaak heen en weer zonder echte beweging. <b>Gebruikelijk:</b> 20 tot 25. 0 = uit.',
+  'st-vol': 'Koop alleen als het volume op de kruising zoveel keer hoger is dan normaal (gemiddelde van de 20 candles ervoor). Een kruising zonder volume is vaak loos. <b>Gebruikelijk:</b> 1,2 tot 2. 0 = uit. Te hoog en er komen bijna geen signalen meer.',
+  'st-btc': 'Bijna alle coins bewegen mee met Bitcoin. Met dit filter koopt de bot geen andere coins zolang BTC onder zijn gemiddelde van 50 candles ligt. BTC zelf wordt niet gefilterd.',
+  'r-trail': 'De stop schuift mee omhoog met de koers. Bij 2% verkoopt de bot zodra de koers 2% onder het hoogste punt sinds aankoop zakt. Zo laat je winnaars doorlopen en zet je winst vast. Werkt naast de stop-loss en take-profit; zet de take-profit op 0 om winnaars echt te laten lopen. 0 = uit.',
+  'r-atr': 'Een stop-loss die meebeweegt met de beweeglijkheid van de coin. De ATR is hoeveel een coin gemiddeld per candle beweegt. Bij 2 ligt de stop op instapkoers − 2 × ATR: ruimer bij wilde coins, krapper bij rustige. <b>Vervangt</b> de vaste stop-loss als hij aan staat. <b>Gebruikelijk:</b> 1,5 tot 3. 0 = uit.',
   'paper-start': 'Het nep-saldo waarmee paper trading begint. Kies een bedrag dat lijkt op wat je live zou inzetten, dan zijn de resultaten beter te vergelijken.',
   'ai-fail': 'Wat er met een koopsignaal gebeurt als geen enkel AI-model antwoordt (fouten, tegoed op). <b>Afwijzen</b> is het veiligst: geen AI, geen trade. <b>Doorlaten</b> betekent dat alleen je eigen regels beslissen.',
 };
@@ -1335,21 +1364,22 @@ initHelp();
 // ---------- Voorbeeldinstellingen ----------
 const PRESETS = [
   { name: 'Rustig', desc: 'Weinig trades, volgt de grote trend.',
-    schedule: { timeframe: '1h', checkIntervalMinutes: 15 }, risk: { stopLossPct: 4, takeProfitPct: 8, cooldownMinutes: 120 },
-    strategy: { emaFast: 12, emaSlow: 26, rsiPeriod: 14, rsiMaxEntry: 70 } },
+    schedule: { timeframe: '1h', checkIntervalMinutes: 15 }, risk: { stopLossPct: 4, takeProfitPct: 0, cooldownMinutes: 120, trailingStopPct: 4, atrStopMult: 0 },
+    strategy: { emaFast: 12, emaSlow: 26, rsiPeriod: 14, rsiMaxEntry: 70, trendEma: 200, adxMin: 20, volumeMult: 0, btcFilter: 1 } },
   { name: 'Gemiddeld', desc: 'Een paar trades per dag per coin.',
-    schedule: { timeframe: '15m', checkIntervalMinutes: 5 }, risk: { stopLossPct: 2.5, takeProfitPct: 5, cooldownMinutes: 45 },
-    strategy: { emaFast: 9, emaSlow: 21, rsiPeriod: 14, rsiMaxEntry: 70 } },
+    schedule: { timeframe: '15m', checkIntervalMinutes: 5 }, risk: { stopLossPct: 2.5, takeProfitPct: 0, cooldownMinutes: 45, trailingStopPct: 2.5, atrStopMult: 2 },
+    strategy: { emaFast: 9, emaSlow: 21, rsiPeriod: 14, rsiMaxEntry: 70, trendEma: 200, adxMin: 20, volumeMult: 1.2, btcFilter: 1 } },
   { name: 'Actief', desc: 'Veel trades, reageert snel. Meer ruis en fees.',
-    schedule: { timeframe: '5m', checkIntervalMinutes: 5 }, risk: { stopLossPct: 1.5, takeProfitPct: 3, cooldownMinutes: 15 },
-    strategy: { emaFast: 5, emaSlow: 13, rsiPeriod: 14, rsiMaxEntry: 75 } },
+    schedule: { timeframe: '5m', checkIntervalMinutes: 1 }, risk: { stopLossPct: 1.5, takeProfitPct: 3, cooldownMinutes: 15, trailingStopPct: 1.5, atrStopMult: 0 },
+    strategy: { emaFast: 5, emaSlow: 13, rsiPeriod: 14, rsiMaxEntry: 75, trendEma: 100, adxMin: 15, volumeMult: 0, btcFilter: 0 } },
 ];
 const TF_LABEL = { '1m': '1 min', '5m': '5 min', '15m': '15 min', '30m': '30 min', '1h': '1 uur', '2h': '2 uur', '4h': '4 uur', '1d': '1 dag' };
 $('presets').innerHTML = PRESETS.map((p, i) => `<div class="preset"><h4>${p.name}</h4><div class="muted">${p.desc}</div><ul class="muted">
   <li>${TF_LABEL[p.schedule.timeframe]}-candles, check elke ${p.schedule.checkIntervalMinutes} min</li>
   <li>EMA ${p.strategy.emaFast} / ${p.strategy.emaSlow}, max RSI ${p.strategy.rsiMaxEntry}</li>
-  <li>Stop-loss ${String(p.risk.stopLossPct).replace('.', ',')}%, take-profit ${String(p.risk.takeProfitPct).replace('.', ',')}%</li>
-  <li>Afkoelperiode ${p.risk.cooldownMinutes} min</li></ul>
+  <li>Stop-loss ${String(p.risk.stopLossPct).replace('.', ',')}%, take-profit ${p.risk.takeProfitPct ? `${String(p.risk.takeProfitPct).replace('.', ',')}%` : 'uit (trailing stop neemt het over)'}</li>
+  <li>Afkoelperiode ${p.risk.cooldownMinutes} min, trailing stop ${String(p.risk.trailingStopPct).replace('.', ',')}%${p.risk.atrStopMult ? `, ATR-stop ${p.risk.atrStopMult}×` : ''}</li>
+  <li>Filters: trend-EMA ${p.strategy.trendEma}, ADX ${p.strategy.adxMin}${p.strategy.volumeMult ? `, volume ${String(p.strategy.volumeMult).replace('.', ',')}×` : ''}${p.strategy.btcFilter ? ', BTC-filter' : ''}</li></ul>
   <button class="btn sm" type="button" data-preset="${i}">Toepassen</button></div>`).join('');
 $('presets').addEventListener('click', async (e) => {
   const b = e.target.closest('[data-preset]'); if (!b) return;
@@ -1375,7 +1405,8 @@ let stratDirty = false;
 document.querySelectorAll('#strat-form input[type=number]').forEach(i => i.oninput = () => { stratDirty = true; });
 $('strat-form').onsubmit = async (e) => {
   e.preventDefault();
-  const strategy = { emaFast: $('st-fast').value, emaSlow: $('st-slow').value, rsiPeriod: $('st-rsi').value, rsiMaxEntry: $('st-rsimax').value };
+  const strategy = { emaFast: $('st-fast').value, emaSlow: $('st-slow').value, rsiPeriod: $('st-rsi').value, rsiMaxEntry: $('st-rsimax').value,
+    trendEma: $('st-trend').value, adxMin: $('st-adx').value, volumeMult: $('st-vol').value, btcFilter: $('st-btc').value };
   if (state.mode === 'live' && !$('st-pass').value) { $('strat-msg').className = 'msg err'; $('strat-msg').textContent = 'Vul je wachtwoord in'; return; }
   try {
     await api('api/settings/strategy', { strategy, password: $('st-pass').value });

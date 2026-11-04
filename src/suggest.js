@@ -8,6 +8,12 @@ export const SUGGESTABLE = {
   emaSlow: { group: 'strategy', label: 'EMA slow', int: true, limits: STRATEGY_LIMITS.emaSlow },
   rsiPeriod: { group: 'strategy', label: 'RSI-periode', int: true, limits: STRATEGY_LIMITS.rsiPeriod },
   rsiMaxEntry: { group: 'strategy', label: 'Max RSI bij instap', limits: STRATEGY_LIMITS.rsiMaxEntry },
+  trendEma: { group: 'strategy', label: 'Trend-EMA', int: true, limits: STRATEGY_LIMITS.trendEma },
+  adxMin: { group: 'strategy', label: 'Minimale ADX', limits: STRATEGY_LIMITS.adxMin },
+  volumeMult: { group: 'strategy', label: 'Volumefilter (×)', limits: STRATEGY_LIMITS.volumeMult },
+  btcFilter: { group: 'strategy', label: 'BTC-filter (1 = aan)', int: true, limits: STRATEGY_LIMITS.btcFilter },
+  trailingStopPct: { group: 'risk', label: 'Trailing stop (%)', limits: RISK_LIMITS.trailingStopPct },
+  atrStopMult: { group: 'risk', label: 'ATR-stop (×)', limits: RISK_LIMITS.atrStopMult },
   stopLossPct: { group: 'risk', label: 'Stop-loss (%)', limits: RISK_LIMITS.stopLossPct },
   takeProfitPct: { group: 'risk', label: 'Take-profit (%)', limits: RISK_LIMITS.takeProfitPct },
   cooldownMinutes: { group: 'risk', label: 'Afkoelperiode (min)', int: true, limits: RISK_LIMITS.cooldownMinutes },
@@ -21,6 +27,8 @@ export function currentValues(bot) {
     stopLossPct: bot.risk.stopLossPct,
     takeProfitPct: bot.risk.takeProfitPct,
     cooldownMinutes: bot.risk.cooldownMinutes,
+    trailingStopPct: bot.risk.trailingStopPct ?? 0,
+    atrStopMult: bot.risk.atrStopMult ?? 0,
     timeframe: bot.settings.timeframe,
     checkIntervalMinutes: bot.settings.checkIntervalMinutes,
   };
@@ -61,20 +69,9 @@ export async function applySuggestions(bot, suggestions, keys) {
   const val = (k, fallback) => chosen.find((s) => s.key === k)?.to ?? fallback;
   const groups = new Set(chosen.map((s) => s.group));
 
-  if (groups.has('strategy')) {
-    const s = bot.strategy;
-    await bot.setStrategy({
-      emaFast: val('emaFast', s.emaFast),
-      emaSlow: val('emaSlow', s.emaSlow),
-      rsiPeriod: val('rsiPeriod', s.rsiPeriod),
-      rsiMaxEntry: val('rsiMaxEntry', s.rsiMaxEntry),
-    });
-  }
-  if (groups.has('risk')) {
-    const r = bot.settings.risk;
-    await bot.setRisk({ ...r, stopLossPct: val('stopLossPct', r.stopLossPct), takeProfitPct: val('takeProfitPct', r.takeProfitPct),
-      cooldownMinutes: val('cooldownMinutes', r.cooldownMinutes) });
-  }
+  const pick = (group) => Object.fromEntries(chosen.filter((x) => x.group === group).map((x) => [x.key, x.to]));
+  if (groups.has('strategy')) await bot.setStrategy({ ...bot.settings.strategy, ...pick('strategy') });
+  if (groups.has('risk')) await bot.setRisk({ ...bot.settings.risk, ...pick('risk') });
   if (groups.has('schedule')) {
     await bot.setSchedule({
       timeframe: val('timeframe', bot.settings.timeframe),

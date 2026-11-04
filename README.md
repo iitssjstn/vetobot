@@ -105,7 +105,8 @@ In het dashboard onder **Instellingen** regel je:
 - **Handelsmodus**: paper of live (zie hieronder)
 - **Planning**: hoe vaak de bot checkt (10 seconden tot 60 minuten) en de candle-tijd (1 minuut tot 1 dag). Checks onder de minuut geven geen extra koopsignalen, maar de stop-loss en take-profit reageren sneller. Het dashboard waarschuwt als je met veel coins tegen de rate limit van Bitvavo aanloopt.
 - **Risico & inzet**: inzet per trade, maximaal aantal open trades, stop-loss, take-profit, dagelijkse verlieslimiet (telt ook open verliezen mee), fee, afkoelperiode na een verkoop en slippage in paper. Stop-loss, take-profit en daglimiet kun je met 0 uitzetten
-- **Strategie**: EMA fast, EMA slow, RSI-periode en de maximale RSI bij instap
+- **Strategie**: EMA fast, EMA slow, RSI-periode, maximale RSI bij instap, en optionele filters: trend-EMA (alleen kopen boven de lange trend), minimale ADX (zijwaartse markten overslaan), volumefilter en BTC-filter (geen altcoins als Bitcoin daalt)
+- **Slimmer uitstappen**: trailing stop vanaf het hoogste punt sinds aankoop, en een ATR-stop die de vaste stop-loss vervangt en meebeweegt met de beweeglijkheid van de coin
 - **Paper-account**: opnieuw beginnen met een zelfgekozen startsaldo
 - **Coins**: kies uit alle EUR-markten op Bitvavo, gesorteerd op volume, maximaal 100
 - **AI-veto**: provider, model, base-URL en wat er gebeurt als de AI faalt

@@ -611,6 +611,7 @@ export class Bot {
       at: new Date().toISOString(),
       price: ind?.close ?? null,
       rsi: ind?.rsi ?? null,
+      adx: ind?.adx ?? null,
       trend: ind ? (ind.emaFast > ind.emaSlow ? 'up' : 'down') : null,
       change24: ind?.change24 ?? null,
       signal: result.signal,
