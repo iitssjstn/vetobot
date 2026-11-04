@@ -56,6 +56,8 @@ const run = () => {
   return bot.tick().catch((err) => console.error('Tick mislukt:', err));
 };
 bot.onScheduleChange = schedule;
+// Een handmatige check vanuit het dashboard start de aftelling ook opnieuw.
+bot.runNow = run;
 run();
 
 function shutdown(sig) {

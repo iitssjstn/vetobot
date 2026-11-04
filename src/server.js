@@ -178,8 +178,8 @@ export function startServer({ config, bot, settings, secrets, auth, log = consol
   }));
 
   app.post('/api/tick', wrap(async () => {
-    await bot.tick();
-    return { ok: true, lastTickAt: bot.lastTickAt };
+    await (bot.runNow ? bot.runNow() : bot.tick());
+    return { ok: true, lastTickAt: bot.lastTickAt, nextTickAt: bot.nextTickAt };
   }));
 
   app.post('/api/positions/close', wrap(async (req) => {
