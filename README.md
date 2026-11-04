@@ -134,6 +134,12 @@ Bij Instellingen → Meldingen stel je in:
 
 Met **Testmelding sturen** controleer je of het werkt.
 
+### Dagelijks overzicht
+
+Elke dag op een tijd naar keuze (standaard 08:00) stuurt vetobot een overzicht van de afgelopen 24 uur naar Discord: resultaat, winrate, signalen, saldo en open posities, met een korte analyse door de AI van hoe het ging en wat opvalt. Dat kost één AI-call per dag. Faalt de AI, dan komt het overzicht er zonder analyse. Het laatste overzicht staat ook op het dashboard. Met **Overzicht nu versturen** maak je er direct een.
+
+Start vetobot pas na de ingestelde tijd op, dan komt het overzicht van die dag direct na het opstarten.
+
 ### Melding als de server offline gaat
 
 Valt je server uit, dan kan vetobot zelf niets meer sturen. Daarom stuurt hij na elke check een heartbeat naar een externe monitor, bijvoorbeeld [healthchecks.io](https://healthchecks.io) (gratis). Bij een check met fouten gaat de ping naar `<url>/fail`. Komen de heartbeats niet meer binnen, dan stuurt de monitor de melding.

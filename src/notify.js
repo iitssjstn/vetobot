@@ -16,6 +16,7 @@ export const NOTIFY_EVENTS = {
   dailyLimit: 'Dagelijkse verlieslimiet bereikt',
   mode: 'Gewisseld tussen paper en live',
   aiVeto: 'Koopsignaal afgewezen door de AI',
+  dailySummary: 'Dagelijks overzicht',
 };
 
 const COLORS = { info: 0x5aa9f0, ok: 0x3ccf8e, warn: 0xf0b24a, error: 0xf26d6d, live: 0xf26d6d };

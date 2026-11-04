@@ -27,8 +27,9 @@ export const STRATEGY_LIMITS = {
 export const AI_FAIL_MODES = ['reject', 'approve'];
 const NOTIFY_DEFAULTS = {
   discordUserId: '',
-  events: { startup: true, trades: true, stoploss: true, errors: true, dailyLimit: true, mode: true, aiVeto: false },
-  mentions: { startup: true, trades: false, stoploss: true, errors: true, dailyLimit: true, mode: true, aiVeto: false },
+  events: { startup: true, trades: true, stoploss: true, errors: true, dailyLimit: true, mode: true, aiVeto: false, dailySummary: true },
+  mentions: { startup: true, trades: false, stoploss: true, errors: true, dailyLimit: true, mode: true, aiVeto: false, dailySummary: false },
+  summaryTime: '08:00',
 };
 const RISK_LABELS = {
   stakeEur: 'Inzet per trade',
@@ -77,7 +78,9 @@ export class Settings {
         discordUserId: saved.notify?.discordUserId ?? NOTIFY_DEFAULTS.discordUserId,
         events: { ...NOTIFY_DEFAULTS.events, ...saved.notify?.events },
         mentions: { ...NOTIFY_DEFAULTS.mentions, ...saved.notify?.mentions },
+        summaryTime: saved.notify?.summaryTime ?? NOTIFY_DEFAULTS.summaryTime,
       },
+      summaryLastSent: saved.summaryLastSent ?? null,
       modeChangedAt: saved.modeChangedAt ?? null,
     };
   }
@@ -115,15 +118,25 @@ export class Settings {
     return this.data.notify;
   }
 
-  setNotify({ discordUserId, events, mentions }) {
-    const id = String(discordUserId ?? '').trim();
+  setNotify({ discordUserId, events, mentions, summaryTime }) {
+    const id = String(discordUserId ?? this.data.notify.discordUserId ?? '').trim();
     if (id && !/^\d{15,22}$/.test(id)) throw new Error('Een Discord user ID bestaat uit 15 tot 22 cijfers');
     const pick = (src, def) => Object.fromEntries(Object.keys(def).map((k) => [k, Boolean(src?.[k])]));
+    const time = String(summaryTime ?? this.data.notify.summaryTime).trim();
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new Error('Tijd voor het dagoverzicht moet de vorm UU:MM hebben, bijv. 08:00');
     this.data.notify = {
+      summaryTime: time,
       discordUserId: id,
-      events: pick(events, NOTIFY_DEFAULTS.events),
-      mentions: pick(mentions, NOTIFY_DEFAULTS.mentions),
+      // Ontbreekt een lijst in het verzoek, dan blijven de huidige keuzes staan.
+      events: pick(events ?? this.data.notify.events, NOTIFY_DEFAULTS.events),
+      mentions: pick(mentions ?? this.data.notify.mentions, NOTIFY_DEFAULTS.mentions),
     };
+    this.#save();
+  }
+
+  // Datum (JJJJ-MM-DD, lokale tijd) waarop het laatste dagoverzicht is verstuurd.
+  markSummarySent(date) {
+    this.data.summaryLastSent = date;
     this.#save();
   }
 

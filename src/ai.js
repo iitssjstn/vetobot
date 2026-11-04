@@ -56,7 +56,8 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   }
 }
 
-async function askGemini(cfg, prompt) {
+// system en json zijn optioneel, zodat dezelfde functies ook het dagoverzicht kunnen schrijven.
+async function askGemini(cfg, prompt, { system = SYSTEM_PROMPT, json = true, temperature = 0.2 } = {}) {
   const model = cfg.model || defaultModel('gemini');
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
   const data = await fetchWithTimeout(
@@ -65,9 +66,9 @@ async function askGemini(cfg, prompt) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': cfg.apiKey },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        systemInstruction: { parts: [{ text: system }] },
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.2, responseMimeType: 'application/json' },
+        generationConfig: { temperature, ...(json ? { responseMimeType: 'application/json' } : {}) },
       }),
     },
     cfg.timeoutMs,
@@ -75,8 +76,8 @@ async function askGemini(cfg, prompt) {
   return data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join('') ?? '';
 }
 
-async function askOpenAICompatible(cfg, prompt) {
-  const model = cfg.model || 'llama-3.3-70b-versatile';
+async function askOpenAICompatible(cfg, prompt, { system = SYSTEM_PROMPT, json = true, temperature = 0.2 } = {}) {
+  const model = cfg.model || defaultModel('openai');
   const data = await fetchWithTimeout(
     `${cfg.baseUrl.replace(/\/$/, '')}/chat/completions`,
     {
@@ -84,10 +85,10 @@ async function askOpenAICompatible(cfg, prompt) {
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey}` },
       body: JSON.stringify({
         model,
-        temperature: 0.2,
-        response_format: { type: 'json_object' },
+        temperature,
+        ...(json ? { response_format: { type: 'json_object' } } : {}),
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'system', content: system },
           { role: 'user', content: prompt },
         ],
       }),
@@ -95,6 +96,21 @@ async function askOpenAICompatible(cfg, prompt) {
     cfg.timeoutMs,
   );
   return data?.choices?.[0]?.message?.content ?? '';
+}
+
+const SUMMARY_PROMPT = `Je schrijft het dagelijkse overzicht van een crypto trading bot voor de eigenaar.
+Schrijf in het Nederlands, zakelijk en concreet, maximaal 120 woorden, zonder opsommingstekens of kopjes.
+Behandel: hoe het de afgelopen 24 uur ging, wat opvalt in de markt voor de gevolgde coins, en of de
+huidige instellingen passen bij wat je ziet (bijv. veel stop-losses, geen enkel signaal, veel AI-afwijzingen).
+Verzin geen cijfers die niet in de data staan. Geef geen garanties en voorspel geen koersen.`;
+
+// Schrijft de korte analyse voor het dagoverzicht. Gooit bij een fout; de aanroeper vangt dat op.
+export async function writeSummary(cfg, data) {
+  if (cfg.provider === 'none' || !cfg.apiKey) return null;
+  const prompt = `Data van de bot (JSON):\n${JSON.stringify(data, null, 1)}`;
+  const opts = { system: SUMMARY_PROMPT, json: false, temperature: 0.4 };
+  const text = cfg.provider === 'gemini' ? await askGemini(cfg, prompt, opts) : await askOpenAICompatible(cfg, prompt, opts);
+  return String(text ?? '').trim().slice(0, 1500) || null;
 }
 
 // Voor de testknop in het dashboard: dezelfde aanroep als een echte veto, maar

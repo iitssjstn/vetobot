@@ -169,6 +169,7 @@ export function startServer({ config, bot, settings, secrets, auth, notifier, lo
       discordSet: keys.discordWebhook.set,
       heartbeatSet: keys.heartbeatUrl.set,
       lastHeartbeat: notifier?.lastHeartbeat ?? null,
+      lastSummary: bot.store.state.lastSummary ?? null,
       serverTime: new Date().toISOString(),
     });
   });
@@ -236,6 +237,8 @@ export function startServer({ config, bot, settings, secrets, auth, notifier, lo
     settings.setNotify(req.body ?? {});
     return { ok: true, notify: settings.notify };
   }));
+
+  app.post('/api/summary/now', wrap(async () => ({ ok: true, summary: await bot.dailySummary() })));
 
   app.post('/api/settings/notify/test', wrap(async () => {
     await notifier.test();

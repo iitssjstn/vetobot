@@ -1,5 +1,5 @@
 import { evaluate } from './strategy.js';
-import { askVeto, testConnection, listModels, defaultModel } from './ai.js';
+import { askVeto, testConnection, listModels, defaultModel, writeSummary } from './ai.js';
 import { TIMEFRAME_MINUTES } from './settings.js';
 import { fetchClosedCandles, fetchPrice, hasTradingKeys } from './exchange.js';
 import { checkEntry } from './risk.js';
@@ -119,6 +119,84 @@ export class Bot {
       .sort((a, b) => (b.volumeEur ?? 0) - (a.volumeEur ?? 0));
     this.marketCache = { at: Date.now(), list };
     return list;
+  }
+
+  // Verzamelt de cijfers van de afgelopen 24 uur, laat de AI er een korte analyse bij
+  // schrijven en verstuurt het naar Discord. Een AI-fout houdt het overzicht niet tegen.
+  async dailySummary() {
+    const since = Date.now() - 24 * 3600 * 1000;
+    const s = this.store.state;
+    const trades = s.trades.filter((t) => new Date(t.closedAt).getTime() >= since);
+    const decisions = s.decisions.filter((d) => new Date(d.at).getTime() >= since);
+    const pnl = trades.reduce((a, t) => a + t.pnlEur, 0);
+    const wins = trades.filter((t) => t.pnlEur > 0).length;
+    const positions = Object.values(s.positions).map((p) => {
+      const price = this.pairStatus[p.pair]?.price ?? null;
+      return { pair: p.pair, entryPrice: p.entryPrice, price, changePct: price ? ((price - p.entryPrice) / p.entryPrice) * 100 : null };
+    });
+    const count = (o) => decisions.filter((d) => d.outcome === o).length;
+    const data = {
+      mode: this.mode,
+      periode: 'afgelopen 24 uur',
+      saldo: this.mode === 'live' ? this.liveBalance : { paperEur: s.balanceEur, startEur: s.startBalanceEur },
+      trades: trades.map((t) => ({ pair: t.pair, pnlEur: +t.pnlEur.toFixed(2), pnlPct: +t.pnlPct.toFixed(2), exit: t.exitReason })),
+      resultaatEur: +pnl.toFixed(2),
+      openPosities: positions.map((p) => ({ ...p, changePct: p.changePct == null ? null : +p.changePct.toFixed(2) })),
+      signalen: { totaal: decisions.length, goedgekeurd: count('approved'), afgewezenDoorAi: count('vetoed'), geblokkeerd: count('blocked') },
+      aiRedenenAfwijzing: decisions.filter((d) => d.outcome === 'vetoed').slice(0, 5).map((d) => `${d.pair}: ${d.reason}`),
+      markt: this.settings.pairs.map((p) => {
+        const ps = this.pairStatus[p] ?? {};
+        return { pair: p, price: ps.price ?? null, trend: ps.trend ?? null, rsi: ps.rsi != null ? +ps.rsi.toFixed(1) : null,
+          change24Candles: ps.change24 != null ? +ps.change24.toFixed(2) : null };
+      }),
+      instellingen: { ...this.risk, ...this.strategy, timeframe: this.settings.timeframe, checkIntervalMin: this.settings.checkIntervalMinutes },
+    };
+
+    let analysis = null;
+    let aiError = null;
+    try {
+      analysis = await writeSummary({ ...this.config.ai, ...this.settings.ai, apiKey: this.secrets?.get('aiApiKey') }, data);
+    } catch (err) {
+      aiError = err.message;
+    }
+
+    const eur = (n) => `${n < 0 ? '−' : ''}€ ${Math.abs(n).toFixed(2)}`;
+    const summary = {
+      at: new Date().toISOString(),
+      mode: this.mode,
+      trades: trades.length,
+      wins,
+      pnlEur: pnl,
+      signals: data.signalen,
+      openPositions: positions,
+      analysis,
+      aiError,
+    };
+    s.lastSummary = summary;
+    this.store.save();
+
+    const fields = [
+      { name: 'Resultaat 24u', value: `${eur(pnl)} uit ${trades.length} trade${trades.length === 1 ? '' : 's'}` },
+      { name: 'Winrate', value: trades.length ? `${Math.round((wins / trades.length) * 100)}%` : '–' },
+      { name: 'Signalen', value: `${data.signalen.totaal} (✓ ${data.signalen.goedgekeurd} · ✗ ${data.signalen.afgewezenDoorAi} · ⏸ ${data.signalen.geblokkeerd})` },
+      {
+        name: 'Saldo',
+        value: this.mode === 'live'
+          ? (this.liveBalance ? `€ ${this.liveBalance.eurFree.toFixed(2)} vrij` : 'onbekend')
+          : `€ ${s.balanceEur.toFixed(2)} (paper)`,
+      },
+    ];
+    if (positions.length) {
+      fields.push({
+        name: 'Open posities',
+        value: positions.map((p) => `${p.pair} ${p.changePct == null ? '' : `${p.changePct >= 0 ? '+' : ''}${p.changePct.toFixed(2)}%`}`).join('\n'),
+        inline: false,
+      });
+    }
+    const message = analysis ?? (aiError ? `Geen AI-analyse: ${aiError}` : 'Geen AI ingesteld, dus alleen de cijfers.');
+    this.#event('info', null, `Dagoverzicht gemaakt${analysis ? ' met AI-analyse' : ''}`);
+    await this.notifier?.send('dailySummary', { title: `Dagoverzicht · ${eur(pnl)}`, message, level: pnl >= 0 ? 'ok' : 'warn', fields });
+    return summary;
   }
 
   listAiModels() {

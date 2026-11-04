@@ -197,3 +197,39 @@ test('na elke check staat er een samenvatting in het log', async () => {
   await openPaperPosition(bot, ex);
   assert.ok(bot.activity.some((a) => /1 koopsignaal/.test(a.message) && /1 gekocht/.test(a.message)));
 });
+
+test('dagoverzicht: cijfers van 24 uur, verstuurd ook als de AI faalt', async () => {
+  const { bot, ex } = setup({});
+  const sent = [];
+  bot.notifier = { send: async (event, payload) => { sent.push({ event, ...payload }); return true; }, heartbeat: async () => null };
+  await bot.setRisk({ stakeEur: 25, maxOpenTrades: 1, stopLossPct: 5, takeProfitPct: 0, maxDailyLossEur: 0, feePct: 0 });
+  await openPaperPosition(bot, ex);
+  ex.fetchTicker = async () => ({ last: 10 });
+  await bot.tick(); // stop-loss
+
+  // Zonder AI: alleen de cijfers
+  let sum = await bot.dailySummary();
+  assert.equal(sum.trades, 1);
+  assert.ok(sum.pnlEur < 0);
+  assert.equal(sum.analysis, null);
+  const msg = sent.find((s) => s.event === 'dailySummary');
+  assert.match(msg.title, /Dagoverzicht/);
+  assert.match(msg.message, /Geen AI ingesteld/);
+  assert.equal(bot.store.state.lastSummary.trades, 1);
+
+  // Met een AI die faalt: overzicht komt er toch, met de reden
+  bot.settings.setAi({ provider: 'openai', model: 'x', baseUrl: 'http://127.0.0.1:9', failMode: 'reject' });
+  bot.secrets = { get: () => 'key' };
+  bot.config.ai = { ...bot.config.ai, timeoutMs: 500 };
+  sum = await bot.dailySummary();
+  assert.ok(sum.aiError);
+  assert.match(sent.at(-1).message, /Geen AI-analyse/);
+});
+
+test('tijd voor het dagoverzicht wordt gevalideerd', () => {
+  const { settings } = setup({});
+  assert.throws(() => settings.setNotify({ summaryTime: '25:00' }), /UU:MM/);
+  settings.setNotify({ summaryTime: '07:30' });
+  assert.equal(settings.notify.summaryTime, '07:30');
+  assert.equal(settings.notify.events.trades, true, 'andere keuzes blijven staan');
+});

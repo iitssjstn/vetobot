@@ -64,6 +64,7 @@ const server = startServer({ config, bot, settings, secrets, auth, notifier });
 let timer;
 const schedule = () => {
   clearTimeout(timer);
+  clearInterval(summaryTimer);
   const ms = settings.checkIntervalMinutes * 60 * 1000;
   bot.nextTickAt = new Date(Date.now() + ms).toISOString();
   timer = setTimeout(run, ms);
@@ -75,6 +76,19 @@ const run = () => {
 bot.onScheduleChange = schedule;
 // Een handmatige check vanuit het dashboard start de aftelling ook opnieuw.
 bot.runNow = run;
+
+// Dagoverzicht: elke minuut kijken of het tijd is, en per dag maar één keer versturen
+// (ook als de container rond dat tijdstip herstart).
+const localDate = (d = new Date()) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const summaryTimer = setInterval(() => {
+  const now = new Date();
+  const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const today = localDate(now);
+  if (!settings.notify.events.dailySummary || hhmm < settings.notify.summaryTime || settings.data.summaryLastSent === today) return;
+  settings.markSummarySent(today);
+  bot.dailySummary().catch((err) => console.error('Dagoverzicht mislukt:', err));
+}, 60 * 1000);
 run();
 
 function shutdown(sig) {

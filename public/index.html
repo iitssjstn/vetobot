@@ -343,6 +343,10 @@
         <div class="panel-h"><h2><svg class="i"><use href="#i-brief"/></svg>Open posities</h2></div>
         <div class="scroll" id="dash-positions"></div>
       </div>
+      <div class="panel gap" id="dash-summary-wrap">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-cpu"/></svg>Dagoverzicht</h2><span class="hint" id="dash-summary-meta"></span></div>
+        <div class="panel-b" id="dash-summary"></div>
+      </div>
     </section>
 
     <section data-section="market" hidden>
@@ -523,6 +527,11 @@
             <div class="scroll" style="margin-top:14px;border:1px solid var(--line);border-radius:10px">
               <table class="evtable" id="n-events"></table>
             </div>
+            <div class="fields" style="margin-top:14px">
+              <div><label for="n-time">Dagelijks overzicht om</label><input id="n-time" type="time" required></div>
+              <div style="display:flex;align-items:flex-end"><button class="btn" type="button" id="n-summary">Overzicht nu versturen</button></div>
+            </div>
+            <div class="help">Het overzicht bevat de resultaten van de afgelopen 24 uur, je open posities, de signalen en een korte analyse door de AI (één AI-call per dag).</div>
             <div class="row-actions">
               <button class="btn primary" type="submit">Opslaan</button>
               <button class="btn" type="button" id="n-test">Testmelding sturen</button>
@@ -822,6 +831,18 @@ async function load() {
   $('dash-activity').innerHTML = logHtml(s.activity.slice(0, 15));
   $('activity').innerHTML = logHtml(s.activity);
 
+  const sum = s.lastSummary;
+  $('dash-summary-meta').textContent = sum ? `${time(sum.at)} · ${sum.mode === 'live' ? 'live' : 'paper'}` : `Elke dag om ${s.notify?.summaryTime ?? '08:00'}`;
+  $('dash-summary').innerHTML = !sum
+    ? `<div class="muted">Nog geen overzicht. Het eerste komt om ${esc(s.notify?.summaryTime ?? '08:00')}, of verstuur er nu een bij Instellingen → Meldingen.</div>`
+    : `<div class="grid tiles" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:14px">` +
+        `<div><div class="muted" style="font-size:12px">Resultaat 24u</div><div class="num ${cls(sum.pnlEur)}" style="font-size:18px;font-weight:700">${eur2(sum.pnlEur)}</div></div>` +
+        `<div><div class="muted" style="font-size:12px">Trades</div><div class="num" style="font-size:18px;font-weight:700">${sum.trades}${sum.trades ? ` <span class="muted" style="font-size:13px;font-weight:500">(${Math.round(sum.wins / sum.trades * 100)}% winst)</span>` : ''}</div></div>` +
+        `<div><div class="muted" style="font-size:12px">Signalen</div><div class="num" style="font-size:18px;font-weight:700">${sum.signals.totaal} <span class="muted" style="font-size:13px;font-weight:500">(${sum.signals.goedgekeurd} goed, ${sum.signals.afgewezenDoorAi} af)</span></div></div>` +
+      `</div>` +
+      (sum.analysis ? `<div style="line-height:1.55">${esc(sum.analysis).replace(/\n/g, '<br>')}</div>`
+        : `<div class="muted">${sum.aiError ? `Geen AI-analyse: ${esc(sum.aiError)}` : 'Geen AI ingesteld, dus alleen de cijfers.'}</div>`);
+
   if (isOn('settings')) {
     renderSettings();
     if (!coinsDirty) { selected = [...s.pairs]; renderChips(); renderCoinList(); }
@@ -1060,6 +1081,7 @@ function renderNotify() {
     : `<span class="up">${time(hb.at)} ${hb.ok ? 'ok' : 'met fouten (/fail)'}</span>`;
   if (notifyDirty || document.activeElement?.closest('#notify-form')) return;
   $('n-user').value = s.notify.discordUserId ?? '';
+  $('n-time').value = s.notify.summaryTime ?? '08:00';
   $('n-events').innerHTML = '<thead><tr><th>Melding</th><th class="r">Sturen</th><th class="r">Tag mij</th></tr></thead><tbody>' +
     Object.entries(s.notifyEvents).map(([k, label]) => `<tr><td>${esc(label)}</td>` +
       `<td class="r"><input type="checkbox" data-ev="${k}" ${s.notify.events[k] ? 'checked' : ''} aria-label="${esc(label)} sturen"></td>` +
@@ -1078,7 +1100,7 @@ $('notify-form').onsubmit = async (e) => {
     const events = {}, mentions = {};
     document.querySelectorAll('[data-ev]').forEach(c => events[c.dataset.ev] = c.checked);
     document.querySelectorAll('[data-mn]').forEach(c => mentions[c.dataset.mn] = c.checked);
-    await api('api/settings/notify', { discordUserId: $('n-user').value, events, mentions });
+    await api('api/settings/notify', { discordUserId: $('n-user').value, events, mentions, summaryTime: $('n-time').value });
     notifyDirty = false; msg('Opgeslagen.', 'ok');
     document.activeElement?.blur(); await load();
   } catch (err) { msg(err.message, 'err'); }
@@ -1090,6 +1112,18 @@ $('n-test').onclick = async () => {
   try { await api('api/settings/notify/test', {}); msg('Verstuurd. Kijk in je Discord-kanaal.', 'ok'); }
   catch (err) { msg(err.message, 'err'); }
 };
+$('n-summary').onclick = async () => {
+  const msg = (t, c) => { $('n-msg').className = `msg ${c ?? ''}`; $('n-msg').textContent = t; };
+  $('n-summary').disabled = true; msg('Overzicht maken…');
+  try {
+    const { summary } = await api('api/summary/now', {});
+    msg(summary.analysis ? 'Verstuurd, met AI-analyse.' : summary.aiError ? `Verstuurd zonder AI-analyse: ${summary.aiError}` : 'Verstuurd (zonder AI).',
+      summary.aiError ? 'err' : 'ok');
+    await load();
+  } catch (err) { msg(err.message, 'err'); }
+  finally { $('n-summary').disabled = false; }
+};
+
 $('hb-form').onsubmit = async (e) => {
   e.preventDefault();
   const msg = (t, c) => { $('hb-msg').className = `msg ${c ?? ''}`; $('hb-msg').textContent = t; };
