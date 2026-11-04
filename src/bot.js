@@ -1,4 +1,5 @@
 import { evaluate } from './strategy.js';
+import { ema } from './indicators.js';
 import { askVetoChain, testChain, listModels, writeSummaryChain, aiLabel } from './ai.js';
 import { TIMEFRAME_MINUTES, fmtInterval, LIVE_MIN_STAKE_EUR } from './settings.js';
 import { cleanSuggestions, currentValues, applySuggestions } from './suggest.js';
@@ -59,10 +60,29 @@ export class Bot {
     this.notifier.send(event, payload).catch(() => {});
   }
 
+  // BTC-filter: één keer per check de trend van BTC/EUR bepalen (koers boven EMA 50).
+  async #updateBtcTrend() {
+    if (!this.strategy.btcFilter) {
+      this.btcTrend = null;
+      return;
+    }
+    try {
+      this.#step('BTC-trend bepalen');
+      const candles = await fetchClosedCandles(this.ex, 'BTC/EUR', this.settings.timeframe, 120);
+      const closes = candles.map((c) => c[4]);
+      const e = ema(closes, 50).at(-1);
+      this.btcTrend = e == null ? null : { up: closes.at(-1) > e, close: closes.at(-1), ema50: e, at: new Date().toISOString() };
+    } catch (err) {
+      this.btcTrend = null;
+      this.#event('warn', null, `BTC-trend ophalen mislukt, BTC-filter deze check overgeslagen: ${err.message}`);
+    }
+  }
+
   #summary(errors) {
     const t = this.tickStats;
     const parts = [`${t.pairs} coin${t.pairs === 1 ? '' : 's'} bekeken`];
-    if (!t.buySignals) parts.push('geen koopsignaal, AI niet nodig');
+    if (t.skippedFull) parts.push(`${t.skippedFull} signaal${t.skippedFull === 1 ? '' : 'en'} overgeslagen (alle posities bezet)`);
+    if (!t.buySignals && !t.skippedFull) parts.push('geen koopsignaal, AI niet nodig');
     else {
       parts.push(`${t.buySignals} koopsignaal${t.buySignals === 1 ? '' : 'en'}`);
       if (t.blocked) parts.push(`${t.blocked} geblokkeerd door je limieten`);
@@ -496,6 +516,7 @@ export class Bot {
     this.tickStats = { pairs: 0, buySignals: 0, aiCalls: 0, blocked: 0, opened: 0, closed: 0 };
     try {
       this.#resetHaltIfNewDay();
+      await this.#updateBtcTrend();
       for (const pair of this.settings.pairs) {
         try {
           await this.#handlePair(pair);
@@ -555,8 +576,14 @@ export class Bot {
       const price = await fetchPrice(this.ex, pair);
       const changePct = ((price - position.entryPrice) / position.entryPrice) * 100;
       positionChangePct = changePct;
+      position.highest = Math.max(position.highest ?? position.entryPrice, price);
+      const fromTop = ((price - position.highest) / position.highest) * 100;
+      // ATR-stop vervangt de vaste stop-loss als hij aan staat én bij de aankoop een ATR bekend was.
+      const atrStop = risk.atrStopMult > 0 && position.atrAtEntry ? position.entryPrice - risk.atrStopMult * position.atrAtEntry : null;
       // 0 = uit
-      const exit = risk.stopLossPct > 0 && changePct <= -risk.stopLossPct ? `Stop-loss (${changePct.toFixed(2)}%)`
+      const exit = atrStop != null && price <= atrStop ? `ATR-stop (${changePct.toFixed(2)}%, stop op ${fmtPrice(atrStop)})`
+        : atrStop == null && risk.stopLossPct > 0 && changePct <= -risk.stopLossPct ? `Stop-loss (${changePct.toFixed(2)}%)`
+        : risk.trailingStopPct > 0 && fromTop <= -risk.trailingStopPct ? `Trailing stop (${fromTop.toFixed(2)}% vanaf top ${fmtPrice(position.highest)}, resultaat ${changePct.toFixed(2)}%)`
         : risk.takeProfitPct > 0 && changePct >= risk.takeProfitPct ? `Take-profit (${changePct.toFixed(2)}%)` : null;
       if (exit) {
         await this.#close(pair, exit);
@@ -569,11 +596,16 @@ export class Bot {
     }
 
     this.#step(`${pair}: candles ophalen`);
-    const candles = await fetchClosedCandles(this.ex, pair, timeframe, Math.max(200, strategy.emaSlow * 4));
+    // Genoeg candles voor de langste indicator (trend-EMA), met een maximum van wat Bitvavo in één keer geeft.
+    const need = Math.max(200, strategy.emaSlow * 4, (strategy.trendEma || 0) * 2 + 20);
+    const candles = await fetchClosedCandles(this.ex, pair, timeframe, Math.min(1400, need));
     const lastCandleTs = candles.at(-1)?.[0];
     // Kijk terug over alle candles sinds de vorige check, plus één als marge.
     const lookback = Math.min(50, Math.ceil(this.settings.checkIntervalMinutes / (TIMEFRAME_MINUTES[timeframe] ?? 60)) + 1);
-    const result = evaluate(candles, strategy, lookback);
+    let result = evaluate(candles, strategy, lookback);
+    if (result.signal === 'buy' && strategy.btcFilter && pair !== 'BTC/EUR' && this.btcTrend && !this.btcTrend.up) {
+      result = { ...result, signal: 'none', reason: 'Kruising, maar BTC zit in een dalende trend (BTC-filter)', filtered: true };
+    }
     const ind = result.indicators;
     this.pairStatus[pair] = {
       at: new Date().toISOString(),
@@ -598,7 +630,17 @@ export class Bot {
     }
 
     if (result.signal !== 'buy') return;
-    // Zelfde candle niet twee keer beoordelen.
+
+    // Alle posities bezet: stil overslaan. Geen AI, geen regel bij AI-signalen, en de
+    // kruising niet als beoordeeld markeren, zodat hij nog kan als er binnen het
+    // terugkijkvenster een plek vrijkomt.
+    const openCount = Object.keys(this.store.state.positions).length;
+    if (openCount >= this.risk.maxOpenTrades) {
+      this.pairStatus[pair] = { ...this.pairStatus[pair], reason: `Koopsignaal, maar alle ${this.risk.maxOpenTrades} posities zijn bezet` };
+      if (this.tickStats) this.tickStats.skippedFull = (this.tickStats.skippedFull ?? 0) + 1;
+      return;
+    }
+
     // Dezelfde kruising niet twee keer beoordelen.
     const signalKey = result.crossAt ?? lastCandleTs;
     if (this.seenSignals[pair] === signalKey) return;
@@ -622,6 +664,12 @@ export class Bot {
       timeframe,
       indicators: result.indicators,
       recentCandles: candles.slice(-24),
+      extra: {
+        btcTrend: this.btcTrend,
+        // Hoe de laatste trades van de bot in deze coin afliepen.
+        recentTrades: this.store.state.trades.filter((t) => t.pair === pair).slice(0, 5)
+          .map((t) => ({ pnlPct: +t.pnlPct.toFixed(2), exit: t.exitReason, closedAt: t.closedAt })),
+      },
     });
 
     this.store.addDecision({
@@ -654,10 +702,10 @@ export class Bot {
       this.#notify('aiVeto', { title: `${pair}: koopsignaal afgewezen`, message: veto.reason, level: 'warn' });
     }
 
-    if (veto.decision === 'approve') await this.#open(pair, result.reason);
+    if (veto.decision === 'approve') await this.#open(pair, result.reason, result.indicators);
   }
 
-  async #open(pair, reason) {
+  async #open(pair, reason, indicators = null) {
     this.#step(`${pair}: kopen`);
     if (this.tickStats) this.tickStats.opened++;
     const stake = this.risk.stakeEur;
@@ -671,6 +719,8 @@ export class Bot {
       costEur: fill.costEur,
       entryFeeEur: fill.feeEur,
       reason,
+      highest: fill.price,
+      atrAtEntry: indicators?.atr ?? null,
     };
     this.#event('info', pair, `Gekocht: ${fmtAmount(fill.amount)} @ ${fmtPrice(fill.price)} (${this.broker.mode})`);
     this.#notify('trades', {

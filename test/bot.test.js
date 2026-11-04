@@ -390,3 +390,67 @@ test('live budgetplafond begrenst de totale inzet', async () => {
   bot.stores.paper.state.positions = { 'A/EUR': { costEur: 10 }, 'B/EUR': { costEur: 10 } };
   assert.equal(checkEntry(bot.stores.paper, { risk }, 'paper', bot.ex, null, { pair: 'C/EUR' }), null);
 });
+
+test('trailing stop verkoopt na een terugval vanaf de top', async () => {
+  const { bot, ex } = setup({});
+  await bot.setRisk({ stakeEur: 25, maxOpenTrades: 1, stopLossPct: 0, takeProfitPct: 0, maxDailyLossEur: 0, feePct: 0, trailingStopPct: 5, cooldownMinutes: 0 });
+  await openPaperPosition(bot, ex);
+  const entry = bot.store.state.positions['BTC/EUR'].entryPrice;
+  ex.fetchTicker = async () => ({ last: entry * 1.2 });   // stijgt 20%: nieuwe top
+  await bot.tick();
+  assert.ok(bot.store.state.positions['BTC/EUR'], 'nog open op de top');
+  assert.ok(Math.abs(bot.store.state.positions['BTC/EUR'].highest - entry * 1.2) < 1e-9);
+  ex.fetchTicker = async () => ({ last: entry * 1.2 * 0.94 }); // 6% onder de top
+  await bot.tick();
+  assert.match(bot.store.state.trades[0].exitReason, /Trailing stop/);
+  assert.ok(bot.store.state.trades[0].pnlEur > 0, 'met winst eruit');
+});
+
+test('ATR-stop vervangt de vaste stop-loss', async () => {
+  const { bot, ex } = setup({});
+  await bot.setRisk({ stakeEur: 25, maxOpenTrades: 1, stopLossPct: 1, takeProfitPct: 0, maxDailyLossEur: 0, feePct: 0, atrStopMult: 3, cooldownMinutes: 0 });
+  await openPaperPosition(bot, ex);
+  const pos = bot.store.state.positions['BTC/EUR'];
+  assert.ok(pos.atrAtEntry > 0, 'ATR bij aankoop bewaard');
+  // 2% daling: vaste stop van 1% zou verkopen, maar de ATR-stop ligt lager
+  ex.fetchTicker = async () => ({ last: pos.entryPrice * 0.98 });
+  await bot.tick();
+  if (pos.entryPrice - 3 * pos.atrAtEntry < pos.entryPrice * 0.98) assert.ok(bot.store.state.positions['BTC/EUR'], 'ATR-stop nog niet geraakt');
+  ex.fetchTicker = async () => ({ last: pos.entryPrice - 3 * pos.atrAtEntry - 0.01 });
+  await bot.tick();
+  assert.match(bot.store.state.trades[0].exitReason, /ATR-stop/);
+});
+
+test('BTC-filter blokkeert altcoins als BTC daalt', async () => {
+  // De nep-exchange geeft voor elk pair dezelfde koersen, dus ook BTC daalt lang en veert kort op.
+  const run = async (btcFilter) => {
+    const { bot, ex } = setup({});
+    await bot.setStrategy({ ...bot.settings.strategy, btcFilter });
+    bot.settings.data.pairs = ['ETH/EUR'];
+    ex.prices = [...Array(120)].map((_, i) => 300 - i);
+    await bot.tick();
+    for (const extra of [180, 182, 184, 186]) { ex.prices = ex.prices.concat([extra]); await bot.tick(); }
+    return bot;
+  };
+  const without = await run(0);
+  assert.ok(without.store.state.positions['ETH/EUR'], 'zonder filter wordt er gekocht');
+  const withF = await run(1);
+  assert.equal(withF.btcTrend.up, false);
+  assert.deepEqual(withF.store.state.positions, {}, 'met filter niet');
+  assert.match(withF.pairStatus['ETH/EUR'].reason, /BTC-filter/);
+});
+
+test('alle posities bezet: signalen stil overslaan, geen AI en geen regel bij AI-signalen', async () => {
+  const { bot, ex } = setup({});
+  await bot.setRisk({ stakeEur: 25, maxOpenTrades: 1, cooldownMinutes: 0 });
+  bot.store.state.positions = { 'X/EUR': { pair: 'X/EUR', entryPrice: 1, amount: 1, costEur: 25 } };
+  let aiAsked = 0;
+  bot.settings.setAi({ provider: 'openai', model: 'm', baseUrl: 'http://127.0.0.1:9', failMode: 'reject' });
+  bot.secrets = { get: () => { aiAsked++; return 'k'; } };
+  const seq = [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66, 68]);
+  for (let n = 41; n <= 44; n++) { ex.prices = seq.slice(0, n); await bot.tick(); }
+  assert.equal(bot.store.state.decisions.length, 0, 'geen beslissingen');
+  assert.equal(aiAsked, 0, 'AI niet gevraagd');
+  assert.match(bot.pairStatus['BTC/EUR'].reason, /alle 1 posities zijn bezet/);
+  assert.ok(bot.activity.some((a) => /overgeslagen \(alle posities bezet\)/.test(a.message)));
+});
