@@ -187,8 +187,15 @@
   .explain .body { padding: 0 14px 14px; font-size: 13.5px; line-height: 1.55; color: var(--muted); }
   .explain .body p { margin: 0 0 10px; }
   .explain .body b { color: var(--text); font-weight: 600; }
-  .presets { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 12px; }
-  .preset { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--panel); }
+  .presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; margin-top: 12px; }
+  .preset { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--panel); display: flex; flex-direction: column; }
+  .preset.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .preset .top { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 8px; margin-bottom: 6px; }
+  .preset .meter { display: flex; gap: 3px; }
+  .preset .meter i { width: 9px; height: 9px; border-radius: 2px; background: var(--line); }
+  .preset .for { font-size: 12px; margin-top: 6px; }
+  .preset .tag { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 999px; white-space: nowrap; }
+  .preset button { margin-top: auto; align-self: flex-start; }
   .preset h4 { margin: 0 0 4px; font-size: 14px; color: var(--text); }
   .preset .muted { font-size: 12.5px; }
   .preset ul { margin: 8px 0 10px; padding-left: 16px; font-size: 12.5px; }
@@ -528,6 +535,17 @@
         </div>
       </div>
 
+      <div class="panel gap" id="profiles">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Strategieën</h2>
+          <span class="hint" id="profile-current"></span></div>
+        <div class="panel-b">
+          <p class="muted" style="margin:0 0 4px;font-size:13.5px">Kies een kant-en-klare strategie, van zeer voorzichtig tot zeer riskant. Toepassen zet planning, strategie, filters, stops en afkoelperiode.
+            <b>Je inzet per trade, max. open trades en daglimiet blijven altijd van jou.</b> Daarna kun je alles nog zelf bijstellen. Dit is een startpunt om mee te testen, geen advies: probeer een strategie eerst een tijd in paper.</p>
+          <div class="presets" id="presets"></div>
+          <div class="msg" id="preset-msg" style="margin-top:8px"></div>
+        </div>
+      </div>
+
       <div class="panel gap" id="schedule">
         <div class="panel-h"><h2><svg class="i"><use href="#i-history"/></svg>Planning</h2></div>
         <form class="panel-b" id="sched-form">
@@ -574,7 +592,7 @@
           <span class="hint">Koopsignaal: EMA fast kruist boven EMA slow en RSI onder het maximum</span></div>
         <form class="panel-b" id="strat-form">
           <details class="explain">
-            <summary>Hoe werkt de strategie? Uitleg en voorbeeldinstellingen</summary>
+            <summary>Hoe werkt de strategie? Uitleg</summary>
             <div class="body">
               <p><b>Candles.</b> De koers wordt opgedeeld in blokjes van een vaste tijd, bijvoorbeeld 15 minuten. Elk blokje (een candle) heeft een begin-, hoogste, laagste en slotkoers. De bot kijkt alleen naar afgesloten candles, zodat hij nooit beslist op een koers die nog verandert.</p>
               <p><b>EMA (gemiddelde).</b> Een EMA is het gemiddelde van de slotkoersen over een aantal candles, waarbij de nieuwste zwaarder tellen. De <b>EMA fast</b> (bijv. 12) volgt de koers snel, de <b>EMA slow</b> (bijv. 26) is rustiger en laat de grote lijn zien.</p>
@@ -583,9 +601,7 @@
               <p><b>Extra filters (optioneel).</b> Ze houden alleen koopsignalen tegen, nooit verkopen. Het <b>trendfilter</b> koopt alleen boven een lange gemiddelde lijn, de <b>ADX</b> slaat zijwaartse markten over, het <b>volumefilter</b> wil meer handel dan normaal en het <b>BTC-filter</b> koopt geen altcoins als Bitcoin daalt. Elk filter geeft minder, maar meestal betere signalen.</p>
               <p><b>Slimmer uitstappen (bij Risico &amp; inzet).</b> Een <b>trailing stop</b> schuift mee omhoog met de koers, zodat een sterke stijging niet te vroeg wordt afgekapt. Een <b>ATR-stop</b> past de stop-loss aan de beweeglijkheid van de coin aan.</p>
               <p><b>Daarna de AI.</b> Komt een koopsignaal door je regels en limieten, dan mag de AI het nog afwijzen. Verkopen (signaal, stop-loss, take-profit) gaat altijd zonder AI.</p>
-              <p><b>Voorbeeldinstellingen.</b> Een startpunt om mee te experimenteren, geen advies. Toepassen past alleen planning, stops, take-profit, afkoelperiode, filters en strategie aan; je inzet en limieten blijven gelijk.</p>
-              <div class="presets" id="presets"></div>
-              <div class="msg" id="preset-msg" style="margin-top:8px"></div>
+              <p><b>Kant-en-klare strategieën</b> vind je bovenaan Instellingen, van zeer voorzichtig tot zeer riskant.</p>
             </div>
           </details>
           <div class="fields">
@@ -1287,6 +1303,7 @@ function renderSettings() {
   $('st-pass-wrap').hidden = !live;
   $('paper-reset').hidden = live;
   renderFollow();
+  renderPresets();
   renderNotify();
   if (!document.activeElement?.closest('#strat-form') && !stratDirty) {
     $('st-fast').value = s.strategy.emaFast;
@@ -1367,7 +1384,7 @@ $('mode-form').addEventListener('submit', async (e) => {
 
 // ---------- Instellingen: strategie volgen ----------
 // Panelen die van de admin komen zolang je volgt. inert maakt ze niet bedienbaar, ook niet met het toetsenbord.
-const LOCKABLE = { schedule: 'De planning', strategy: 'De strategie', coins: 'De coinlijst' };
+const LOCKABLE = { profiles: 'De strategie', schedule: 'De planning', strategy: 'De strategie', coins: 'De coinlijst' };
 function renderFollow() {
   const s = state; if (!s) return;
   const f = s.follow ?? {};
@@ -1753,34 +1770,104 @@ document.addEventListener('click', (e) => {
 initHelp();
 
 // ---------- Voorbeeldinstellingen ----------
+// Van zeer voorzichtig (1) tot zeer riskant (8). Alleen planning, strategie, filters en stops;
+// inzet, max. open trades en daglimiet blijven altijd van de gebruiker.
 const PRESETS = [
-  { name: 'Rustig', desc: 'Weinig trades, volgt de grote trend.',
-    schedule: { timeframe: '1h', checkIntervalMinutes: 15 }, risk: { stopLossPct: 4, takeProfitPct: 0, cooldownMinutes: 120, trailingStopPct: 4, atrStopMult: 0 },
-    strategy: { emaFast: 12, emaSlow: 26, rsiPeriod: 14, rsiMaxEntry: 70, trendEma: 200, adxMin: 20, volumeMult: 0, btcFilter: 1 } },
-  { name: 'Gemiddeld', desc: 'Een paar trades per dag per coin.',
-    schedule: { timeframe: '15m', checkIntervalMinutes: 5 }, risk: { stopLossPct: 2.5, takeProfitPct: 0, cooldownMinutes: 45, trailingStopPct: 2.5, atrStopMult: 2 },
-    strategy: { emaFast: 9, emaSlow: 21, rsiPeriod: 14, rsiMaxEntry: 70, trendEma: 200, adxMin: 20, volumeMult: 1.2, btcFilter: 1 } },
-  { name: 'Actief', desc: 'Veel trades, reageert snel. Meer ruis en fees.',
-    schedule: { timeframe: '5m', checkIntervalMinutes: 1 }, risk: { stopLossPct: 1.5, takeProfitPct: 3, cooldownMinutes: 15, trailingStopPct: 1.5, atrStopMult: 0 },
-    strategy: { emaFast: 5, emaSlow: 13, rsiPeriod: 14, rsiMaxEntry: 75, trendEma: 100, adxMin: 15, volumeMult: 0, btcFilter: 0 } },
+  { name: 'Zeer voorzichtig', level: 1, freq: 'Een paar trades per maand',
+    desc: 'Koopt alleen in een duidelijke, sterke stijgende trend en houdt lang vast. Weinig fees, weinig ruis.',
+    who: 'Voor wie weinig risico wil en geduld heeft.',
+    schedule: { timeframe: '4h', checkIntervalMinutes: 30 },
+    risk: { stopLossPct: 8, takeProfitPct: 0, cooldownMinutes: 720, trailingStopPct: 7, atrStopMult: 0 },
+    strategy: { emaFast: 20, emaSlow: 50, rsiPeriod: 14, rsiMaxEntry: 65, trendEma: 200, adxMin: 25, volumeMult: 0, btcFilter: 1, maxChasePct: 1, useOpenCandle: 0 } },
+  { name: 'Voorzichtig', level: 2, freq: 'Ongeveer 1 trade per week per coin',
+    desc: 'Volgt de grote trend op uurcandles met alle filters aan. Laat winst lopen met een ruime trailing stop.',
+    who: 'Een goede eerste keuze om mee te beginnen.',
+    schedule: { timeframe: '1h', checkIntervalMinutes: 15 },
+    risk: { stopLossPct: 5, takeProfitPct: 0, cooldownMinutes: 240, trailingStopPct: 5, atrStopMult: 0 },
+    strategy: { emaFast: 12, emaSlow: 26, rsiPeriod: 14, rsiMaxEntry: 65, trendEma: 200, adxMin: 25, volumeMult: 1.2, btcFilter: 1, maxChasePct: 1, useOpenCandle: 0 } },
+  { name: 'Rustig', level: 3, freq: 'Een paar trades per week per coin',
+    desc: 'Uurcandles met trend- en BTC-filter. Iets meer signalen dan Voorzichtig.',
+    who: 'Voor een rustig tempo met redelijk wat trades.',
+    schedule: { timeframe: '1h', checkIntervalMinutes: 15 },
+    risk: { stopLossPct: 4, takeProfitPct: 0, cooldownMinutes: 120, trailingStopPct: 4, atrStopMult: 0 },
+    strategy: { emaFast: 12, emaSlow: 26, rsiPeriod: 14, rsiMaxEntry: 70, trendEma: 200, adxMin: 20, volumeMult: 0, btcFilter: 1, maxChasePct: 1, useOpenCandle: 0 } },
+  { name: 'Gemiddeld', level: 4, freq: 'Een paar trades per dag',
+    desc: 'Kwartiercandles met filters. Stop-loss past zich aan de beweeglijkheid van de coin aan (ATR).',
+    who: 'Een balans tussen aantal trades en betrouwbaarheid.',
+    schedule: { timeframe: '15m', checkIntervalMinutes: 5 },
+    risk: { stopLossPct: 2.5, takeProfitPct: 0, cooldownMinutes: 45, trailingStopPct: 2.5, atrStopMult: 2 },
+    strategy: { emaFast: 9, emaSlow: 21, rsiPeriod: 14, rsiMaxEntry: 70, trendEma: 200, adxMin: 20, volumeMult: 1.2, btcFilter: 1, maxChasePct: 1, useOpenCandle: 0 } },
+  { name: 'Actief', level: 5, freq: 'Meerdere trades per dag',
+    desc: 'Vijfminutencandles en snellere lijnen. Vaste take-profit, minder filters, dus meer ruis en fees.',
+    who: 'Voor wie veel actie wil en kleine winsten accepteert.',
+    schedule: { timeframe: '5m', checkIntervalMinutes: 1 },
+    risk: { stopLossPct: 1.5, takeProfitPct: 3, cooldownMinutes: 15, trailingStopPct: 1.5, atrStopMult: 0 },
+    strategy: { emaFast: 5, emaSlow: 13, rsiPeriod: 14, rsiMaxEntry: 75, trendEma: 100, adxMin: 15, volumeMult: 0, btcFilter: 0, maxChasePct: 0.8, useOpenCandle: 0 } },
+  { name: 'Momentum', level: 6, freq: 'Meerdere trades per dag',
+    desc: 'Springt in op plotselinge stijgingen met veel volume, ook als de coin al warm is. Kijkt naar de lopende candle.',
+    who: 'Voor ervaren gebruikers. Je koopt vaker op een top.',
+    schedule: { timeframe: '15m', checkIntervalMinutes: 2 },
+    risk: { stopLossPct: 3, takeProfitPct: 0, cooldownMinutes: 20, trailingStopPct: 2, atrStopMult: 0 },
+    strategy: { emaFast: 5, emaSlow: 13, rsiPeriod: 14, rsiMaxEntry: 85, trendEma: 0, adxMin: 25, volumeMult: 2, btcFilter: 0, maxChasePct: 2, useOpenCandle: 1 } },
+  { name: 'Scalper', level: 7, freq: 'Tientallen trades per dag',
+    desc: 'Minuutcandles, check elke 20 seconden. Pakt kleine bewegingen met krappe stops. Fees (± 0,5% per ronde) wegen zwaar.',
+    who: 'Alleen om te experimenteren, liefst in paper.',
+    schedule: { timeframe: '1m', checkIntervalMinutes: 1 / 3 },
+    risk: { stopLossPct: 1, takeProfitPct: 1.5, cooldownMinutes: 5, trailingStopPct: 0.8, atrStopMult: 0 },
+    strategy: { emaFast: 5, emaSlow: 13, rsiPeriod: 7, rsiMaxEntry: 80, trendEma: 50, adxMin: 0, volumeMult: 1.5, btcFilter: 0, maxChasePct: 0.5, useOpenCandle: 0 } },
+  { name: 'Zeer riskant', level: 8, freq: 'Zeer veel trades',
+    desc: 'Alle filters uit, reageert op elke kleine kruising in de lopende minuutcandle, check elke 10 seconden. Vooral fees en valse signalen.',
+    who: 'Gokken. Grote kans op verlies; niet voor echt geld.',
+    schedule: { timeframe: '1m', checkIntervalMinutes: 1 / 6 },
+    risk: { stopLossPct: 2, takeProfitPct: 1, cooldownMinutes: 0, trailingStopPct: 0, atrStopMult: 0 },
+    strategy: { emaFast: 3, emaSlow: 8, rsiPeriod: 7, rsiMaxEntry: 100, trendEma: 0, adxMin: 0, volumeMult: 0, btcFilter: 0, maxChasePct: 0, useOpenCandle: 1 } },
 ];
 const TF_LABEL = { '1m': '1 min', '5m': '5 min', '15m': '15 min', '30m': '30 min', '1h': '1 uur', '2h': '2 uur', '4h': '4 uur', '1d': '1 dag' };
-$('presets').innerHTML = PRESETS.map((p, i) => `<div class="preset"><h4>${p.name}</h4><div class="muted">${p.desc}</div><ul class="muted">
-  <li>${TF_LABEL[p.schedule.timeframe]}-candles, check elke ${p.schedule.checkIntervalMinutes} min</li>
-  <li>EMA ${p.strategy.emaFast} / ${p.strategy.emaSlow}, max RSI ${p.strategy.rsiMaxEntry}</li>
-  <li>Stop-loss ${String(p.risk.stopLossPct).replace('.', ',')}%, take-profit ${p.risk.takeProfitPct ? `${String(p.risk.takeProfitPct).replace('.', ',')}%` : 'uit (trailing stop neemt het over)'}</li>
-  <li>Afkoelperiode ${p.risk.cooldownMinutes} min, trailing stop ${String(p.risk.trailingStopPct).replace('.', ',')}%${p.risk.atrStopMult ? `, ATR-stop ${p.risk.atrStopMult}×` : ''}</li>
-  <li>Filters: trend-EMA ${p.strategy.trendEma}, ADX ${p.strategy.adxMin}${p.strategy.volumeMult ? `, volume ${String(p.strategy.volumeMult).replace('.', ',')}×` : ''}${p.strategy.btcFilter ? ', BTC-filter' : ''}</li></ul>
-  <button class="btn sm" type="button" data-preset="${i}">Toepassen</button></div>`).join('');
+const nl = (n) => String(Math.round(n * 100) / 100).replace('.', ',');
+// Kleur per risiconiveau: groen → geel → rood.
+const levelColor = (l) => (l <= 2 ? 'var(--up)' : l <= 4 ? 'var(--accent)' : l <= 6 ? 'var(--warn)' : 'var(--down)');
+const levelName = (l) => (l <= 2 ? 'Laag risico' : l <= 4 ? 'Gemiddeld risico' : l <= 6 ? 'Hoog risico' : 'Zeer hoog risico');
+function presetDetails(p) {
+  const st = p.strategy, r = p.risk;
+  const filters = [st.trendEma && `trend-EMA ${st.trendEma}`, st.adxMin && `ADX ${st.adxMin}`, st.volumeMult && `volume ${nl(st.volumeMult)}×`, st.btcFilter && 'BTC-filter'].filter(Boolean);
+  return `<ul class="muted">
+    <li>${TF_LABEL[p.schedule.timeframe]}-candles, check elke ${fmtIv(p.schedule.checkIntervalMinutes)}</li>
+    <li>EMA ${st.emaFast} / ${st.emaSlow}, max RSI ${st.rsiMaxEntry}${st.useOpenCandle ? ', lopende candle' : ''}</li>
+    <li>Stop-loss ${nl(r.stopLossPct)}%${r.atrStopMult ? ` of ATR ${nl(r.atrStopMult)}×` : ''}, ${r.takeProfitPct ? `take-profit ${nl(r.takeProfitPct)}%` : 'geen vaste take-profit'}</li>
+    <li>${r.trailingStopPct ? `Trailing stop ${nl(r.trailingStopPct)}%` : 'Geen trailing stop'}, afkoelperiode ${r.cooldownMinutes >= 60 ? `${nl(r.cooldownMinutes / 60)} uur` : `${r.cooldownMinutes} min`}</li>
+    <li>Filters: ${filters.length ? filters.join(', ') : 'geen'}${st.maxChasePct ? `; max. ${nl(st.maxChasePct)}% stijging na signaal` : ''}</li></ul>`;
+}
+// Welk profiel komt overeen met de huidige instellingen (alle waarden gelijk)?
+function currentPreset() {
+  const s = state; if (!s) return null;
+  const eq = (a, b) => Math.abs(Number(a ?? 0) - Number(b ?? 0)) < 1e-6;
+  return PRESETS.find(p => p.schedule.timeframe === s.timeframe && eq(p.schedule.checkIntervalMinutes, s.checkIntervalMinutes)
+    && Object.entries(p.strategy).every(([k, v]) => eq(s.strategy[k], v))
+    && Object.entries(p.risk).every(([k, v]) => eq(s.risk[k], v))) ?? null;
+}
+function renderPresets() {
+  const cur = currentPreset();
+  $('profile-current').innerHTML = cur ? `Nu: <b>${esc(cur.name)}</b>` : 'Nu: eigen instellingen';
+  $('presets').innerHTML = PRESETS.map((p, i) => `<div class="preset${cur === p ? ' on' : ''}">
+    <div class="top"><h4>${p.name}</h4><span class="meter" aria-label="Risico ${p.level} van 8">${PRESETS.map((_, j) => `<i style="${j < p.level ? `background:${levelColor(p.level)}` : ''}"></i>`).join('')}</span></div>
+    <div><span class="tag" style="color:${levelColor(p.level)};background:color-mix(in srgb, ${levelColor(p.level)} 14%, transparent)">${levelName(p.level)}</span>
+      <span class="muted" style="font-size:12px">· ${p.freq}</span></div>
+    <div class="muted" style="margin-top:6px">${p.desc}</div>
+    ${presetDetails(p)}
+    <div class="for muted"><b>${p.who}</b></div>
+    <button class="btn sm${cur === p ? '' : ' primary'}" type="button" data-preset="${i}" style="margin-top:10px" ${cur === p ? 'disabled' : ''}>${cur === p ? 'In gebruik' : 'Toepassen'}</button></div>`).join('');
+}
 $('presets').addEventListener('click', async (e) => {
   const b = e.target.closest('[data-preset]'); if (!b) return;
   const p = PRESETS[Number(b.dataset.preset)];
   const msg = (t, c) => { $('preset-msg').className = `msg ${c ?? ''}`; $('preset-msg').textContent = t; };
   const done = await ask({
-    title: `Voorbeeld "${p.name}" toepassen`,
-    sub: 'Planning, stops, take-profit, afkoelperiode, filters en strategie worden aangepast. Je inzet en limieten blijven gelijk.',
-    body: $('presets').children[Number(b.dataset.preset)].querySelector('ul').outerHTML,
+    title: `Strategie "${p.name}" toepassen`,
+    sub: `${levelName(p.level)}. Planning, strategie, filters, stops en afkoelperiode worden aangepast; je inzet en limieten blijven gelijk.`
+      + (state.mode === 'live' && p.level >= 6 ? ' Let op: je staat in LIVE en dit is een riskante strategie.' : ''),
+    body: presetDetails(p),
     confirmText: 'Toepassen',
+    danger: state.mode === 'live' && p.level >= 6,
     password: state.mode === 'live',
     action: async (password) => {
       await api('api/settings/schedule', p.schedule);
@@ -1792,6 +1879,7 @@ $('presets').addEventListener('click', async (e) => {
   riskDirty = stratDirty = schedDirty = false;
   msg('');
   toast(`<b>"${esc(p.name)}" toegepast.</b> Geldt vanaf de volgende check.`);
+  renderPresets();
   await load(); renderSettings();
 });
 
