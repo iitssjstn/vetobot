@@ -8,6 +8,17 @@ let calls = [];
 const server = http.createServer((req, res) => {
   calls.push(req.url);
   res.setHeader('Content-Type', 'application/json');
+  if (req.url.startsWith('/nojson/')) {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    return req.on('end', () => {
+      if (JSON.parse(body).response_format) {
+        res.statusCode = 400;
+        return res.end(JSON.stringify({ error: { message: 'Failed to generate JSON. Please adjust your prompt.', code: 'json_validate_failed' } }));
+      }
+      res.end(JSON.stringify({ choices: [{ message: { content: 'Mijn oordeel: {"decision": "reject", "reason": "zwak"}' } }] }));
+    });
+  }
   if (req.url.startsWith('/bad/')) {
     res.statusCode = 429;
     return res.end(JSON.stringify({ error: { message: 'Quota exceeded' } }));
@@ -49,6 +60,14 @@ test('zonder modellen is de AI uit', async () => {
   const r = await askVetoChain([], 'reject', ctx);
   assert.equal(r.decision, 'approve');
   await assert.rejects(runChain([], async () => 1));
+});
+
+test('model dat de JSON-modus niet aankan: één keer opnieuw zonder', async () => {
+  calls = [];
+  const r = await askVetoChain([entry(1, 'nojson')], 'approve', ctx);
+  assert.equal(r.decision, 'reject');
+  assert.equal(r.usedSlot, 1);
+  assert.equal(calls.length, 2, 'eerst met, dan zonder JSON-modus');
 });
 
 test('testChain test elk model los', async () => {

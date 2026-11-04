@@ -89,7 +89,7 @@ async function askGemini(cfg, prompt, { system = SYSTEM_PROMPT, json = true, tem
 
 async function askOpenAICompatible(cfg, prompt, { system = SYSTEM_PROMPT, json = true, temperature = 0.2 } = {}) {
   const model = cfg.model || defaultModel('openai');
-  const data = await fetchWithTimeout(
+  const call = (withJsonMode) => fetchWithTimeout(
     `${cfg.baseUrl.replace(/\/$/, '')}/chat/completions`,
     {
       method: 'POST',
@@ -97,7 +97,7 @@ async function askOpenAICompatible(cfg, prompt, { system = SYSTEM_PROMPT, json =
       body: JSON.stringify({
         model,
         temperature,
-        ...(json ? { response_format: { type: 'json_object' } } : {}),
+        ...(withJsonMode ? { response_format: { type: 'json_object' } } : {}),
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: prompt },
@@ -106,7 +106,19 @@ async function askOpenAICompatible(cfg, prompt, { system = SYSTEM_PROMPT, json =
     },
     cfg.timeoutMs,
   );
-  return data?.choices?.[0]?.message?.content ?? '';
+  try {
+    const data = await call(json);
+    return data?.choices?.[0]?.message?.content ?? '';
+  } catch (err) {
+    // Sommige (kleinere) modellen kunnen de strenge JSON-modus niet aan; Groq geeft dan
+    // "Failed to generate JSON" of "json_validate_failed". Probeer het één keer zonder;
+    // de JSON wordt dan uit de tekst gehaald.
+    if (json && /HTTP 400/.test(err.message) && /json|response_format/i.test(err.message)) {
+      const data = await call(false);
+      return data?.choices?.[0]?.message?.content ?? '';
+    }
+    throw err;
+  }
 }
 
 const SUMMARY_PROMPT = `Je schrijft het dagelijkse overzicht van een crypto trading bot voor de eigenaar.
