@@ -1,5 +1,6 @@
 import { evaluate } from './strategy.js';
 import { askVeto, testConnection, listModels, defaultModel } from './ai.js';
+import { TIMEFRAME_MINUTES } from './settings.js';
 import { fetchClosedCandles, fetchPrice, hasTradingKeys } from './exchange.js';
 import { checkEntry } from './risk.js';
 
@@ -312,7 +313,9 @@ export class Bot {
     this.#step(`${pair}: candles ophalen`);
     const candles = await fetchClosedCandles(this.ex, pair, timeframe, Math.max(200, strategy.emaSlow * 4));
     const lastCandleTs = candles.at(-1)?.[0];
-    const result = evaluate(candles, strategy);
+    // Kijk terug over alle candles sinds de vorige check, plus één als marge.
+    const lookback = Math.min(50, Math.ceil(this.settings.checkIntervalMinutes / (TIMEFRAME_MINUTES[timeframe] ?? 60)) + 1);
+    const result = evaluate(candles, strategy, lookback);
     const ind = result.indicators;
     this.pairStatus[pair] = {
       at: new Date().toISOString(),
@@ -338,8 +341,10 @@ export class Bot {
 
     if (result.signal !== 'buy') return;
     // Zelfde candle niet twee keer beoordelen.
-    if (this.lastSignalCandle[pair] === lastCandleTs) return;
-    this.lastSignalCandle[pair] = lastCandleTs;
+    // Dezelfde kruising niet twee keer beoordelen.
+    const signalKey = result.crossAt ?? lastCandleTs;
+    if (this.lastSignalCandle[pair] === signalKey) return;
+    this.lastSignalCandle[pair] = signalKey;
     this.#event('info', pair, `Koopsignaal: ${result.reason}`);
 
     const blocked = checkEntry(this.store, { risk: this.risk }, this.broker.mode, this.ex, this.liveBalance);

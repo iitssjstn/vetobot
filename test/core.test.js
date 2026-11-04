@@ -91,3 +91,25 @@ test('AI-test geeft echte fouten door in plaats van de fail-mode', async () => {
     testConnection({ provider: 'openai', apiKey: 'x', baseUrl: 'http://127.0.0.1:9', timeoutMs: 500, failMode: 'approve' }, ctx),
   );
 });
+
+test('kruisingen tussen twee checks worden niet gemist (lookback)', () => {
+  // Kruising omhoog en daarna nog twee candles stijging: met lookback 1 gemist, met 3 gevonden.
+  const closes = [...Array(15)].map((_, i) => 30 - i).concat([16.5, 17.5, 18.5, 19.5, 20.5, 21.5, 22.5, 23.5]);
+  const p = { ...params, rsiMaxEntry: 100 };
+  let crossIdx = -1;
+  for (let i = 10; i <= closes.length; i++) if (evaluate(candlesFrom(closes.slice(0, i)), p).signal === 'buy') { crossIdx = i; break; }
+  assert.ok(crossIdx > 0, 'er is een kruising');
+  const later = closes.slice(0, crossIdx + 2);
+  assert.ok(later.length === crossIdx + 2, 'genoeg candles na de kruising');
+  assert.notEqual(evaluate(candlesFrom(later), p, 1).signal, 'buy');
+  const r = evaluate(candlesFrom(later), p, 3);
+  assert.equal(r.signal, 'buy');
+  assert.match(r.reason, /candles? geleden/);
+  assert.ok(r.crossAt != null);
+});
+
+test('een oude kruising telt niet meer als de trend alweer omgedraaid is', () => {
+  const closes = [...Array(15)].map((_, i) => 30 - i).concat([16.5, 17.5, 18.5, 12, 9, 6]);
+  const r = evaluate(candlesFrom(closes), { ...params, rsiMaxEntry: 100 }, 10);
+  assert.notEqual(r.signal, 'buy');
+});
