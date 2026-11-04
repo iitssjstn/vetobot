@@ -88,6 +88,25 @@ async function askOpenAICompatible(cfg, prompt) {
   return data?.choices?.[0]?.message?.content ?? '';
 }
 
+// Voor de testknop in het dashboard: dezelfde aanroep als een echte veto, maar
+// fouten worden doorgegeven in plaats van opgevangen door de fail-mode.
+export async function testConnection(cfg, context) {
+  if (cfg.provider === 'none') throw new Error('Er is geen AI-provider gekozen');
+  if (!cfg.apiKey) throw new Error('Er is geen AI-key ingesteld');
+  const started = Date.now();
+  const text = cfg.provider === 'gemini' ? await askGemini(cfg, buildPrompt(context)) : await askOpenAICompatible(cfg, buildPrompt(context));
+  const ms = Date.now() - started;
+  let parsed;
+  try {
+    parsed = parseDecision(text);
+  } catch (err) {
+    throw new Error(`De AI antwoordt, maar niet in het verwachte formaat (${err.message}). Antwoord: ${String(text).slice(0, 200)}`);
+  }
+  return { ...parsed, provider: cfg.provider, model: cfg.model || defaultModel(cfg.provider), ms };
+}
+
+export const defaultModel = (provider) => (provider === 'gemini' ? 'gemini-2.5-flash' : 'llama-3.3-70b-versatile');
+
 // Geeft altijd { decision, reason, provider, error? } terug en gooit nooit.
 export async function askVeto(cfg, context) {
   if (cfg.provider === 'none') {

@@ -1,5 +1,5 @@
 import { evaluate } from './strategy.js';
-import { askVeto } from './ai.js';
+import { askVeto, testConnection } from './ai.js';
 import { fetchClosedCandles, fetchPrice, hasTradingKeys } from './exchange.js';
 import { checkEntry } from './risk.js';
 
@@ -96,6 +96,30 @@ export class Bot {
       .sort((a, b) => (b.volumeEur ?? 0) - (a.volumeEur ?? 0));
     this.marketCache = { at: Date.now(), list };
     return list;
+  }
+
+  // Test de AI-koppeling met actuele data van de eerste gevolgde coin.
+  async testAi() {
+    const pair = this.settings.pairs[0];
+    const timeframe = this.settings.timeframe;
+    let candles = [];
+    let indicators = null;
+    try {
+      candles = await fetchClosedCandles(this.ex, pair, timeframe, Math.max(200, this.strategy.emaSlow * 4));
+      indicators = evaluate(candles, this.strategy).indicators;
+    } catch {
+      // Geen marktdata: test dan met voorbeeldwaarden, het gaat om de verbinding.
+    }
+    if (!indicators) {
+      indicators = { close: 100, emaFast: 101, emaSlow: 100, rsi: 55, change24: 1.5 };
+      candles = [];
+    }
+    const result = await testConnection(
+      { ...this.config.ai, ...this.settings.ai, apiKey: this.secrets?.get('aiApiKey') },
+      { pair, timeframe, indicators, recentCandles: candles.slice(-24) },
+    );
+    this.#event('info', null, `AI-test geslaagd (${result.provider}, ${result.ms} ms): ${result.decision}`);
+    return { ...result, pair };
   }
 
   setStrategy(values) {

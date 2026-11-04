@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ema, rsi } from '../src/indicators.js';
 import { evaluate } from '../src/strategy.js';
-import { parseDecision, askVeto } from '../src/ai.js';
+import { parseDecision, askVeto, testConnection } from '../src/ai.js';
 import { checkEntry } from '../src/risk.js';
 import { Store } from '../src/store.js';
 
@@ -81,4 +81,13 @@ test('risicoregels blokkeren bij te veel open trades en bij dagverlies', () => {
 
   store.save();
   assert.equal(new Store(dir, 'paper', 500).state.trades.length, 1);
+});
+
+test('AI-test geeft echte fouten door in plaats van de fail-mode', async () => {
+  const ctx = { pair: 'BTC/EUR', timeframe: '1h', indicators: { close: 1, emaFast: 1, emaSlow: 1, rsi: 50, change24: 0 }, recentCandles: [] };
+  await assert.rejects(testConnection({ provider: 'none' }, ctx), /geen AI-provider/);
+  await assert.rejects(testConnection({ provider: 'gemini', apiKey: '' }, ctx), /geen AI-key/);
+  await assert.rejects(
+    testConnection({ provider: 'openai', apiKey: 'x', baseUrl: 'http://127.0.0.1:9', timeoutMs: 500, failMode: 'approve' }, ctx),
+  );
 });

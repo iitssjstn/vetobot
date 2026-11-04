@@ -479,7 +479,12 @@
               <select id="ai-fail"><option value="reject">Trade afwijzen (veilig)</option><option value="approve">Trade doorlaten</option></select></div>
           </div>
           <div class="help">De AI mag alleen koopsignalen afwijzen. Bedragen, stop-loss en verkopen bepaalt hij nooit. De AI-key stel je hieronder in.</div>
-          <div class="row-actions"><button class="btn primary" type="submit">Opslaan</button><span class="msg" id="ai-msg"></span></div>
+          <div class="row-actions">
+            <button class="btn primary" type="submit">Opslaan</button>
+            <button class="btn" type="button" id="ai-test">AI testen</button>
+            <span class="msg" id="ai-msg"></span>
+          </div>
+          <div class="alert" id="ai-result" hidden style="margin-top:14px"></div>
         </form>
       </div>
 
@@ -1031,6 +1036,29 @@ $('ai-form').onsubmit = async (e) => {
     $('ai-msg').className = 'msg ok'; $('ai-msg').textContent = 'Opgeslagen.';
     document.activeElement?.blur(); await load();
   } catch (err) { $('ai-msg').className = 'msg err'; $('ai-msg').textContent = err.message; }
+};
+
+$('ai-test').onclick = async () => {
+  const box = $('ai-result');
+  if ($('ai-provider').value !== state.ai.provider || $('ai-model').value !== (state.ai.model ?? '')) {
+    $('ai-msg').className = 'msg err'; $('ai-msg').textContent = 'Sla je AI-instellingen eerst op, dan test hij die.'; return;
+  }
+  $('ai-test').disabled = true; $('ai-msg').className = 'msg'; $('ai-msg').textContent = 'Vraag naar de AI gestuurd…';
+  box.hidden = true;
+  try {
+    const { result: r } = await api('api/settings/ai/test', {});
+    $('ai-msg').textContent = '';
+    box.className = 'alert'; box.style.borderColor = 'color-mix(in srgb, var(--up) 40%, transparent)'; box.style.background = 'var(--up-soft)';
+    box.innerHTML = `${icon('cpu')}<div><b class="up">Verbonden.</b> ${esc(r.provider)} · ${esc(r.model)} · ${r.ms} ms<br>` +
+      `Testvraag over ${esc(r.pair)}: <span class="badge ${r.decision === 'approve' ? 'ok' : 'bad'}">${r.decision === 'approve' ? 'goedgekeurd' : 'afgewezen'}</span> ` +
+      `<span class="muted">${esc(r.reason)}</span><div class="help">Dit was alleen een test; er is geen trade geplaatst.</div></div>`;
+  } catch (err) {
+    $('ai-msg').textContent = '';
+    box.className = 'alert err'; box.style.borderColor = ''; box.style.background = '';
+    box.innerHTML = `${icon('alert')}<div><b class="down">Niet gelukt.</b> ${esc(err.message)}</div>`;
+  } finally {
+    box.hidden = false; $('ai-test').disabled = false;
+  }
 };
 
 // ---------- Instellingen: keys ----------
