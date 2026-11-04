@@ -54,7 +54,7 @@ export const config = {
     baseUrl: str('AI_BASE_URL', 'https://api.groq.com/openai/v1'),
     // Wat te doen als de AI niet reageert of onzin terugstuurt: reject (veilig) of approve.
     failMode: str('AI_FAIL_MODE', 'reject'),
-    timeoutMs: num('AI_TIMEOUT_MS', 20000),
+    timeoutMs: num('AI_TIMEOUT_MS', 45000),
   },
 
   server: {

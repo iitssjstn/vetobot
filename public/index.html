@@ -473,7 +473,10 @@
                 <option value="gemini">Google Gemini</option>
                 <option value="openai">OpenAI-compatibel (Groq, OpenRouter, …)</option>
               </select></div>
-            <div><label for="ai-model">Model</label><input id="ai-model" placeholder="leeg = standaardmodel"></div>
+            <div><label for="ai-model">Model</label>
+              <div style="display:flex;gap:8px"><input id="ai-model" placeholder="leeg = standaardmodel" list="ai-models" autocomplete="off">
+                <button class="btn" type="button" id="ai-fetch" title="Haal de modellen op die je key mag gebruiken">Ophalen</button></div>
+              <datalist id="ai-models"></datalist></div>
             <div id="ai-base-wrap"><label for="ai-base">Base-URL</label><input id="ai-base" placeholder="https://api.groq.com/openai/v1"></div>
             <div><label for="ai-fail">Als de AI faalt of geen key heeft</label>
               <select id="ai-fail"><option value="reject">Trade afwijzen (veilig)</option><option value="approve">Trade doorlaten</option></select></div>
@@ -1036,6 +1039,21 @@ $('ai-form').onsubmit = async (e) => {
     $('ai-msg').className = 'msg ok'; $('ai-msg').textContent = 'Opgeslagen.';
     document.activeElement?.blur(); await load();
   } catch (err) { $('ai-msg').className = 'msg err'; $('ai-msg').textContent = err.message; }
+};
+
+$('ai-fetch').onclick = async () => {
+  if ($('ai-provider').value !== state.ai.provider) {
+    $('ai-msg').className = 'msg err'; $('ai-msg').textContent = 'Sla eerst de provider op, dan haalt hij de modellen daarvan op.'; return;
+  }
+  $('ai-fetch').disabled = true; $('ai-msg').className = 'msg'; $('ai-msg').textContent = 'Modellen ophalen…';
+  try {
+    const { models } = await api('api/settings/ai/models', {});
+    $('ai-models').innerHTML = models.map(m => `<option value="${esc(m.id)}">${esc(m.label)}</option>`).join('');
+    $('ai-msg').className = 'msg ok';
+    $('ai-msg').textContent = `${models.length} modellen gevonden. Klik in het veld Model om er een te kiezen.`;
+    $('ai-model').focus();
+  } catch (err) { $('ai-msg').className = 'msg err'; $('ai-msg').textContent = err.message; }
+  finally { $('ai-fetch').disabled = false; }
 };
 
 $('ai-test').onclick = async () => {

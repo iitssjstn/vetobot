@@ -40,7 +40,16 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(url, { ...options, signal: ctrl.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    if (!res.ok) {
+      // Toon de foutmelding van de provider zelf, zonder de JSON eromheen.
+      const body = await res.text();
+      let message = body;
+      try {
+        const j = JSON.parse(body);
+        message = j.error?.message ?? j.message ?? j.error ?? body;
+      } catch {}
+      throw new Error(`HTTP ${res.status}: ${String(message).slice(0, 500)}`);
+    }
     return await res.json();
   } finally {
     clearTimeout(t);
@@ -48,7 +57,7 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 }
 
 async function askGemini(cfg, prompt) {
-  const model = cfg.model || 'gemini-2.5-flash';
+  const model = cfg.model || defaultModel('gemini');
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
   const data = await fetchWithTimeout(
     url,
@@ -105,7 +114,32 @@ export async function testConnection(cfg, context) {
   return { ...parsed, provider: cfg.provider, model: cfg.model || defaultModel(cfg.provider), ms };
 }
 
-export const defaultModel = (provider) => (provider === 'gemini' ? 'gemini-2.5-flash' : 'llama-3.3-70b-versatile');
+// Standaardmodellen als je zelf niets kiest. Providers schrappen regelmatig oude modellen;
+// met listModels() haal je in het dashboard de actuele lijst op.
+export const defaultModel = (provider) => (provider === 'gemini' ? 'gemini-3.8-flash' : 'llama-3.3-70b-versatile');
+
+// Haalt de modellen op die je key mag gebruiken.
+export async function listModels(cfg) {
+  if (cfg.provider === 'none') throw new Error('Er is geen AI-provider gekozen');
+  if (!cfg.apiKey) throw new Error('Er is geen AI-key ingesteld');
+  if (cfg.provider === 'gemini') {
+    const data = await fetchWithTimeout(
+      'https://generativelanguage.googleapis.com/v1beta/models?pageSize=200',
+      { headers: { 'x-goog-api-key': cfg.apiKey } },
+      cfg.timeoutMs,
+    );
+    return (data.models ?? [])
+      .filter((m) => (m.supportedGenerationMethods ?? []).includes('generateContent'))
+      .map((m) => ({ id: m.name.replace(/^models\//, ''), label: m.displayName ?? m.name }))
+      .sort((a, b) => b.id.localeCompare(a.id, undefined, { numeric: true }));
+  }
+  const data = await fetchWithTimeout(
+    `${cfg.baseUrl.replace(/\/$/, '')}/models`,
+    { headers: { Authorization: `Bearer ${cfg.apiKey}` } },
+    cfg.timeoutMs,
+  );
+  return (data.data ?? []).map((m) => ({ id: m.id, label: m.id })).sort((a, b) => a.id.localeCompare(b.id));
+}
 
 // Geeft altijd { decision, reason, provider, error? } terug en gooit nooit.
 export async function askVeto(cfg, context) {

@@ -1,5 +1,5 @@
 import { evaluate } from './strategy.js';
-import { askVeto, testConnection } from './ai.js';
+import { askVeto, testConnection, listModels, defaultModel } from './ai.js';
 import { fetchClosedCandles, fetchPrice, hasTradingKeys } from './exchange.js';
 import { checkEntry } from './risk.js';
 
@@ -96,6 +96,10 @@ export class Bot {
       .sort((a, b) => (b.volumeEur ?? 0) - (a.volumeEur ?? 0));
     this.marketCache = { at: Date.now(), list };
     return list;
+  }
+
+  listAiModels() {
+    return listModels({ ...this.config.ai, ...this.settings.ai, apiKey: this.secrets?.get('aiApiKey') });
   }
 
   // Test de AI-koppeling met actuele data van de eerste gevolgde coin.
