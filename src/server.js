@@ -129,6 +129,13 @@ export function startServer({ config, bot, store, secrets, auth, log = console }
       },
       lastTickAt: bot.lastTickAt,
       lastError: bot.lastError,
+      running: bot.running,
+      currentStep: bot.currentStep,
+      nextTickAt: bot.nextTickAt,
+      checkIntervalMinutes: config.checkIntervalMinutes,
+      pairStatus: config.pairs.map((pair) => ({ pair, ...bot.pairStatus[pair] })),
+      activity: bot.activity.slice(0, 50),
+      serverTime: new Date().toISOString(),
     });
   });
 

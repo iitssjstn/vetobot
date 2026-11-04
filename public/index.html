@@ -64,6 +64,24 @@
   code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px;
     background: var(--bg); padding: 1px 5px; border-radius: 5px; border: 1px solid var(--line); }
   [hidden] { display: none !important; }
+
+  /* Live status */
+  .statusbar { margin-top: 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px;
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--up); flex: none; }
+  .dot.busy { background: var(--accent); animation: pulse 1s ease-in-out infinite; }
+  .dot.err { background: var(--down); }
+  .dot.paused { background: var(--warn); }
+  @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.8); } }
+  @media (prefers-reduced-motion: reduce) { .dot.busy { animation: none; } }
+  .statusbar .main { font-weight: 600; }
+  .statusbar .sub { color: var(--muted); font-size: 13px; }
+  .progress { flex: 1 1 160px; height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; min-width: 120px; }
+  .progress > div { height: 100%; background: var(--accent); width: 0; transition: width 1s linear; }
+  .log { max-height: 320px; overflow-y: auto; }
+  .log .row { display: flex; gap: 12px; padding: 6px 12px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .log .row:last-child { border-bottom: 0; }
+  .log .t { color: var(--muted); flex: none; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -116,8 +134,18 @@
     </div>
   </header>
 
+  <div class="statusbar">
+    <span class="dot" id="st-dot"></span>
+    <span class="main" id="st-main">Laden…</span>
+    <span class="sub" id="st-sub"></span>
+    <div class="progress" title="Tijd tot de volgende check"><div id="st-bar"></div></div>
+  </div>
+
   <div id="banner"></div>
   <div class="grid" id="tiles"></div>
+
+  <h2>Markt nu</h2>
+  <div class="card" id="pairs"></div>
 
   <h2>Open posities</h2>
   <div class="card" id="positions"></div>
@@ -127,6 +155,9 @@
 
   <h2>Afgesloten trades</h2>
   <div class="card" id="trades"></div>
+
+  <h2>Activiteit</h2>
+  <div class="card log" id="activity"></div>
 
   <h2>API-keys</h2>
   <form class="card pad" id="keys-form">
@@ -185,12 +216,20 @@ async function api(url, body) {
 }
 
 let pollTimer;
+// Sneller verversen terwijl de bot bezig is.
+function poll() {
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(async () => {
+    await load().catch(() => {});
+    if (!$('view-app').hidden) poll();
+  }, state?.running ? 2000 : 15000);
+}
 function show(view) {
   for (const v of ['setup', 'login', 'app']) $(`view-${v}`).hidden = v !== view;
-  clearInterval(pollTimer);
+  clearTimeout(pollTimer);
   if (view === 'app') {
     load(); loadKeys();
-    pollTimer = setInterval(() => load().catch(() => {}), 30000);
+    poll();
   }
 }
 
@@ -280,6 +319,26 @@ async function load() {
   $('meta').textContent = `${s.pairs.join(', ')} · ${s.timeframe} · AI: ${s.aiProvider} · laatste check ${time(s.lastTickAt)}`;
   $('pause').textContent = s.halted?.manual ? 'Hervatten' : 'Pauzeren';
 
+  renderStatus();
+
+  $('pairs').innerHTML = table(s.pairStatus, [
+    ['Pair', p => esc(p.pair) + (p.inPosition ? ' <span class="badge paper">positie</span>' : '')],
+    ['Koers', p => p.price != null ? eur(p.price) : '–'],
+    ['24 candles', p => p.change24 != null ? `<span class="${cls(p.change24)}">${pct(p.change24)}</span>` : '–'],
+    ['Trend', p => p.trend === 'up' ? '<span class="up">▲ omhoog</span>' : p.trend === 'down' ? '<span class="down">▼ omlaag</span>' : '–'],
+    ['RSI', p => p.rsi != null ? p.rsi.toFixed(1) : '–'],
+    ['Laatste beoordeling', p => p.error ? `<span class="down">Fout: ${esc(p.error)}</span>`
+      : `<div class="reason">${esc(p.reason ?? 'Nog niet gecheckt')}${p.inPosition && p.positionChangePct != null
+        ? ` · positie <span class="${cls(p.positionChangePct)}">${pct(p.positionChangePct)}</span>` : ''}</div>`],
+    ['Gecheckt', p => time(p.at)],
+  ], 'Nog geen data.');
+
+  const lvl = { error: 'down', warn: 'warnc', info: '' };
+  $('activity').innerHTML = s.activity.length
+    ? s.activity.map(a => `<div class="row"><span class="t">${new Date(a.at).toLocaleTimeString('nl-NL')}</span>` +
+        `<span class="${lvl[a.level] ?? ''}">${a.pair ? `<b>${esc(a.pair)}</b> ` : ''}${esc(a.message)}</span></div>`).join('')
+    : '<div class="empty">Nog geen activiteit sinds de laatste herstart.</div>';
+
   let banner = '';
   if (s.halted) banner += `<div class="banner">Nieuwe trades gepauzeerd: ${esc(s.halted.reason)}</div>`;
   if (s.mode === 'live' && !s.bitvavoKeysSet) banner += '<div class="banner">Live-modus, maar de Bitvavo-keys zijn niet ingesteld. Vul ze hieronder in.</div>';
@@ -325,8 +384,47 @@ async function load() {
   ], 'Nog geen afgesloten trades.');
 }
 
+// Statusbalk: bezig, gepauzeerd, fout of wachten met aftellen. Wordt elke seconde bijgewerkt.
+let clockOffset = 0;
+let lastForcedLoad = 0;
+function renderStatus() {
+  const s = state;
+  if (!s) return;
+  clockOffset = new Date(s.serverTime).getTime() - Date.now();
+  const dot = $('st-dot');
+  const now = Date.now() + clockOffset;
+  const next = s.nextTickAt ? new Date(s.nextTickAt).getTime() : null;
+  const total = s.checkIntervalMinutes * 60000;
+
+  if (s.running) {
+    dot.className = 'dot busy';
+    $('st-main').textContent = 'Bezig met check';
+    $('st-sub').textContent = s.currentStep ?? '';
+    $('st-bar').style.width = '100%';
+    return;
+  }
+  dot.className = s.lastError ? 'dot err' : s.halted ? 'dot paused' : 'dot';
+  if (next && next > now) {
+    const left = Math.round((next - now) / 1000);
+    const mm = Math.floor(left / 60), ss = String(left % 60).padStart(2, '0');
+    $('st-main').textContent = s.halted ? 'Gepauzeerd, bewaakt open posities' : 'Actief, wacht op volgende check';
+    $('st-sub').textContent = `Volgende check over ${mm}:${ss} · laatste ${time(s.lastTickAt)}`;
+    $('st-bar').style.width = `${Math.min(100, (1 - (next - now) / total) * 100)}%`;
+  } else {
+    $('st-main').textContent = 'Check start zo';
+    $('st-sub').textContent = `Laatste ${time(s.lastTickAt)}`;
+    $('st-bar').style.width = '100%';
+    if (next && now - next > 5000 && Date.now() - lastForcedLoad > 5000) {
+      lastForcedLoad = Date.now();
+      load().catch(() => {});
+    }
+  }
+}
+setInterval(() => { if (!$('view-app').hidden) renderStatus(); }, 1000);
+
 $('tick').onclick = async () => {
   $('tick').disabled = true;
+  if (state) { state.running = true; state.currentStep = 'Handmatige check gestart'; renderStatus(); }
   try { await api('api/tick', {}); await load(); } finally { $('tick').disabled = false; }
 };
 $('pause').onclick = async () => { await api(state?.halted?.manual ? 'api/resume' : 'api/pause', {}); load(); };

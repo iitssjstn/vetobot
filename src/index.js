@@ -36,9 +36,13 @@ if (!auth.isSetUp()) {
 
 const server = startServer({ config, bot, store, secrets, auth });
 
-const run = () => bot.tick().catch((err) => console.error('Tick mislukt:', err));
+const intervalMs = config.checkIntervalMinutes * 60 * 1000;
+const run = () => {
+  bot.nextTickAt = new Date(Date.now() + intervalMs).toISOString();
+  return bot.tick().catch((err) => console.error('Tick mislukt:', err));
+};
 run();
-const timer = setInterval(run, config.checkIntervalMinutes * 60 * 1000);
+const timer = setInterval(run, intervalMs);
 
 function shutdown(sig) {
   console.info(`${sig} ontvangen, afsluiten...`);
