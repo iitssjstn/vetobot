@@ -720,7 +720,31 @@ function show(view) {
   }
 }
 
+// Meldingen opruimen bij het wisselen van pagina, zodat er geen oude "Opgeslagen." blijft staan.
+function clearMessages() {
+  document.querySelectorAll('#view-app .msg').forEach(m => { m.textContent = ''; m.className = 'msg'; });
+  document.querySelectorAll('#view-app .tipbox').forEach(b => b.remove());
+  document.querySelectorAll('#view-app .tip[aria-expanded="true"]').forEach(b => b.setAttribute('aria-expanded', 'false'));
+  if ($('ai-result')) $('ai-result').hidden = true;
+}
+
+// Succesmeldingen verdwijnen na 5 seconden vanzelf; foutmeldingen blijven tot je wegnavigeert.
+const msgTimers = new WeakMap();
+new MutationObserver((muts) => {
+  for (const m of muts) {
+    const el = m.target.nodeType === 1 ? m.target.closest?.('.msg') : m.target.parentElement?.closest('.msg');
+    if (!el) continue;
+    clearTimeout(msgTimers.get(el));
+    if (el.classList.contains('ok') && el.textContent.trim()) {
+      const text = el.textContent;
+      msgTimers.set(el, setTimeout(() => { if (el.textContent === text) { el.textContent = ''; el.className = 'msg'; } }, 5000));
+    }
+  }
+}).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['class'] });
+
 function go(section, anchor) {
+  const current = document.querySelector('[data-section]:not([hidden])')?.dataset.section;
+  if (current !== section) clearMessages();
   document.querySelectorAll('[data-section]').forEach(s => s.hidden = s.dataset.section !== section);
   document.querySelectorAll('.nav').forEach(n => n.classList.toggle('active', n.dataset.view === section));
   $('title').textContent = titles[section];
