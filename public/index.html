@@ -117,6 +117,9 @@
   table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
   th, td { text-align: left; padding: 10px 16px; border-bottom: 1px solid var(--line); vertical-align: middle; }
   th { color: var(--muted); font-weight: 550; font-size: 12px; background: var(--panel-2); white-space: nowrap; }
+  th .sortbtn { all: unset; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; color: inherit; }
+  th .sortbtn:hover, th .sortbtn.on { color: var(--text); }
+  th .sortbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
   tr:last-child td { border-bottom: 0; }
   tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 60%, transparent); }
   td.r, th.r { text-align: right; }
@@ -541,7 +544,7 @@
             <button class="btn sm" id="coin-clear" type="button">Leegmaken</button>
           </div>
           <div class="coinlist" id="coin-list"><div class="empty">Markten laden…</div></div>
-          <div class="help">Gesorteerd op handelsvolume van de afgelopen 24 uur. Coins met weinig volume hebben een grotere spread, dus duurdere trades.</div>
+          <div class="help">Standaard gesorteerd op handelsvolume van de afgelopen 24 uur. Klik op een kolomkop om op koers, 24u-verandering of naam te sorteren; nog een keer klikken draait de volgorde om. Coins met weinig volume hebben een grotere spread, dus duurdere trades.</div>
           <div class="row-actions">
             <button class="btn primary" id="coin-save" type="button">Coins opslaan</button>
             <button class="btn" id="coin-reset" type="button">Ongedaan maken</button>
@@ -1241,6 +1244,8 @@ $('mode-form').addEventListener('submit', async (e) => {
 
 // ---------- Instellingen: coins ----------
 let markets = null, selected = [], coinsDirty = false;
+// Standaard op volume, hoogste eerst. Klik op een kolomkop om te sorteren, nog een keer om om te draaien.
+let coinSort = { key: 'volumeEur', dir: -1 };
 async function loadMarkets() {
   coinsDirty = false;
   selected = [...(state?.pairs ?? [])];
@@ -1259,13 +1264,24 @@ function renderChips() {
 function renderCoinList() {
   if (!markets) return;
   const q = $('coin-search').value.trim().toUpperCase();
-  const list = markets.filter(m => !q || m.base.includes(q) || m.pair.includes(q));
+  const { key, dir } = coinSort;
+  const val = (m) => (key === 'base' ? m.base : m[key]);
+  // Lege waarden (geen koers of 24u-cijfer) altijd onderaan, ook bij omgekeerde volgorde.
+  const list = markets.filter(m => !q || m.base.includes(q) || m.pair.includes(q)).sort((a, b) => {
+    const x = val(a), y = val(b);
+    if (x == null || y == null) return (x == null) - (y == null);
+    return (key === 'base' ? x.localeCompare(y) : x - y) * dir;
+  });
+  const head = (label, k) => {
+    const on = key === k;
+    return `<button type="button" class="sortbtn${on ? ' on' : ''}" data-sort="${k}" aria-label="Sorteer op ${label}">${label}${on ? (dir > 0 ? ' ▲' : ' ▼') : ''}</button>`;
+  };
   $('coin-list').innerHTML = table(list, [
     ['', m => `<input type="checkbox" ${selected.includes(m.pair) ? 'checked' : ''} tabindex="-1" aria-label="${esc(m.pair)}">`],
-    ['Coin', m => pairHtml(m.pair)],
-    ['Koers', m => `<span class="num">${eur(m.price)}</span>`, 'r'],
-    ['24u', m => `<span class="num ${cls(m.change24h)}">${pct(m.change24h)}</span>`, 'r'],
-    ['Volume 24u', m => `<span class="num muted">€ ${compact(m.volumeEur)}</span>`, 'r'],
+    [head('Coin', 'base'), m => pairHtml(m.pair)],
+    [head('Koers', 'price'), m => `<span class="num">${eur(m.price)}</span>`, 'r'],
+    [head('24u', 'change24h'), m => `<span class="num ${cls(m.change24h)}">${pct(m.change24h)}</span>`, 'r'],
+    [head('Volume 24u', 'volumeEur'), m => `<span class="num muted">€ ${compact(m.volumeEur)}</span>`, 'r'],
   ], 'Geen coins gevonden.', 'coins', m => `data-pick="${esc(m.pair)}"`);
 }
 function toggle(pair) {
@@ -1277,6 +1293,14 @@ function toggle(pair) {
   coinsDirty = true;
   renderChips(); renderCoinList();
 }
+$('coin-list').addEventListener('click', (e) => {
+  const sb = e.target.closest('[data-sort]');
+  if (!sb) return;
+  const k = sb.dataset.sort;
+  // Eerste klik: getallen hoog→laag, coinnaam A→Z.
+  coinSort = coinSort.key === k ? { key: k, dir: -coinSort.dir } : { key: k, dir: k === 'base' ? 1 : -1 };
+  renderCoinList();
+});
 $('coin-list').addEventListener('click', (e) => { const tr = e.target.closest('tr[data-pick]'); if (tr) toggle(tr.dataset.pick); });
 $('coin-chips').addEventListener('click', (e) => { const b = e.target.closest('[data-unpick]'); if (b) toggle(b.dataset.unpick); });
 $('coin-search').oninput = renderCoinList;
