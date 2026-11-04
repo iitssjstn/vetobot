@@ -2,6 +2,7 @@ import { config, validateConfig } from './config.js';
 import { createExchange, PaperBroker, LiveBroker } from './exchange.js';
 import { Store } from './store.js';
 import { SecretStore } from './secrets.js';
+import { Settings } from './settings.js';
 import { Auth } from './auth.js';
 import { Bot } from './bot.js';
 import { startServer } from './server.js';
@@ -12,19 +13,24 @@ if (errors.length) {
   process.exit(1);
 }
 
-const mode = config.liveTrading ? 'live' : 'paper';
 const secrets = new SecretStore(config.dataDir);
+const settings = new Settings(config.dataDir, config);
 const auth = new Auth(config.dataDir);
 const exchange = createExchange(secrets);
-const broker = mode === 'live' ? new LiveBroker(exchange) : new PaperBroker(exchange, config.risk.feePct);
-const store = new Store(config.dataDir, mode, config.paper.startBalanceEur);
-const bot = new Bot({ config, exchange, broker, store, secrets });
+
+// Paper en live hebben elk een eigen broker en state-bestand, zodat ze nooit door elkaar lopen.
+const brokers = { paper: new PaperBroker(exchange, config.risk.feePct), live: new LiveBroker(exchange) };
+const stores = {
+  paper: new Store(config.dataDir, 'paper', config.paper.startBalanceEur),
+  live: new Store(config.dataDir, 'live', config.paper.startBalanceEur),
+};
+const bot = new Bot({ config, exchange, brokers, stores, settings, secrets });
 
 console.info(
-  `vetobot start in ${mode.toUpperCase()}-modus | pairs: ${config.pairs.join(', ')} | ` +
-    `timeframe: ${config.timeframe} | AI: ${config.ai.provider}`,
+  `vetobot start in ${settings.mode.toUpperCase()}-modus | pairs: ${settings.pairs.join(', ')} | ` +
+    `timeframe: ${config.timeframe} | AI: ${settings.ai.provider}`,
 );
-if (mode === 'live') console.warn('LET OP: live trading staat aan. Er worden echte orders geplaatst.');
+if (settings.mode === 'live') console.warn('LET OP: live trading staat aan. Er worden echte orders geplaatst.');
 
 if (!auth.isSetUp()) {
   console.warn('==================================================================');
@@ -34,7 +40,7 @@ if (!auth.isSetUp()) {
   console.warn('==================================================================');
 }
 
-const server = startServer({ config, bot, store, secrets, auth });
+const server = startServer({ config, bot, settings, secrets, auth });
 
 const intervalMs = config.checkIntervalMinutes * 60 * 1000;
 const run = () => {
@@ -47,7 +53,8 @@ const timer = setInterval(run, intervalMs);
 function shutdown(sig) {
   console.info(`${sig} ontvangen, afsluiten...`);
   clearInterval(timer);
-  store.save();
+  stores.paper.save();
+  stores.live.save();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 5000).unref();
 }

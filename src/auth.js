@@ -90,6 +90,15 @@ export class Auth {
     return this.#newSession(this.data.username);
   }
 
+  // Extra bevestiging voor gevoelige acties, zoals overschakelen naar live trading.
+  confirmPassword(password, ip) {
+    this.#checkLock(ip);
+    if (!this.isSetUp() || !safeEqual(this.#hash(String(password ?? ''), this.data.salt), this.data.hash)) {
+      this.#fail(ip, 'Wachtwoord klopt niet');
+    }
+    this.fails.delete(ip);
+  }
+
   changePassword({ current, next }, ip) {
     this.#checkLock(ip);
     if (!safeEqual(this.#hash(String(current ?? ''), this.data.salt), this.data.hash)) {

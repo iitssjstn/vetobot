@@ -1,6 +1,6 @@
 import { evaluate } from './strategy.js';
 import { askVeto } from './ai.js';
-import { fetchClosedCandles, fetchPrice } from './exchange.js';
+import { fetchClosedCandles, fetchPrice, hasTradingKeys } from './exchange.js';
 import { checkEntry } from './risk.js';
 
 // Eén "tick": loopt alle pairs langs, beheert open posities en beoordeelt nieuwe signalen.
@@ -11,12 +11,17 @@ import { checkEntry } from './risk.js';
 //   2. Geen positie en een koopsignaal? Dan eerst de harde risicoregels, daarna de AI-veto.
 
 export class Bot {
-  constructor({ config, exchange, broker, store, secrets, log = console }) {
+  // brokers en stores: { paper, live }. De actieve modus komt uit settings en
+  // kan via het dashboard gewisseld worden (zie switchMode).
+  constructor({ config, exchange, brokers, stores, settings, secrets, log = console }) {
     this.config = config;
     this.ex = exchange;
-    this.broker = broker;
-    this.store = store;
+    this.brokers = brokers;
+    this.stores = stores;
+    this.settings = settings;
     this.secrets = secrets;
+    this.liveBalance = null;
+    this.queue = Promise.resolve();
     this.log = log;
     this.lastSignalCandle = {};
     this.lastTickAt = null;
@@ -41,14 +46,131 @@ export class Bot {
     this.currentStep = text;
   }
 
-  async tick() {
-    if (this.running) return;
+  get mode() {
+    return this.settings.mode;
+  }
+
+  get broker() {
+    return this.brokers[this.mode];
+  }
+
+  get store() {
+    return this.stores[this.mode];
+  }
+
+  // Zorgt dat een check, een handmatige verkoop en een modus-wissel nooit tegelijk lopen.
+  #exclusive(fn) {
+    const run = this.queue.then(fn);
+    this.queue = run.catch(() => {});
+    return run;
+  }
+
+  // Alle actieve EUR-markten op Bitvavo met 24-uursvolume, gecachet voor 10 minuten.
+  async listMarkets() {
+    if (this.marketCache && Date.now() - this.marketCache.at < 10 * 60 * 1000) return this.marketCache.list;
+    await this.ex.loadMarkets();
+    const eur = Object.values(this.ex.markets).filter((m) => m.quote === 'EUR' && m.spot && m.active !== false);
+    let tickers = {};
+    try {
+      tickers = await this.ex.fetchTickers(eur.map((m) => m.symbol));
+    } catch {
+      // Zonder tickers tonen we de markten nog steeds, alleen zonder volume.
+    }
+    const list = eur
+      .map((m) => ({
+        pair: m.symbol,
+        base: m.base,
+        price: tickers[m.symbol]?.last ?? null,
+        volumeEur: tickers[m.symbol]?.quoteVolume ?? null,
+        change24h: tickers[m.symbol]?.percentage ?? null,
+      }))
+      .sort((a, b) => (b.volumeEur ?? 0) - (a.volumeEur ?? 0));
+    this.marketCache = { at: Date.now(), list };
+    return list;
+  }
+
+  async setPairs(pairs) {
+    const markets = await this.listMarkets();
+    await this.#exclusive(async () => {
+      const open = Object.keys(this.store.state.positions).filter((p) => !pairs.includes(p));
+      if (open.length) {
+        throw new Error(`Je kunt ${open.join(', ')} niet weghalen zolang daar een positie open staat`);
+      }
+      this.settings.setPairs(pairs, new Set(markets.map((m) => m.pair)));
+      for (const p of Object.keys(this.pairStatus)) if (!this.settings.pairs.includes(p)) delete this.pairStatus[p];
+      this.#event('info', null, `Coins bijgewerkt: ${this.settings.pairs.join(', ')}`);
+    });
+  }
+
+  // Haalt het echte EUR-saldo op bij Bitvavo. Gooit als de keys niet werken.
+  async refreshLiveBalance() {
+    if (!hasTradingKeys(this.ex)) {
+      this.liveBalance = null;
+      throw new Error('Bitvavo-keys ontbreken, vul ze in bij Instellingen');
+    }
+    const bal = await this.ex.fetchBalance();
+    this.liveBalance = { eurFree: bal.EUR?.free ?? 0, eurTotal: bal.EUR?.total ?? 0, at: new Date().toISOString() };
+    return this.liveBalance;
+  }
+
+  // Wisselt tussen paper en live. Weigert als er in de huidige modus nog posities open
+  // staan, zodat een echte positie nooit onbewaakt achterblijft.
+  switchMode(mode) {
+    return this.#exclusive(async () => {
+      if (!['paper', 'live'].includes(mode)) throw new Error(`Ongeldige modus "${mode}"`);
+      if (mode === this.mode) return;
+      const open = Object.keys(this.store.state.positions);
+      if (open.length) {
+        throw new Error(`Er staan nog ${open.length} positie(s) open in ${this.mode} (${open.join(', ')}). Sluit die eerst.`);
+      }
+      if (mode === 'live') {
+        this.#step('Bitvavo-keys testen');
+        try {
+          await this.refreshLiveBalance();
+        } catch (err) {
+          throw new Error(`Bitvavo-keys werken niet: ${err.message}`);
+        } finally {
+          this.#step(null);
+        }
+      }
+      this.settings.setMode(mode);
+      this.lastSignalCandle = {};
+      this.#event('warn', null, mode === 'live'
+        ? 'Overgeschakeld naar LIVE trading. Er worden nu echte orders geplaatst.'
+        : 'Overgeschakeld naar paper trading.');
+    });
+  }
+
+  // Sluit een positie handmatig vanuit het dashboard.
+  closeManual(pair) {
+    return this.#exclusive(async () => {
+      if (!this.store.state.positions[pair]) throw new Error(`Geen open positie voor ${pair}`);
+      try {
+        await this.#close(pair, 'Handmatig gesloten');
+        if (this.pairStatus[pair]) this.pairStatus[pair].inPosition = false;
+        this.store.save();
+      } finally {
+        this.#step(null);
+      }
+    });
+  }
+
+  tick() {
+    if (this.running || this.tickQueued) return this.queue;
+    this.tickQueued = true;
+    return this.#exclusive(async () => {
+      this.tickQueued = false;
+      await this.#tick();
+    });
+  }
+
+  async #tick() {
     this.running = true;
     const started = Date.now();
     let errors = 0;
     try {
       this.#resetHaltIfNewDay();
-      for (const pair of this.config.pairs) {
+      for (const pair of this.settings.pairs) {
         try {
           await this.#handlePair(pair);
         } catch (err) {
@@ -57,6 +179,13 @@ export class Bot {
           this.lastError = { at: new Date().toISOString(), pair, message: err.message };
           this.pairStatus[pair] = { ...this.pairStatus[pair], at: new Date().toISOString(), error: err.message };
         }
+      }
+      if (this.mode === 'live') {
+        this.#step('Saldo ophalen bij Bitvavo');
+        await this.refreshLiveBalance().catch((err) => {
+          errors++;
+          this.#event('error', null, `Saldo ophalen mislukt: ${err.message}`);
+        });
       }
       this.lastTickAt = new Date().toISOString();
       if (!errors) this.lastError = null;
@@ -141,7 +270,7 @@ export class Bot {
     }
 
     this.#step(`${pair}: AI om oordeel vragen`);
-    const veto = await askVeto({ ...this.config.ai, apiKey: this.secrets?.get('aiApiKey') }, {
+    const veto = await askVeto({ ...this.config.ai, ...this.settings.ai, apiKey: this.secrets?.get('aiApiKey') }, {
       pair,
       timeframe,
       indicators: result.indicators,

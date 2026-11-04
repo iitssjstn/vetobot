@@ -70,9 +70,6 @@ Voeg de service toe aan je `docker-compose.yml`. Hier staan alleen instellingen 
       - 1.0.0.1
     environment:
       - TZ=Europe/Amsterdam
-      - LIVE_TRADING=false
-      - PAIRS=BTC/EUR,ETH/EUR
-      - AI_PROVIDER=none
     ports:
       - "127.0.0.1:3020:3000"
     volumes:
@@ -91,12 +88,21 @@ De image is publiek, dus inloggen bij ghcr.io is niet nodig. Krijg je bij `docke
 
 ## Instellingen
 
-Alle instellingen zijn environment variables in je compose. Geen ervan is geheim.
+In het dashboard onder **Instellingen** regel je:
+
+- **Handelsmodus**: paper of live (zie hieronder)
+- **Coins**: kies uit alle EUR-markten op Bitvavo, gesorteerd op volume, maximaal 30
+- **AI-veto**: provider, model en base-URL
+- **API-keys** en je **wachtwoord**
+
+Deze keuzes worden opgeslagen in `data/settings.json` en blijven bewaard na een herstart.
+
+De risicolimieten en de strategie stel je in met environment variables in je compose. Geen ervan is geheim. `LIVE_TRADING`, `PAIRS` en `AI_*` gelden alleen als beginwaarde bij de allereerste start; daarna gaat het dashboard voor.
 
 | Variabele | Standaard | Betekenis |
 |---|---|---|
-| `LIVE_TRADING` | `false` | `true` plaatst echte orders (vereist Bitvavo-keys in het dashboard) |
-| `PAIRS` | `BTC/EUR,ETH/EUR` | Komma-gescheiden pairs |
+| `LIVE_TRADING` | `false` | Beginwaarde voor de modus; daarna via het dashboard |
+| `PAIRS` | `BTC/EUR,ETH/EUR` | Beginwaarde voor de coins; daarna via het dashboard |
 | `TIMEFRAME` | `1h` | Candle-timeframe |
 | `CHECK_INTERVAL_MINUTES` | `15` | Hoe vaak de bot checkt |
 | `EMA_FAST` / `EMA_SLOW` | `12` / `26` | EMA-periodes |
@@ -118,9 +124,16 @@ Alle instellingen zijn environment variables in je compose. Geen ervan is geheim
 Doe dit pas na weken paper trading met resultaten waar je tevreden over bent.
 
 1. Maak bij Bitvavo een API-key aan met **alleen handelsrechten, zonder opnamerechten**, en koppel hem aan het IP-adres van je server.
-2. Vul de key en het secret in via het dashboard.
-3. Zet `LIVE_TRADING=true` in je compose en herstart de container.
+2. Vul de key en het secret in bij Instellingen → API-keys en klik op **Bitvavo-keys testen**.
+3. Klik bij Handelsmodus op **Overschakelen naar live**, vul je wachtwoord in en typ `LIVE`.
 4. Begin met een kleine `STAKE_EUR` en een lage `MAX_DAILY_LOSS_EUR`.
+
+Beveiligingen bij het wisselen:
+
+- De bot test eerst of je Bitvavo-keys werken en haalt je saldo op. Lukt dat niet, dan blijft hij op paper.
+- Wisselen kan alleen als er in de huidige modus geen posities meer open staan. Zo blijft een echte positie nooit onbewaakt achter. Sluit ze eerst, eventueel met de knop **Sluiten** bij Posities.
+- Zolang je live staat, kun je de Bitvavo-keys niet verwijderen.
+- In live-modus staat er een rode streep bovenaan het dashboard en een rode **LIVE**-badge.
 
 Paper en live hebben elk een eigen state-bestand (`data/state-paper.json` en `data/state-live.json`), dus ze lopen nooit door elkaar.
 
@@ -135,6 +148,7 @@ Let op: stop-loss en take-profit worden per check bekeken, niet direct op de exc
 - Wachtwoord wijzigen
 - **Nu checken** voert direct een check uit
 - **Pauzeren** stopt nieuwe trades; open posities worden nog wel bewaakt
+- **Sluiten** bij een positie verkoopt hem direct tegen de marktprijs
 
 ## Ontwikkelen
 

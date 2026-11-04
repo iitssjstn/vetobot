@@ -3,211 +3,495 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
 <title>vetobot</title>
 <style>
   :root {
-    --bg: #f6f5f2; --card: #ffffff; --text: #1c1b19; --muted: #6b6862; --line: #e4e1db;
-    --up: #1f7a4d; --down: #b3362f; --accent: #3a4fb0; --warn: #a86a00;
+    --bg: #0f1115; --panel: #171a21; --panel-2: #1d212a; --line: #262b36; --line-2: #313746;
+    --text: #e8eaef; --muted: #8b92a3; --faint: #5d6474;
+    --accent: #8b7cf6; --accent-2: #6d5ee0; --accent-soft: rgba(139,124,246,.14);
+    --up: #3ccf8e; --up-soft: rgba(60,207,142,.12);
+    --down: #f26d6d; --down-soft: rgba(242,109,109,.12);
+    --warn: #f0b24a; --warn-soft: rgba(240,178,74,.12);
+    --info: #5aa9f0;
+    --radius: 12px; --shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 8px 24px rgba(0,0,0,.25);
   }
-  @media (prefers-color-scheme: dark) {
+  @media (prefers-color-scheme: light) {
     :root {
-      --bg: #141413; --card: #1d1d1b; --text: #ecebe7; --muted: #9b988f; --line: #2e2d2a;
-      --up: #4cc38a; --down: #f0726a; --accent: #8c9cf0; --warn: #e0a640;
+      --bg: #f4f5f8; --panel: #ffffff; --panel-2: #f8f9fb; --line: #e4e7ee; --line-2: #d6dae4;
+      --text: #171a21; --muted: #5f6677; --faint: #9aa1b1;
+      --accent: #6d5ee0; --accent-2: #5a4bd0; --accent-soft: rgba(109,94,224,.10);
+      --up: #12925a; --up-soft: rgba(18,146,90,.10);
+      --down: #d23f3f; --down-soft: rgba(210,63,63,.09);
+      --warn: #b7770d; --warn-soft: rgba(183,119,13,.10);
+      --info: #2f7fd1; --shadow: 0 1px 2px rgba(20,24,35,.06);
     }
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body { margin: 0; background: var(--bg); color: var(--text);
-    font: 15px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
-  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
-  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; justify-content: space-between; }
-  h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
-  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 28px 0 10px; }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600;
-    border: 1px solid var(--line); }
-  .paper { color: var(--accent); } .live { color: var(--down); border-color: var(--down); }
-  .meta { color: var(--muted); font-size: 13px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-top: 16px; }
-  .tile { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
-  .tile .k { color: var(--muted); font-size: 12px; }
-  .tile .v { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow-x: auto; }
-  .pad { padding: 16px; }
-  table { width: 100%; border-collapse: collapse; font-size: 13.5px; font-variant-numeric: tabular-nums; }
-  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { color: var(--muted); font-weight: 500; font-size: 12px; }
-  tr:last-child td { border-bottom: 0; }
-  .up { color: var(--up); } .down { color: var(--down); } .warnc { color: var(--warn); }
-  .empty { padding: 14px; color: var(--muted); }
-  .banner { margin-top: 16px; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--warn); color: var(--warn); }
-  button { font: inherit; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line);
-    background: var(--card); color: var(--text); cursor: pointer; }
-  button:hover { border-color: var(--muted); }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  button:disabled { opacity: .6; cursor: default; }
-  .reason { max-width: 420px; }
+    font: 14.5px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased; }
+  [hidden] { display: none !important; }
+  .num { font-variant-numeric: tabular-nums; }
+  .up { color: var(--up); } .down { color: var(--down); } .warnc { color: var(--warn); } .muted { color: var(--muted); }
+  svg.i { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.8;
+    stroke-linecap: round; stroke-linejoin: round; }
+
+  /* ---------- Layout ---------- */
+  .app { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100vh; }
+  .app.is-live { box-shadow: inset 0 3px 0 var(--down); }
+  main, .two > * { min-width: 0; }
+  aside { background: var(--panel); border-right: 1px solid var(--line); padding: 20px 12px;
+    display: flex; flex-direction: column; gap: 4px; position: sticky; top: 0; height: 100vh; }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 4px 10px 18px; font-weight: 700; font-size: 17px; }
+  .brand .logo { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; }
+  .nav { display: flex; align-items: center; gap: 11px; padding: 9px 12px; border-radius: 9px; color: var(--muted);
+    cursor: pointer; border: 0; background: none; font: inherit; text-align: left; width: 100%; }
+  .nav:hover { background: var(--panel-2); color: var(--text); }
+  .nav.active { background: var(--accent-soft); color: var(--text); }
+  .nav.active svg { color: var(--accent); }
+  .nav .count { margin-left: auto; font-size: 11.5px; background: var(--panel-2); border: 1px solid var(--line);
+    padding: 0 7px; border-radius: 999px; color: var(--muted); }
+  .nav .count:empty { display: none; }
+  .aside-foot { margin-top: auto; padding: 12px 10px 0; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+  .aside-foot .user { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+
+  main { padding: 24px 28px 56px; max-width: 1240px; width: 100%; }
+  .top { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+  .top h1 { margin: 0; font-size: 22px; letter-spacing: -.01em; display: flex; align-items: center; gap: 10px; }
+  .top .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
   .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
-  /* Formulieren */
-  .auth { max-width: 380px; margin: 10vh auto 0; }
-  .auth h1 { margin-bottom: 4px; }
-  .auth p { color: var(--muted); margin: 0 0 18px; font-size: 14px; }
-  label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
-  input { width: 100%; font: inherit; padding: 9px 11px; border-radius: 8px; border: 1px solid var(--line);
-    background: var(--bg); color: var(--text); }
-  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-  .form-actions { margin-top: 16px; display: flex; gap: 8px; align-items: center; }
-  .error { color: var(--down); font-size: 13px; margin-top: 10px; min-height: 1em; }
-  .ok { color: var(--up); font-size: 13px; }
-  .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
-  .keys { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 4px 16px; }
-  .status { font-size: 12px; margin-left: 6px; }
-  code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px;
-    background: var(--bg); padding: 1px 5px; border-radius: 5px; border: 1px solid var(--line); }
-  [hidden] { display: none !important; }
+  /* ---------- Elementen ---------- */
+  .btn { display: inline-flex; align-items: center; gap: 7px; font: inherit; font-size: 13.5px; padding: 8px 13px;
+    border-radius: 9px; border: 1px solid var(--line-2); background: var(--panel); color: var(--text); cursor: pointer;
+    white-space: nowrap; }
+  .btn:hover { border-color: var(--faint); }
+  .btn:disabled { opacity: .55; cursor: default; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: var(--accent-2); }
+  .btn.danger { color: var(--down); border-color: color-mix(in srgb, var(--down) 45%, transparent); }
+  .btn.danger:hover { background: var(--down-soft); }
+  .btn.live { background: var(--down); border-color: var(--down); color: #fff; }
+  .btn.sm { padding: 5px 10px; font-size: 12.5px; }
+  .btn svg.i { width: 16px; height: 16px; }
 
-  /* Live status */
-  .statusbar { margin-top: 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px;
-    background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--up); flex: none; }
-  .dot.busy { background: var(--accent); animation: pulse 1s ease-in-out infinite; }
-  .dot.err { background: var(--down); }
-  .dot.paused { background: var(--warn); }
-  @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.8); } }
+  .badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px;
+    font-size: 11.5px; font-weight: 700; letter-spacing: .04em; border: 1px solid transparent; white-space: nowrap; }
+  .badge.paper { color: var(--accent); background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+  .badge.live { color: #fff; background: var(--down); }
+  .badge.soft { color: var(--muted); background: var(--panel-2); border-color: var(--line); font-weight: 600; letter-spacing: 0; }
+  .badge.ok { color: var(--up); background: var(--up-soft); letter-spacing: 0; }
+  .badge.bad { color: var(--down); background: var(--down-soft); letter-spacing: 0; }
+  .badge.wait { color: var(--warn); background: var(--warn-soft); letter-spacing: 0; }
+
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+  .gap { margin-top: 16px; }
+  .panel-h { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 13px 16px;
+    border-bottom: 1px solid var(--line); }
+  .panel-h h2 { margin: 0; font-size: 13px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase;
+    display: flex; align-items: center; gap: 9px; }
+  .panel-h h2 svg { color: var(--muted); }
+  .panel-h .hint { font-size: 12.5px; color: var(--muted); }
+  .panel-b { padding: 16px; }
+  .scroll { overflow-x: auto; }
+
+  .grid { display: grid; gap: 12px; }
+  .tiles { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  @media (max-width: 1280px) { .tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  @media (max-width: 560px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tile .v { font-size: 19px; } }
+  .tile { position: relative; padding: 14px 16px 15px; overflow: hidden; }
+  .tile::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: var(--c, var(--accent)); }
+  .tile .k { color: var(--muted); font-size: 12.5px; display: flex; justify-content: space-between; align-items: center; }
+  .tile .k svg { width: 16px; height: 16px; color: var(--faint); }
+  .tile .v { font-size: 23px; font-weight: 700; margin-top: 6px; letter-spacing: -.01em; }
+  .tile .s { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: left; padding: 10px 16px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { color: var(--muted); font-weight: 550; font-size: 12px; background: var(--panel-2); white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  tbody tr:hover td { background: color-mix(in srgb, var(--panel-2) 60%, transparent); }
+  td.r, th.r { text-align: right; }
+  .empty { padding: 28px 16px; color: var(--muted); text-align: center; font-size: 13.5px; }
+  .empty svg { width: 26px; height: 26px; color: var(--faint); display: block; margin: 0 auto 8px; }
+  .reason { max-width: 460px; color: var(--muted); }
+  .pair { font-weight: 650; white-space: nowrap; }
+  .pair small { color: var(--muted); font-weight: 500; }
+
+  /* Status */
+  .status { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 13px 16px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--up); flex: none; box-shadow: 0 0 0 4px var(--up-soft); }
+  .dot.busy { background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); animation: pulse 1s ease-in-out infinite; }
+  .dot.err { background: var(--down); box-shadow: 0 0 0 4px var(--down-soft); }
+  .dot.paused { background: var(--warn); box-shadow: 0 0 0 4px var(--warn-soft); }
+  @keyframes pulse { 50% { opacity: .35; } }
   @media (prefers-reduced-motion: reduce) { .dot.busy { animation: none; } }
-  .statusbar .main { font-weight: 600; }
-  .statusbar .sub { color: var(--muted); font-size: 13px; }
-  .progress { flex: 1 1 160px; height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; min-width: 120px; }
-  .progress > div { height: 100%; background: var(--accent); width: 0; transition: width 1s linear; }
-  .log { max-height: 320px; overflow-y: auto; }
-  .log .row { display: flex; gap: 12px; padding: 6px 12px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .status .main { font-weight: 650; }
+  .status .sub { color: var(--muted); font-size: 13px; }
+  .progress { flex: 1 1 180px; height: 5px; background: var(--line); border-radius: 3px; overflow: hidden; min-width: 120px; }
+  .progress > div { height: 100%; background: var(--accent); width: 0; transition: width 1s linear; border-radius: 3px; }
+
+  .alert { display: flex; gap: 10px; align-items: flex-start; padding: 11px 14px; border-radius: 10px; font-size: 13.5px;
+    border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); background: var(--warn-soft); }
+  .alert svg { color: var(--warn); margin-top: 1px; }
+  .alert.err { border-color: color-mix(in srgb, var(--down) 40%, transparent); background: var(--down-soft); }
+  .alert.err svg { color: var(--down); }
+  #alerts { display: grid; gap: 8px; margin-bottom: 16px; }
+  #alerts:empty { display: none; }
+
+  .log .row { display: grid; grid-template-columns: 72px 1fr; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--line); font-size: 13px; }
   .log .row:last-child { border-bottom: 0; }
-  .log .t { color: var(--muted); flex: none; font-variant-numeric: tabular-nums; }
+  .log .t { color: var(--faint); font-variant-numeric: tabular-nums; }
+  .log.short { max-height: 330px; overflow-y: auto; }
+  .two { display: grid; grid-template-columns: 1.35fr 1fr; gap: 16px; margin-top: 16px; }
+
+  /* Formulieren */
+  label { display: block; font-size: 12.5px; color: var(--muted); margin: 14px 0 5px; }
+  input, select { width: 100%; font: inherit; padding: 9px 11px; border-radius: 9px; border: 1px solid var(--line-2);
+    background: var(--panel-2); color: var(--text); }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  .row-actions { margin-top: 16px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .msg { font-size: 13px; }
+  .msg.err { color: var(--down); } .msg.ok { color: var(--up); }
+  .help { color: var(--muted); font-size: 12.5px; margin-top: 8px; }
+  .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 0 16px; }
+  .fields > div > label { margin-top: 0; }
+  .fields > div { margin-bottom: 4px; }
+  .kstate { float: right; font-size: 12px; }
+
+  .modecard { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: center; }
+  .modecard .big { font-size: 18px; font-weight: 700; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .modecard p { margin: 6px 0 0; color: var(--muted); font-size: 13.5px; max-width: 640px; }
+
+  .coin-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .coin-tools input { flex: 1 1 220px; width: auto; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; min-height: 30px; align-items: center; }
+  .chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 4px 4px 10px; border-radius: 999px;
+    background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); font-size: 12.5px; font-weight: 650; }
+  .chip button { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 15px; line-height: 1; padding: 0 5px; }
+  .chip button:hover { color: var(--down); }
+  .coinlist { max-height: 420px; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; }
+  .coinlist td { padding: 8px 14px; }
+  .coinlist tr[data-pick] { cursor: pointer; }
+  .coinlist th:first-child, .coinlist td:first-child { width: 44px; padding-right: 0; }
+  .coinlist input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); pointer-events: none; }
+
+  .auth-wrap { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
+  .auth { width: 100%; max-width: 400px; padding: 26px; }
+  .auth .brand { padding: 0 0 14px; }
+  .auth p { color: var(--muted); margin: 0 0 4px; font-size: 13.5px; }
+  code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; background: var(--panel-2);
+    padding: 1px 6px; border-radius: 6px; border: 1px solid var(--line); }
+
+  dialog { border: 1px solid var(--line-2); border-radius: 14px; background: var(--panel); color: var(--text);
+    padding: 0; width: min(460px, calc(100vw - 32px)); box-shadow: 0 24px 60px rgba(0,0,0,.45); }
+  dialog::backdrop { background: rgba(5,7,12,.6); }
+  dialog .d-h { padding: 18px 20px 0; display: flex; gap: 12px; align-items: flex-start; }
+  dialog .d-h .ic { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; flex: none;
+    background: var(--down-soft); color: var(--down); }
+  dialog .d-h.safe .ic { background: var(--accent-soft); color: var(--accent); }
+  dialog h3 { margin: 2px 0 4px; font-size: 17px; }
+  dialog .d-b { padding: 6px 20px 20px; }
+  dialog ul { margin: 10px 0 0; padding-left: 18px; color: var(--muted); font-size: 13.5px; }
+  dialog li { margin: 3px 0; }
+  dialog .d-f { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--line);
+    background: var(--panel-2); border-radius: 0 0 14px 14px; }
+
+  .menu-btn { display: none; }
+  @media (max-width: 860px) {
+    .app { grid-template-columns: minmax(0, 1fr); }
+    .top .actions .btn span, .top .actions .btn { font-size: 13px; }
+    aside { position: fixed; inset: 0 auto 0 0; width: 250px; z-index: 20; transform: translateX(-100%); transition: transform .2s; }
+    aside.open { transform: none; box-shadow: 0 0 0 100vmax rgba(0,0,0,.5); }
+    .menu-btn { display: inline-flex; }
+    main { padding: 16px 16px 48px; }
+    .two { grid-template-columns: 1fr; }
+    .modecard { grid-template-columns: 1fr; }
+    th, td { padding: 9px 12px; }
+  }
 </style>
 </head>
 <body>
 
-<!-- First-run setup -->
-<main id="view-setup" hidden>
-  <form class="auth card pad" id="setup-form">
-    <h1>vetobot instellen</h1>
-    <p>Maak het admin-account aan. De setup-code vind je in de logs van de container:
-      <code>docker compose logs vetobot</code></p>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/></symbol>
+  <symbol id="i-coins" viewBox="0 0 24 24"><circle cx="9" cy="9" r="6"/><path d="M15.5 9.5a6 6 0 1 1-6 6"/></symbol>
+  <symbol id="i-brief" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+  <symbol id="i-pulse" viewBox="0 0 24 24"><path d="M3 12h4l2-6 4 12 2-6h6"/></symbol>
+  <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4L21 8"/><path d="M21 3v5h-5"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="m7 5 12 7-12 7z"/></symbol>
+  <symbol id="i-out" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></symbol>
+  <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.7 12.3 9.3-9.3M17 6l3 3M14 9l2 2"/></symbol>
+  <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+  <symbol id="i-menu" viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h18"/></symbol>
+  <symbol id="i-wallet" viewBox="0 0 24 24"><path d="M20 7V5a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H5a2 2 0 0 1-2-2V6"/><path d="M17 13h.01"/></symbol>
+  <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></symbol>
+</svg>
+
+<!-- ============ First-run setup ============ -->
+<div class="auth-wrap" id="view-setup" hidden>
+  <form class="auth panel" id="setup-form">
+    <div class="brand"><span class="logo"><svg class="i"><use href="#i-shield"/></svg></span>vetobot</div>
+    <h2 style="margin:0 0 6px;font-size:19px">Admin-account aanmaken</h2>
+    <p>Eerste keer hier. De setup-code staat in de containerlogs: <code>docker compose logs vetobot</code></p>
     <label for="s-code">Setup-code</label>
-    <input id="s-code" autocomplete="off" required>
+    <input id="s-code" autocomplete="off" required placeholder="bijv. 3F9A1C2B">
     <label for="s-user">Gebruikersnaam</label>
     <input id="s-user" autocomplete="username" required minlength="3" maxlength="32">
     <label for="s-pass">Wachtwoord</label>
     <input id="s-pass" type="password" autocomplete="new-password" required minlength="10">
-    <div class="hint">Minimaal 10 tekens.</div>
+    <div class="help">Minimaal 10 tekens.</div>
     <label for="s-pass2">Wachtwoord herhalen</label>
     <input id="s-pass2" type="password" autocomplete="new-password" required minlength="10">
-    <div class="form-actions"><button class="primary" type="submit">Account aanmaken</button></div>
-    <div class="error" id="setup-error"></div>
+    <div class="row-actions"><button class="btn primary" type="submit" style="width:100%;justify-content:center">Account aanmaken</button></div>
+    <div class="msg err" id="setup-error" style="margin-top:10px"></div>
   </form>
-</main>
+</div>
 
-<!-- Login -->
-<main id="view-login" hidden>
-  <form class="auth card pad" id="login-form">
-    <h1>vetobot</h1>
+<!-- ============ Login ============ -->
+<div class="auth-wrap" id="view-login" hidden>
+  <form class="auth panel" id="login-form">
+    <div class="brand"><span class="logo"><svg class="i"><use href="#i-shield"/></svg></span>vetobot</div>
     <p>Log in om verder te gaan.</p>
     <label for="l-user">Gebruikersnaam</label>
     <input id="l-user" autocomplete="username" required>
     <label for="l-pass">Wachtwoord</label>
     <input id="l-pass" type="password" autocomplete="current-password" required>
-    <div class="form-actions"><button class="primary" type="submit">Inloggen</button></div>
-    <div class="error" id="login-error"></div>
+    <div class="row-actions"><button class="btn primary" type="submit" style="width:100%;justify-content:center">Inloggen</button></div>
+    <div class="msg err" id="login-error" style="margin-top:10px"></div>
   </form>
-</main>
+</div>
 
-<!-- Dashboard -->
-<main id="view-app" hidden>
-  <header>
-    <div>
-      <h1>vetobot <span id="mode" class="badge"></span></h1>
-      <div class="meta" id="meta"></div>
+<!-- ============ App ============ -->
+<div class="app" id="view-app" hidden>
+  <aside id="aside">
+    <div class="brand"><span class="logo"><svg class="i"><use href="#i-shield"/></svg></span>vetobot</div>
+    <button class="nav active" data-view="dashboard"><svg class="i"><use href="#i-grid"/></svg>Dashboard</button>
+    <button class="nav" data-view="market"><svg class="i"><use href="#i-chart"/></svg>Markt<span class="count" id="c-market"></span></button>
+    <button class="nav" data-view="positions"><svg class="i"><use href="#i-brief"/></svg>Posities<span class="count" id="c-positions"></span></button>
+    <button class="nav" data-view="signals"><svg class="i"><use href="#i-pulse"/></svg>AI-signalen<span class="count" id="c-signals"></span></button>
+    <button class="nav" data-view="trades"><svg class="i"><use href="#i-history"/></svg>Trades<span class="count" id="c-trades"></span></button>
+    <button class="nav" data-view="activity"><svg class="i"><use href="#i-list"/></svg>Activiteit</button>
+    <button class="nav" data-view="settings"><svg class="i"><use href="#i-gear"/></svg>Instellingen</button>
+    <div class="aside-foot">
+      <div id="side-mode"></div>
+      <div class="user"><span id="side-user"></span>
+        <button class="btn sm" id="logout" title="Uitloggen" aria-label="Uitloggen"><svg class="i"><use href="#i-out"/></svg></button></div>
     </div>
-    <div class="actions">
-      <button id="tick">Nu checken</button>
-      <button id="pause">Pauzeren</button>
-      <button id="logout">Uitloggen</button>
-    </div>
-  </header>
+  </aside>
 
-  <div class="statusbar">
-    <span class="dot" id="st-dot"></span>
-    <span class="main" id="st-main">Laden…</span>
-    <span class="sub" id="st-sub"></span>
-    <div class="progress" title="Tijd tot de volgende check"><div id="st-bar"></div></div>
-  </div>
-
-  <div id="banner"></div>
-  <div class="grid" id="tiles"></div>
-
-  <h2>Markt nu</h2>
-  <div class="card" id="pairs"></div>
-
-  <h2>Open posities</h2>
-  <div class="card" id="positions"></div>
-
-  <h2>AI-beslissingen</h2>
-  <div class="card" id="decisions"></div>
-
-  <h2>Afgesloten trades</h2>
-  <div class="card" id="trades"></div>
-
-  <h2>Activiteit</h2>
-  <div class="card log" id="activity"></div>
-
-  <h2>API-keys</h2>
-  <form class="card pad" id="keys-form">
-    <div class="meta" style="margin-bottom:6px">Keys worden versleuteld opgeslagen op de server en zijn hierna nooit meer volledig zichtbaar.
-      Laat een veld leeg om de huidige key te houden.</div>
-    <div class="keys">
-      <div>
-        <label for="k-bv">Bitvavo API-key <span class="status" id="st-bitvavoApiKey"></span></label>
-        <input id="k-bv" data-name="bitvavoApiKey" type="password" autocomplete="off">
+  <main>
+    <div class="top">
+      <div style="display:flex;gap:10px;align-items:center">
+        <button class="btn menu-btn" id="menu-btn" aria-label="Menu"><svg class="i"><use href="#i-menu"/></svg></button>
+        <div>
+          <h1><span id="title">Dashboard</span> <span id="mode-badge" class="badge"></span></h1>
+          <div class="sub" id="meta"></div>
+        </div>
       </div>
-      <div>
-        <label for="k-bvs">Bitvavo API-secret <span class="status" id="st-bitvavoApiSecret"></span></label>
-        <input id="k-bvs" data-name="bitvavoApiSecret" type="password" autocomplete="off">
-      </div>
-      <div>
-        <label for="k-ai">AI API-key <span class="status" id="st-aiApiKey"></span></label>
-        <input id="k-ai" data-name="aiApiKey" type="password" autocomplete="off">
+      <div class="actions">
+        <button class="btn" id="tick"><svg class="i"><use href="#i-refresh"/></svg>Nu checken</button>
+        <button class="btn" id="pause"><svg class="i"><use href="#i-pause"/></svg><span>Pauzeren</span></button>
       </div>
     </div>
-    <div class="hint">Bitvavo: maak een key met alleen handelsrechten, zonder opnamerechten, gekoppeld aan het IP van je server.</div>
-    <div class="form-actions">
-      <button class="primary" type="submit">Opslaan</button>
-      <button type="button" id="keys-clear">Alle keys verwijderen</button>
-      <span id="keys-msg"></span>
+
+    <div id="alerts"></div>
+
+    <section data-section="dashboard">
+      <div class="panel status">
+        <span class="dot" id="st-dot"></span>
+        <span class="main" id="st-main">Laden…</span>
+        <span class="sub" id="st-sub"></span>
+        <div class="progress" title="Tijd tot de volgende check"><div id="st-bar"></div></div>
+      </div>
+      <div class="grid tiles gap" id="tiles"></div>
+      <div class="two">
+        <div class="panel">
+          <div class="panel-h"><h2><svg class="i"><use href="#i-chart"/></svg>Markt nu</h2>
+            <button class="btn sm" data-goto="market">Alles bekijken</button></div>
+          <div class="scroll" id="dash-market"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-h"><h2><svg class="i"><use href="#i-list"/></svg>Activiteit</h2>
+            <button class="btn sm" data-goto="activity">Alles bekijken</button></div>
+          <div class="log short" id="dash-activity"></div>
+        </div>
+      </div>
+      <div class="panel gap">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-brief"/></svg>Open posities</h2></div>
+        <div class="scroll" id="dash-positions"></div>
+      </div>
+    </section>
+
+    <section data-section="market" hidden>
+      <div class="panel">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-chart"/></svg>Gevolgde coins</h2>
+          <button class="btn sm" data-goto="settings" data-anchor="coins">Coins kiezen</button></div>
+        <div class="scroll" id="market"></div>
+      </div>
+    </section>
+
+    <section data-section="positions" hidden>
+      <div class="panel">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-brief"/></svg>Open posities</h2><span class="hint" id="pos-hint"></span></div>
+        <div class="scroll" id="positions"></div>
+      </div>
+    </section>
+
+    <section data-section="signals" hidden>
+      <div class="panel">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-pulse"/></svg>AI-beslissingen</h2>
+          <span class="hint">Elk koopsignaal en wat de risicoregels en de AI ervan vonden</span></div>
+        <div class="scroll" id="signals"></div>
+      </div>
+    </section>
+
+    <section data-section="trades" hidden>
+      <div class="panel">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-history"/></svg>Afgesloten trades</h2></div>
+        <div class="scroll" id="trades"></div>
+      </div>
+    </section>
+
+    <section data-section="activity" hidden>
+      <div class="panel">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-list"/></svg>Activiteit</h2><span class="hint">Sinds de laatste herstart</span></div>
+        <div class="log" id="activity"></div>
+      </div>
+    </section>
+
+    <section data-section="settings" hidden>
+      <div class="panel">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-bolt"/></svg>Handelsmodus</h2></div>
+        <div class="panel-b modecard">
+          <div><div class="big" id="mc-title"></div><p id="mc-text"></p></div>
+          <div><button class="btn" id="mc-switch"></button></div>
+        </div>
+      </div>
+
+      <div class="panel gap" id="coins">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-coins"/></svg>Coins</h2><span class="hint" id="coin-count"></span></div>
+        <div class="panel-b">
+          <div class="chips" id="coin-chips"></div>
+          <div class="coin-tools">
+            <input id="coin-search" placeholder="Zoek coin, bijv. SOL of XRP" autocomplete="off">
+            <button class="btn sm" id="coin-top10" type="button">Top 10 op volume</button>
+            <button class="btn sm" id="coin-clear" type="button">Leegmaken</button>
+          </div>
+          <div class="coinlist" id="coin-list"><div class="empty">Markten laden…</div></div>
+          <div class="help">Gesorteerd op handelsvolume van de afgelopen 24 uur. Coins met weinig volume hebben een grotere spread, dus duurdere trades.</div>
+          <div class="row-actions">
+            <button class="btn primary" id="coin-save" type="button">Coins opslaan</button>
+            <button class="btn" id="coin-reset" type="button">Ongedaan maken</button>
+            <span class="msg" id="coin-msg"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel gap">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-cpu"/></svg>AI-veto</h2></div>
+        <form class="panel-b" id="ai-form">
+          <div class="fields">
+            <div><label for="ai-provider">Provider</label>
+              <select id="ai-provider">
+                <option value="none">Geen AI (elk signaal gaat door)</option>
+                <option value="gemini">Google Gemini</option>
+                <option value="openai">OpenAI-compatibel (Groq, OpenRouter, …)</option>
+              </select></div>
+            <div><label for="ai-model">Model</label><input id="ai-model" placeholder="leeg = standaardmodel"></div>
+            <div id="ai-base-wrap"><label for="ai-base">Base-URL</label><input id="ai-base" placeholder="https://api.groq.com/openai/v1"></div>
+          </div>
+          <div class="help">De AI mag alleen koopsignalen afwijzen. Bedragen, stop-loss en verkopen bepaalt hij nooit. De AI-key stel je hieronder in.</div>
+          <div class="row-actions"><button class="btn primary" type="submit">Opslaan</button><span class="msg" id="ai-msg"></span></div>
+        </form>
+      </div>
+
+      <div class="panel gap">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-key"/></svg>API-keys</h2>
+          <span class="hint">Versleuteld opgeslagen, nooit meer volledig zichtbaar</span></div>
+        <form class="panel-b" id="keys-form">
+          <div class="fields">
+            <div><label for="k-bv">Bitvavo API-key <span class="kstate" id="st-bitvavoApiKey"></span></label>
+              <input id="k-bv" data-name="bitvavoApiKey" type="password" autocomplete="off" placeholder="leeg = niet wijzigen"></div>
+            <div><label for="k-bvs">Bitvavo API-secret <span class="kstate" id="st-bitvavoApiSecret"></span></label>
+              <input id="k-bvs" data-name="bitvavoApiSecret" type="password" autocomplete="off" placeholder="leeg = niet wijzigen"></div>
+            <div><label for="k-ai">AI API-key <span class="kstate" id="st-aiApiKey"></span></label>
+              <input id="k-ai" data-name="aiApiKey" type="password" autocomplete="off" placeholder="leeg = niet wijzigen"></div>
+          </div>
+          <div class="help">Bitvavo: maak een key met alleen handelsrechten, zonder opnamerechten, gekoppeld aan het IP van je server.</div>
+          <div class="row-actions">
+            <button class="btn primary" type="submit">Opslaan</button>
+            <button class="btn" type="button" id="keys-test">Bitvavo-keys testen</button>
+            <button class="btn danger" type="button" id="keys-clear">Alle keys verwijderen</button>
+            <span class="msg" id="keys-msg"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="panel gap">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-lock"/></svg>Wachtwoord</h2></div>
+        <form class="panel-b" id="pw-form" style="max-width:460px">
+          <label for="p-cur" style="margin-top:0">Huidig wachtwoord</label>
+          <input id="p-cur" type="password" autocomplete="current-password" required>
+          <label for="p-new">Nieuw wachtwoord</label>
+          <input id="p-new" type="password" autocomplete="new-password" required minlength="10">
+          <div class="row-actions"><button class="btn" type="submit">Wijzigen</button><span class="msg err" id="pw-error"></span></div>
+        </form>
+      </div>
+    </section>
+  </main>
+</div>
+
+<dialog id="mode-dialog">
+  <form method="dialog" id="mode-form">
+    <div class="d-h" id="md-head">
+      <span class="ic"><svg class="i"><use href="#i-alert"/></svg></span>
+      <div><h3 id="md-title"></h3><div class="muted" id="md-sub" style="font-size:13.5px"></div></div>
+    </div>
+    <div class="d-b">
+      <ul id="md-list"></ul>
+      <label for="md-pass">Je wachtwoord</label>
+      <input id="md-pass" type="password" autocomplete="current-password">
+      <div id="md-confirm-wrap">
+        <label for="md-confirm">Typ <b>LIVE</b> ter bevestiging</label>
+        <input id="md-confirm" autocomplete="off">
+      </div>
+      <div class="msg err" id="md-error" style="margin-top:10px"></div>
+    </div>
+    <div class="d-f">
+      <button class="btn" value="cancel" type="submit">Annuleren</button>
+      <button class="btn" id="md-go" value="go" type="submit"></button>
     </div>
   </form>
-
-  <h2>Wachtwoord wijzigen</h2>
-  <form class="card pad" id="pw-form" style="max-width:420px">
-    <label for="p-cur">Huidig wachtwoord</label>
-    <input id="p-cur" type="password" autocomplete="current-password" required>
-    <label for="p-new">Nieuw wachtwoord</label>
-    <input id="p-new" type="password" autocomplete="new-password" required minlength="10">
-    <div class="form-actions"><button type="submit">Wijzigen</button></div>
-    <div class="error" id="pw-error"></div>
-  </form>
-</main>
+</dialog>
 
 <script>
 const $ = (id) => document.getElementById(id);
-const eur = (n) => n == null ? '–' : new Intl.NumberFormat('nl-NL', { style: 'currency', currency: 'EUR' }).format(n);
+const eur = (n, d) => n == null ? '–' : new Intl.NumberFormat('nl-NL', { style: 'currency', currency: 'EUR',
+  maximumFractionDigits: d ?? (Math.abs(n) < 1 ? 6 : Math.abs(n) < 100 ? 4 : 2) }).format(n);
+const eur2 = (n) => eur(n, 2);
 const pct = (n) => n == null ? '–' : `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
 const cls = (n) => n > 0 ? 'up' : n < 0 ? 'down' : '';
 const time = (s) => s ? new Date(s).toLocaleString('nl-NL', { dateStyle: 'short', timeStyle: 'short' }) : '–';
-const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const icon = (n) => `<svg class="i"><use href="#i-${n}"/></svg>`;
+const compact = (n) => n == null ? '–' : new Intl.NumberFormat('nl-NL', { notation: 'compact', maximumFractionDigits: 1 }).format(n);
+const pairHtml = (p) => { const [b, q] = String(p).split('/'); return `<span class="pair">${esc(b)}<small>/${esc(q)}</small></span>`; };
 
 async function api(url, body) {
-  const opts = body === undefined ? {} : {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-  };
+  const opts = body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
   const res = await fetch(url, opts);
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && !url.includes('/auth/')) { show('login'); throw new Error('Niet ingelogd'); }
@@ -215,187 +499,199 @@ async function api(url, body) {
   return data;
 }
 
-let pollTimer;
-// Sneller verversen terwijl de bot bezig is.
-function poll() {
-  clearTimeout(pollTimer);
-  pollTimer = setTimeout(async () => {
-    await load().catch(() => {});
-    if (!$('view-app').hidden) poll();
-  }, state?.running ? 2000 : 15000);
+// rowAttr: optionele functie die extra attributen per rij teruggeeft.
+function table(rows, cols, empty, emptyIcon = 'list', rowAttr) {
+  if (!rows.length) return `<div class="empty">${icon(emptyIcon)}${empty}</div>`;
+  return `<table><thead><tr>${cols.map(c => `<th class="${c[2] ?? ''}">${c[0]}</th>`).join('')}</tr></thead><tbody>` +
+    rows.map(r => `<tr ${rowAttr ? rowAttr(r) : ''}>${cols.map(c => `<td class="${c[2] ?? ''}">${c[1](r)}</td>`).join('')}</tr>`).join('') +
+    '</tbody></table>';
 }
+
+// ---------- Views ----------
+let pollTimer, state, me;
+const titles = { dashboard: 'Dashboard', market: 'Markt', positions: 'Posities', signals: 'AI-signalen',
+  trades: 'Trades', activity: 'Activiteit', settings: 'Instellingen' };
+const isOn = (section) => !document.querySelector(`[data-section="${section}"]`).hidden;
+
 function show(view) {
   for (const v of ['setup', 'login', 'app']) $(`view-${v}`).hidden = v !== view;
   clearTimeout(pollTimer);
   if (view === 'app') {
-    load(); loadKeys();
-    poll();
+    load().then(poll).catch(() => {});
+    const start = location.hash.slice(1);
+    go(titles[start] ? start : 'dashboard');
   }
+}
+
+function go(section, anchor) {
+  document.querySelectorAll('[data-section]').forEach(s => s.hidden = s.dataset.section !== section);
+  document.querySelectorAll('.nav').forEach(n => n.classList.toggle('active', n.dataset.view === section));
+  $('title').textContent = titles[section];
+  $('aside').classList.remove('open');
+  if (section === 'settings') { renderSettings(); loadMarkets(); loadKeys(); }
+  if (anchor) setTimeout(() => $(anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+  else window.scrollTo({ top: 0 });
+  history.replaceState(null, '', `#${section}`);
+}
+document.querySelectorAll('.nav').forEach(n => n.onclick = () => go(n.dataset.view));
+document.addEventListener('click', (e) => { const b = e.target.closest('[data-goto]'); if (b) go(b.dataset.goto, b.dataset.anchor); });
+$('menu-btn').onclick = () => $('aside').classList.toggle('open');
+
+function poll() {
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(async () => { await load().catch(() => {}); if (!$('view-app').hidden) poll(); },
+    state?.running ? 2000 : 15000);
 }
 
 async function init() {
   const s = await api('api/auth/status');
+  me = s.username;
   show(s.setupRequired ? 'setup' : s.loggedIn ? 'app' : 'login');
 }
 
-// --- Setup & login ----------------------------------------------------------
+// ---------- Auth ----------
 $('setup-form').onsubmit = async (e) => {
-  e.preventDefault();
-  $('setup-error').textContent = '';
+  e.preventDefault(); $('setup-error').textContent = '';
   if ($('s-pass').value !== $('s-pass2').value) { $('setup-error').textContent = 'Wachtwoorden komen niet overeen'; return; }
   try {
     await api('api/auth/setup', { code: $('s-code').value, username: $('s-user').value, password: $('s-pass').value });
-    show('app');
+    me = $('s-user').value.trim(); show('app');
   } catch (err) { $('setup-error').textContent = err.message; }
 };
-
 $('login-form').onsubmit = async (e) => {
-  e.preventDefault();
-  $('login-error').textContent = '';
+  e.preventDefault(); $('login-error').textContent = '';
   try {
     await api('api/auth/login', { username: $('l-user').value, password: $('l-pass').value });
-    $('l-pass').value = '';
-    show('app');
+    me = $('l-user').value.trim(); $('l-pass').value = ''; show('app');
   } catch (err) { $('login-error').textContent = err.message; }
 };
-
 $('logout').onclick = async () => { await api('api/auth/logout', {}).catch(() => {}); show('login'); };
-
 $('pw-form').onsubmit = async (e) => {
-  e.preventDefault();
-  $('pw-error').textContent = '';
+  e.preventDefault(); $('pw-error').textContent = '';
   try {
     await api('api/auth/password', { current: $('p-cur').value, next: $('p-new').value });
     $('p-cur').value = $('p-new').value = '';
-    show('login');
-    $('login-error').textContent = 'Wachtwoord gewijzigd, log opnieuw in.';
+    show('login'); $('login-error').textContent = 'Wachtwoord gewijzigd, log opnieuw in.';
   } catch (err) { $('pw-error').textContent = err.message; }
 };
 
-// --- API-keys ----------------------------------------------------------------
-function renderKeyStatus(status) {
-  for (const [name, s] of Object.entries(status)) {
-    $(`st-${name}`).innerHTML = s.set ? `<span class="ok">ingesteld ${esc(s.hint)}</span>` : '<span class="warnc">niet ingesteld</span>';
-  }
-}
-async function loadKeys() { renderKeyStatus(await api('api/settings/keys')); }
-
-$('keys-form').onsubmit = async (e) => {
-  e.preventDefault();
-  const updates = {};
-  for (const input of e.target.querySelectorAll('input[data-name]')) {
-    if (input.value.trim()) updates[input.dataset.name] = input.value.trim();
-  }
-  if (!Object.keys(updates).length) { $('keys-msg').textContent = 'Niets ingevuld.'; return; }
-  try {
-    renderKeyStatus(await api('api/settings/keys', updates));
-    e.target.reset();
-    $('keys-msg').innerHTML = '<span class="ok">Opgeslagen.</span>';
-    load();
-  } catch (err) { $('keys-msg').innerHTML = `<span class="down">${esc(err.message)}</span>`; }
-};
-
-$('keys-clear').onclick = async () => {
-  if (!confirm('Alle API-keys verwijderen?')) return;
-  renderKeyStatus(await api('api/settings/keys', { bitvavoApiKey: null, bitvavoApiSecret: null, aiApiKey: null }));
-  $('keys-msg').innerHTML = '<span class="ok">Verwijderd.</span>';
-  load();
-};
-
-// --- Dashboard ---------------------------------------------------------------
-function table(rows, cols, emptyText) {
-  if (!rows.length) return `<div class="empty">${emptyText}</div>`;
-  return `<table><thead><tr>${cols.map(c => `<th>${c[0]}</th>`).join('')}</tr></thead><tbody>` +
-    rows.map(r => `<tr>${cols.map(c => `<td>${c[1](r)}</td>`).join('')}</tr>`).join('') + '</tbody></table>';
-}
-
-let state;
+// ---------- Render ----------
 async function load() {
   state = await api('api/state');
+  state._offset = new Date(state.serverTime).getTime() - Date.now();
   const s = state;
+  const live = s.mode === 'live';
 
-  $('mode').textContent = s.mode.toUpperCase();
-  $('mode').className = `badge ${s.mode}`;
-  $('meta').textContent = `${s.pairs.join(', ')} · ${s.timeframe} · AI: ${s.aiProvider} · laatste check ${time(s.lastTickAt)}`;
-  $('pause').textContent = s.halted?.manual ? 'Hervatten' : 'Pauzeren';
+  $('mode-badge').textContent = live ? 'LIVE' : 'PAPER';
+  $('mode-badge').className = `badge ${s.mode}`;
+  $('view-app').classList.toggle('is-live', live);
+  $('meta').textContent = `${s.pairs.length} coins · ${s.timeframe}-candles · AI: ${s.ai.provider === 'none' ? 'uit' : s.ai.provider}${s.ai.model ? ` (${s.ai.model})` : ''}`;
+  $('side-mode').innerHTML = `Modus: <b class="${live ? 'down' : ''}">${live ? 'Live' : 'Paper'}</b>`;
+  $('side-user').textContent = me ?? '';
+  $('pause').innerHTML = s.halted?.manual ? `${icon('play')}<span>Hervatten</span>` : `${icon('pause')}<span>Pauzeren</span>`;
+  $('c-market').textContent = s.pairs.length;
+  $('c-positions').textContent = s.positions.length || '';
+  $('c-signals').textContent = s.decisions.length || '';
+  $('c-trades').textContent = s.stats.totalTrades || '';
+
+  const alerts = [];
+  if (s.halted) alerts.push(['', `Nieuwe trades gepauzeerd: ${esc(s.halted.reason)}. Open posities worden nog bewaakt.`]);
+  if (live && !s.bitvavoKeysSet) alerts.push(['err', 'Live-modus, maar de Bitvavo-keys ontbreken. Vul ze in bij Instellingen.']);
+  if (s.ai.provider !== 'none' && !s.aiKeySet) alerts.push(['', `AI-provider "${esc(s.ai.provider)}" is gekozen, maar er is geen AI-key. Koopsignalen worden afgewezen.`]);
+  if (s.lastError) alerts.push(['err', `Fout bij laatste check (${esc(s.lastError.pair)}): ${esc(s.lastError.message)}`]);
+  $('alerts').innerHTML = alerts.map(([c, t]) => `<div class="alert ${c}">${icon('alert')}<div>${t}</div></div>`).join('');
+
+  const tiles = [];
+  if (live) tiles.push(['Bitvavo-saldo', s.liveBalance ? eur2(s.liveBalance.eurFree) : '–',
+    s.liveBalance ? `totaal ${eur2(s.liveBalance.eurTotal)}` : 'nog niet opgehaald', 'var(--down)', 'wallet']);
+  else tiles.push(['Paper-saldo', eur2(s.balanceEur), `start ${eur2(s.startBalanceEur)}`, 'var(--accent)', 'wallet']);
+  tiles.push(
+    ['Resultaat totaal', `<span class="${cls(s.stats.realizedEur)}">${eur2(s.stats.realizedEur)}</span>`, `${s.stats.totalTrades} afgesloten trades`, 'var(--up)', 'chart'],
+    ['Resultaat vandaag', `<span class="${cls(s.stats.realizedTodayEur)}">${eur2(s.stats.realizedTodayEur)}</span>`, `daglimiet −${eur2(s.risk.maxDailyLossEur)}`, 'var(--info)', 'target'],
+    ['Open posities', `${s.positions.length} / ${s.risk.maxOpenTrades}`, `${eur2(s.risk.stakeEur)} per trade`, 'var(--warn)', 'brief'],
+    ['Winrate', s.stats.winRate == null ? '–' : `${s.stats.winRate.toFixed(0)}%`, s.stats.totalTrades ? 'van afgesloten trades' : 'nog geen trades', 'var(--up)', 'pulse'],
+    ['AI goed / af', `${s.stats.approved} / ${s.stats.vetoed}`, `${s.stats.blocked} geblokkeerd door regels`, 'var(--accent)', 'cpu'],
+  );
+  $('tiles').innerHTML = tiles.map(([k, v, sub, c, ic]) =>
+    `<div class="panel tile" style="--c:${c}"><div class="k">${k}${icon(ic)}</div><div class="v num">${v}</div><div class="s">${sub}</div></div>`).join('');
 
   renderStatus();
 
-  $('pairs').innerHTML = table(s.pairStatus, [
-    ['Pair', p => esc(p.pair) + (p.inPosition ? ' <span class="badge paper">positie</span>' : '')],
-    ['Koers', p => p.price != null ? eur(p.price) : '–'],
-    ['24 candles', p => p.change24 != null ? `<span class="${cls(p.change24)}">${pct(p.change24)}</span>` : '–'],
-    ['Trend', p => p.trend === 'up' ? '<span class="up">▲ omhoog</span>' : p.trend === 'down' ? '<span class="down">▼ omlaag</span>' : '–'],
-    ['RSI', p => p.rsi != null ? p.rsi.toFixed(1) : '–'],
-    ['Laatste beoordeling', p => p.error ? `<span class="down">Fout: ${esc(p.error)}</span>`
-      : `<div class="reason">${esc(p.reason ?? 'Nog niet gecheckt')}${p.inPosition && p.positionChangePct != null
-        ? ` · positie <span class="${cls(p.positionChangePct)}">${pct(p.positionChangePct)}</span>` : ''}</div>`],
-    ['Gecheckt', p => time(p.at)],
-  ], 'Nog geen data.');
+  const trend = (p) => p.trend === 'up' ? '<span class="up">▲ omhoog</span>' : p.trend === 'down' ? '<span class="down">▼ omlaag</span>' : '<span class="muted">–</span>';
+  const judgement = (p) => p.error ? `<span class="down">Fout: ${esc(p.error)}</span>`
+    : `${esc(p.reason ?? 'Nog niet gecheckt')}${p.inPosition && p.positionChangePct != null ? ` · positie <span class="${cls(p.positionChangePct)}">${pct(p.positionChangePct)}</span>` : ''}`;
+  const pairCell = (p) => pairHtml(p.pair) + (p.inPosition ? ' <span class="badge soft">positie</span>' : '');
+  $('dash-market').innerHTML = table(s.pairStatus.slice(0, 8), [
+    ['Coin', pairCell],
+    ['Koers', p => `<span class="num">${eur(p.price)}</span>`, 'r'],
+    ['Trend', trend],
+    ['RSI', p => `<span class="num">${p.rsi != null ? p.rsi.toFixed(0) : '–'}</span>`, 'r'],
+  ], 'Nog geen data. De eerste check loopt.', 'chart');
+  $('market').innerHTML = table(s.pairStatus, [
+    ['Coin', pairCell],
+    ['Koers', p => `<span class="num">${eur(p.price)}</span>`, 'r'],
+    ['24 candles', p => `<span class="num ${cls(p.change24)}">${pct(p.change24)}</span>`, 'r'],
+    ['Trend', trend],
+    ['RSI', p => `<span class="num">${p.rsi != null ? p.rsi.toFixed(1) : '–'}</span>`, 'r'],
+    ['Laatste beoordeling', p => `<div class="reason">${judgement(p)}</div>`],
+    ['Gecheckt', p => `<span class="muted">${time(p.at)}</span>`],
+  ], 'Nog geen data. De eerste check loopt.', 'chart');
 
-  const lvl = { error: 'down', warn: 'warnc', info: '' };
-  $('activity').innerHTML = s.activity.length
-    ? s.activity.map(a => `<div class="row"><span class="t">${new Date(a.at).toLocaleTimeString('nl-NL')}</span>` +
-        `<span class="${lvl[a.level] ?? ''}">${a.pair ? `<b>${esc(a.pair)}</b> ` : ''}${esc(a.message)}</span></div>`).join('')
-    : '<div class="empty">Nog geen activiteit sinds de laatste herstart.</div>';
+  const posCols = [
+    ['Coin', p => pairHtml(p.pair)],
+    ['Instap', p => `<span class="num">${eur(p.entryPrice)}</span>`, 'r'],
+    ['Huidig', p => `<span class="num">${eur(p.currentPrice)}</span>`, 'r'],
+    ['P/L', p => `<span class="num ${cls(p.changePct)}">${pct(p.changePct)}</span>`, 'r'],
+    ['Inzet', p => `<span class="num">${eur2(p.costEur)}</span>`, 'r'],
+    ['Geopend', p => `<span class="muted">${time(p.openedAt)}</span>`],
+    ['', p => `<button class="btn sm danger" data-close="${esc(p.pair)}">Sluiten</button>`, 'r'],
+  ];
+  const posEmpty = 'Geen open posities. De bot opent er een bij een koopsignaal dat door de regels en de AI komt.';
+  $('dash-positions').innerHTML = table(s.positions, posCols, posEmpty, 'brief');
+  $('positions').innerHTML = table(s.positions, posCols, posEmpty, 'brief');
+  $('pos-hint').textContent = `Stop-loss −${s.risk.stopLossPct}% · take-profit +${s.risk.takeProfitPct}%`;
 
-  let banner = '';
-  if (s.halted) banner += `<div class="banner">Nieuwe trades gepauzeerd: ${esc(s.halted.reason)}</div>`;
-  if (s.mode === 'live' && !s.bitvavoKeysSet) banner += '<div class="banner">Live-modus, maar de Bitvavo-keys zijn niet ingesteld. Vul ze hieronder in.</div>';
-  if (s.aiProvider !== 'none' && !s.aiKeySet) banner += `<div class="banner">AI-provider "${esc(s.aiProvider)}" is gekozen, maar er is geen AI-key ingesteld. Koopsignalen worden afgewezen.</div>`;
-  if (s.lastError) banner += `<div class="banner">Laatste fout (${time(s.lastError.at)}, ${esc(s.lastError.pair)}): ${esc(s.lastError.message)}</div>`;
-  $('banner').innerHTML = banner;
-
-  const tiles = [];
-  if (s.mode === 'paper') tiles.push(['Paper-saldo', eur(s.balanceEur)]);
-  tiles.push(
-    ['Resultaat totaal', `<span class="${cls(s.stats.realizedEur)}">${eur(s.stats.realizedEur)}</span>`],
-    ['Resultaat vandaag', `<span class="${cls(s.stats.realizedTodayEur)}">${eur(s.stats.realizedTodayEur)}</span>`],
-    ['Trades', s.stats.totalTrades],
-    ['Winrate', s.stats.winRate == null ? '–' : `${s.stats.winRate.toFixed(0)}%`],
-    ['AI goedgekeurd / afgewezen', `${s.stats.approved} / ${s.stats.vetoed}`],
-  );
-  $('tiles').innerHTML = tiles.map(([k, v]) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
-
-  $('positions').innerHTML = table(s.positions, [
-    ['Pair', p => esc(p.pair)],
-    ['Geopend', p => time(p.openedAt)],
-    ['Instapkoers', p => p.entryPrice],
-    ['Hoeveelheid', p => p.amount.toFixed(8)],
-    ['Inzet', p => eur(p.costEur)],
-  ], 'Geen open posities.');
-
-  const outcome = { approved: ['Goedgekeurd', 'up'], vetoed: ['Afgewezen', 'down'], blocked: ['Geblokkeerd', 'warnc'] };
-  $('decisions').innerHTML = table(s.decisions, [
-    ['Tijd', d => time(d.at)],
-    ['Pair', d => esc(d.pair)],
-    ['Uitkomst', d => { const [t, c] = outcome[d.outcome] || [d.outcome, '']; return `<span class="${c}">${t}</span>`; }],
-    ['RSI', d => d.indicators?.rsi?.toFixed(1) ?? '–'],
+  const outcome = { approved: ['Goedgekeurd', 'ok'], vetoed: ['Afgewezen door AI', 'bad'], blocked: ['Geblokkeerd', 'wait'] };
+  $('signals').innerHTML = table(s.decisions, [
+    ['Tijd', d => `<span class="muted">${time(d.at)}</span>`],
+    ['Coin', d => pairHtml(d.pair)],
+    ['Uitkomst', d => { const [t, c] = outcome[d.outcome] || [d.outcome, 'soft']; return `<span class="badge ${c}">${t}</span>`; }],
+    ['Koers', d => `<span class="num">${eur(d.indicators?.close)}</span>`, 'r'],
+    ['RSI', d => `<span class="num">${d.indicators?.rsi?.toFixed(1) ?? '–'}</span>`, 'r'],
     ['Reden', d => `<div class="reason">${esc(d.reason)}${d.aiError ? ' <span class="warnc">(AI-fout)</span>' : ''}</div>`],
-  ], 'Nog geen koopsignalen. Bij 1h-candles kan dat even duren.');
+  ], 'Nog geen koopsignalen. Bij 1h-candles kan dat even duren.', 'pulse');
 
   $('trades').innerHTML = table(s.trades, [
-    ['Gesloten', t => time(t.closedAt)],
-    ['Pair', t => esc(t.pair)],
-    ['In', t => t.entryPrice],
-    ['Uit', t => t.exitPrice],
-    ['Resultaat', t => `<span class="${cls(t.pnlEur)}">${eur(t.pnlEur)} (${pct(t.pnlPct)})</span>`],
-    ['Exit', t => esc(t.exitReason)],
-  ], 'Nog geen afgesloten trades.');
+    ['Gesloten', t => `<span class="muted">${time(t.closedAt)}</span>`],
+    ['Coin', t => pairHtml(t.pair)],
+    ['In', t => `<span class="num">${eur(t.entryPrice)}</span>`, 'r'],
+    ['Uit', t => `<span class="num">${eur(t.exitPrice)}</span>`, 'r'],
+    ['Resultaat', t => `<span class="num ${cls(t.pnlEur)}">${eur2(t.pnlEur)} (${pct(t.pnlPct)})</span>`, 'r'],
+    ['Exit', t => `<span class="muted">${esc(t.exitReason)}</span>`],
+  ], 'Nog geen afgesloten trades.', 'history');
+
+  const lvl = { error: 'down', warn: 'warnc', info: '' };
+  const logHtml = (list) => list.length ? list.map(a =>
+    `<div class="row"><span class="t">${new Date(a.at).toLocaleTimeString('nl-NL')}</span>` +
+    `<span class="${lvl[a.level] ?? ''}">${a.pair ? `<b>${esc(a.pair)}</b> ` : ''}${esc(a.message)}</span></div>`).join('')
+    : `<div class="empty">${icon('list')}Nog geen activiteit sinds de laatste herstart.</div>`;
+  $('dash-activity').innerHTML = logHtml(s.activity.slice(0, 15));
+  $('activity').innerHTML = logHtml(s.activity);
+
+  if (isOn('settings')) {
+    renderSettings();
+    if (!coinsDirty) { selected = [...s.pairs]; renderChips(); renderCoinList(); }
+  }
 }
 
-// Statusbalk: bezig, gepauzeerd, fout of wachten met aftellen. Wordt elke seconde bijgewerkt.
-let clockOffset = 0;
+// ---------- Status ----------
 let lastForcedLoad = 0;
 function renderStatus() {
-  const s = state;
-  if (!s) return;
-  clockOffset = new Date(s.serverTime).getTime() - Date.now();
-  const dot = $('st-dot');
-  const now = Date.now() + clockOffset;
+  const s = state; if (!s) return;
+  const now = Date.now() + (s._offset ?? 0);
   const next = s.nextTickAt ? new Date(s.nextTickAt).getTime() : null;
   const total = s.checkIntervalMinutes * 60000;
-
+  const dot = $('st-dot');
   if (s.running) {
     dot.className = 'dot busy';
     $('st-main').textContent = 'Bezig met check';
@@ -406,18 +702,14 @@ function renderStatus() {
   dot.className = s.lastError ? 'dot err' : s.halted ? 'dot paused' : 'dot';
   if (next && next > now) {
     const left = Math.round((next - now) / 1000);
-    const mm = Math.floor(left / 60), ss = String(left % 60).padStart(2, '0');
-    $('st-main').textContent = s.halted ? 'Gepauzeerd, bewaakt open posities' : 'Actief, wacht op volgende check';
-    $('st-sub').textContent = `Volgende check over ${mm}:${ss} · laatste ${time(s.lastTickAt)}`;
+    $('st-main').textContent = s.halted ? 'Gepauzeerd, bewaakt open posities' : 'Actief, wacht op de volgende check';
+    $('st-sub').textContent = `Volgende check over ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} · laatste ${time(s.lastTickAt)}`;
     $('st-bar').style.width = `${Math.min(100, (1 - (next - now) / total) * 100)}%`;
   } else {
     $('st-main').textContent = 'Check start zo';
     $('st-sub').textContent = `Laatste ${time(s.lastTickAt)}`;
     $('st-bar').style.width = '100%';
-    if (next && now - next > 5000 && Date.now() - lastForcedLoad > 5000) {
-      lastForcedLoad = Date.now();
-      load().catch(() => {});
-    }
+    if (next && now - next > 5000 && Date.now() - lastForcedLoad > 5000) { lastForcedLoad = Date.now(); load().catch(() => {}); }
   }
 }
 setInterval(() => { if (!$('view-app').hidden) renderStatus(); }, 1000);
@@ -425,11 +717,174 @@ setInterval(() => { if (!$('view-app').hidden) renderStatus(); }, 1000);
 $('tick').onclick = async () => {
   $('tick').disabled = true;
   if (state) { state.running = true; state.currentStep = 'Handmatige check gestart'; renderStatus(); }
-  try { await api('api/tick', {}); await load(); } finally { $('tick').disabled = false; }
+  try { await api('api/tick', {}); } catch {}
+  try { await load(); } finally { $('tick').disabled = false; }
 };
 $('pause').onclick = async () => { await api(state?.halted?.manual ? 'api/resume' : 'api/pause', {}); load(); };
 
-init().catch((e) => { document.body.innerHTML = `<main><div class="banner">Kan vetobot niet bereiken: ${esc(e.message)}</div></main>`; });
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-close]'); if (!b) return;
+  const pair = b.dataset.close;
+  const live = state?.mode === 'live';
+  if (!confirm(`${pair} nu verkopen tegen de marktprijs?${live ? '\n\nLet op: dit is een ECHTE order op Bitvavo.' : ''}`)) return;
+  b.disabled = true;
+  try { await api('api/positions/close', { pair }); await load(); }
+  catch (err) { alert(err.message); b.disabled = false; }
+});
+
+// ---------- Instellingen: modus ----------
+function renderSettings() {
+  const s = state; if (!s) return;
+  const live = s.mode === 'live';
+  $('mc-title').innerHTML = live
+    ? '<span class="badge live">LIVE</span> Echte orders op Bitvavo'
+    : '<span class="badge paper">PAPER</span> Oefenen met nepgeld';
+  $('mc-text').textContent = live
+    ? `De bot plaatst echte orders met je Bitvavo-saldo: ${eur2(s.risk.stakeEur)} per trade, maximaal ${s.risk.maxOpenTrades} tegelijk.`
+    : `De bot gebruikt echte koersen, maar handelt met een nep-saldo van ${eur2(s.startBalanceEur)}. Er gaat geen echt geld om.`;
+  $('mc-switch').className = live ? 'btn' : 'btn live';
+  $('mc-switch').innerHTML = live ? `${icon('shield')}Terug naar paper` : `${icon('bolt')}Overschakelen naar live`;
+  if (document.activeElement?.closest('#ai-form')) return;
+  $('ai-provider').value = s.ai.provider;
+  $('ai-model').value = s.ai.model ?? '';
+  $('ai-base').value = s.ai.baseUrl ?? '';
+  $('ai-base-wrap').hidden = s.ai.provider !== 'openai';
+}
+
+$('mc-switch').onclick = () => {
+  const s = state;
+  const toLive = s.mode !== 'live';
+  $('md-head').className = toLive ? 'd-h' : 'd-h safe';
+  $('md-title').textContent = toLive ? 'Overschakelen naar live trading' : 'Terug naar paper trading';
+  $('md-sub').textContent = toLive ? 'Hierna plaatst de bot echte orders met echt geld.' : 'De bot stopt met echte orders.';
+  const items = toLive ? [
+    `${eur2(s.risk.stakeEur)} per trade, maximaal ${s.risk.maxOpenTrades} posities tegelijk`,
+    `Stop-loss −${s.risk.stopLossPct}%, take-profit +${s.risk.takeProfitPct}%, daglimiet −${eur2(s.risk.maxDailyLossEur)}`,
+    s.bitvavoKeysSet ? 'Je Bitvavo-keys worden eerst getest' : '<span class="down">Je Bitvavo-keys zijn nog niet ingesteld</span>',
+    'Je paper-resultaten blijven apart bewaard',
+  ] : ['Live-trades en -historie blijven bewaard', 'Alleen mogelijk als er geen live posities open staan'];
+  $('md-list').innerHTML = items.map(i => `<li>${i}</li>`).join('');
+  $('md-confirm-wrap').hidden = !toLive;
+  $('md-pass').value = $('md-confirm').value = '';
+  $('md-error').textContent = '';
+  $('md-go').className = toLive ? 'btn live' : 'btn primary';
+  $('md-go').textContent = toLive ? 'Live zetten' : 'Naar paper';
+  $('mode-dialog').showModal();
+  $('md-pass').focus();
+};
+
+$('mode-form').addEventListener('submit', async (e) => {
+  if (e.submitter?.value !== 'go') return;
+  e.preventDefault();
+  const toLive = state.mode !== 'live';
+  if (!$('md-pass').value) { $('md-error').textContent = 'Vul je wachtwoord in'; return; }
+  if (toLive && $('md-confirm').value.trim() !== 'LIVE') { $('md-error').textContent = 'Typ LIVE ter bevestiging'; return; }
+  $('md-go').disabled = true; $('md-error').textContent = toLive ? 'Keys testen…' : '';
+  try {
+    await api('api/settings/mode', { mode: toLive ? 'live' : 'paper', password: $('md-pass').value, confirm: $('md-confirm').value });
+    $('mode-dialog').close();
+    await load();
+  } catch (err) { $('md-error').textContent = err.message; }
+  finally { $('md-go').disabled = false; }
+});
+
+// ---------- Instellingen: coins ----------
+let markets = null, selected = [], coinsDirty = false;
+async function loadMarkets() {
+  coinsDirty = false;
+  selected = [...(state?.pairs ?? [])];
+  $('coin-msg').textContent = '';
+  renderChips();
+  if (markets) return renderCoinList();
+  try { markets = (await api('api/markets')).markets; renderCoinList(); }
+  catch (err) { $('coin-list').innerHTML = `<div class="empty">Kon markten niet laden: ${esc(err.message)}</div>`; }
+}
+function renderChips() {
+  $('coin-chips').innerHTML = selected.length
+    ? selected.map(p => `<span class="chip">${esc(p.split('/')[0])}<button type="button" data-unpick="${esc(p)}" aria-label="Verwijder ${esc(p)}">×</button></span>`).join('')
+    : '<span class="muted" style="font-size:13px">Nog geen coins gekozen.</span>';
+  $('coin-count').textContent = `${selected.length} / ${state?.maxPairs ?? 30} gekozen`;
+}
+function renderCoinList() {
+  if (!markets) return;
+  const q = $('coin-search').value.trim().toUpperCase();
+  const list = markets.filter(m => !q || m.base.includes(q) || m.pair.includes(q));
+  $('coin-list').innerHTML = table(list, [
+    ['', m => `<input type="checkbox" ${selected.includes(m.pair) ? 'checked' : ''} tabindex="-1" aria-label="${esc(m.pair)}">`],
+    ['Coin', m => pairHtml(m.pair)],
+    ['Koers', m => `<span class="num">${eur(m.price)}</span>`, 'r'],
+    ['24u', m => `<span class="num ${cls(m.change24h)}">${pct(m.change24h)}</span>`, 'r'],
+    ['Volume 24u', m => `<span class="num muted">€ ${compact(m.volumeEur)}</span>`, 'r'],
+  ], 'Geen coins gevonden.', 'coins', m => `data-pick="${esc(m.pair)}"`);
+}
+function toggle(pair) {
+  const max = state?.maxPairs ?? 30;
+  if (selected.includes(pair)) selected = selected.filter(p => p !== pair);
+  else if (selected.length < max) selected.push(pair);
+  else { $('coin-msg').className = 'msg err'; $('coin-msg').textContent = `Maximaal ${max} coins.`; return; }
+  $('coin-msg').textContent = '';
+  coinsDirty = true;
+  renderChips(); renderCoinList();
+}
+$('coin-list').addEventListener('click', (e) => { const tr = e.target.closest('tr[data-pick]'); if (tr) toggle(tr.dataset.pick); });
+$('coin-chips').addEventListener('click', (e) => { const b = e.target.closest('[data-unpick]'); if (b) toggle(b.dataset.unpick); });
+$('coin-search').oninput = renderCoinList;
+$('coin-top10').onclick = () => { if (markets) { selected = markets.slice(0, 10).map(m => m.pair); coinsDirty = true; renderChips(); renderCoinList(); } };
+$('coin-clear').onclick = () => { selected = []; coinsDirty = true; renderChips(); renderCoinList(); };
+$('coin-reset').onclick = () => { selected = [...state.pairs]; coinsDirty = false; renderChips(); renderCoinList(); $('coin-msg').textContent = ''; };
+$('coin-save').onclick = async () => {
+  $('coin-msg').className = 'msg'; $('coin-msg').textContent = 'Opslaan…';
+  try {
+    await api('api/settings/pairs', { pairs: selected });
+    coinsDirty = false;
+    $('coin-msg').className = 'msg ok'; $('coin-msg').textContent = 'Opgeslagen. Ze worden meegenomen in de volgende check.';
+    await load();
+  } catch (err) { $('coin-msg').className = 'msg err'; $('coin-msg').textContent = err.message; }
+};
+
+// ---------- Instellingen: AI ----------
+$('ai-provider').onchange = () => { $('ai-base-wrap').hidden = $('ai-provider').value !== 'openai'; };
+$('ai-form').onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    await api('api/settings/ai', { provider: $('ai-provider').value, model: $('ai-model').value, baseUrl: $('ai-base').value });
+    $('ai-msg').className = 'msg ok'; $('ai-msg').textContent = 'Opgeslagen.';
+    document.activeElement?.blur(); await load();
+  } catch (err) { $('ai-msg').className = 'msg err'; $('ai-msg').textContent = err.message; }
+};
+
+// ---------- Instellingen: keys ----------
+function renderKeyStatus(status) {
+  for (const [name, s] of Object.entries(status)) {
+    const el = $(`st-${name}`);
+    if (el) el.innerHTML = s.set ? `<span class="up">ingesteld ${esc(s.hint)}</span>` : '<span class="warnc">niet ingesteld</span>';
+  }
+}
+async function loadKeys() { try { renderKeyStatus(await api('api/settings/keys')); } catch {} }
+const keyMsg = (t, c) => { $('keys-msg').className = `msg ${c ?? ''}`; $('keys-msg').textContent = t; };
+$('keys-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const updates = {};
+  for (const input of e.target.querySelectorAll('input[data-name]')) if (input.value.trim()) updates[input.dataset.name] = input.value.trim();
+  if (!Object.keys(updates).length) return keyMsg('Niets ingevuld.');
+  try { renderKeyStatus(await api('api/settings/keys', updates)); e.target.reset(); keyMsg('Opgeslagen.', 'ok'); load(); }
+  catch (err) { keyMsg(err.message, 'err'); }
+};
+$('keys-test').onclick = async () => {
+  keyMsg('Testen…');
+  try { const r = await api('api/settings/keys/test', {}); keyMsg(`Werkt. Beschikbaar saldo: ${eur2(r.liveBalance.eurFree)}`, 'ok'); }
+  catch (err) { keyMsg(err.message, 'err'); }
+};
+$('keys-clear').onclick = async () => {
+  if (state?.mode === 'live') return keyMsg('Schakel eerst terug naar paper voordat je de keys verwijdert.', 'err');
+  if (!confirm('Alle API-keys verwijderen?')) return;
+  try {
+    renderKeyStatus(await api('api/settings/keys', { bitvavoApiKey: null, bitvavoApiSecret: null, aiApiKey: null }));
+    keyMsg('Verwijderd.', 'ok'); load();
+  } catch (err) { keyMsg(err.message, 'err'); }
+};
+
+init().catch((e) => { document.body.innerHTML = `<div class="auth-wrap"><div class="alert err">Kan vetobot niet bereiken: ${esc(e.message)}</div></div>`; });
 </script>
 </body>
 </html>
