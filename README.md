@@ -87,13 +87,7 @@ docker compose logs vetobot     # hier staat de setup-code
 
 Het dashboard staat dan op `http://127.0.0.1:3020` (via een SSH-tunnel). Via Nginx Proxy Manager forward je naar `vetobot` op poort `3000`. Doe de first-run setup dan meteen, en zet bij voorkeur HTTPS aan.
 
-Omdat de repo privé is, moet je server eenmalig inloggen bij ghcr.io:
-
-```bash
-docker login ghcr.io -u iitssjstn
-```
-
-Gebruik als wachtwoord een GitHub-token met alleen `read:packages`.
+De image is publiek, dus inloggen bij ghcr.io is niet nodig. Krijg je bij `docker compose pull` toch `denied`, zet dan op GitHub bij Packages → vetobot → Package settings de visibility op Public.
 
 ## Instellingen
 
