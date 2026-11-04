@@ -171,7 +171,8 @@ export async function listModels(cfg) {
     );
     return (data.models ?? [])
       .filter((m) => (m.supportedGenerationMethods ?? []).includes('generateContent'))
-      .map((m) => ({ id: m.name.replace(/^models\//, ''), label: m.displayName ?? m.name }))
+      .map((m) => ({ id: m.name.replace(/^models\//, ''), label: m.displayName ?? m.name, context: m.inputTokenLimit ?? null }))
+      .filter((m) => isTextModel(m.id))
       .sort((a, b) => b.id.localeCompare(a.id, undefined, { numeric: true }));
   }
   const data = await fetchWithTimeout(
@@ -179,8 +180,21 @@ export async function listModels(cfg) {
     { headers: { Authorization: `Bearer ${cfg.apiKey}` } },
     cfg.timeoutMs,
   );
-  return (data.data ?? []).map((m) => ({ id: m.id, label: m.id })).sort((a, b) => a.id.localeCompare(b.id));
+  return (data.data ?? [])
+    .filter((m) => m.active !== false && isTextModel(m.id))
+    .map((m) => ({
+      id: m.id,
+      label: m.name && m.name !== m.id ? m.name : m.id,
+      context: m.context_window ?? m.context_length ?? null,
+      // OpenRouter: modellen met ":free" of prijs 0 zijn gratis
+      free: /:free$/.test(m.id) || (m.pricing && Number(m.pricing.prompt) === 0 && Number(m.pricing.completion) === 0) || undefined,
+    }))
+    .sort((a, b) => Number(Boolean(b.free)) - Number(Boolean(a.free)) || a.id.localeCompare(b.id));
 }
+
+// Modellen voor spraak, beeld, video, embeddings of moderatie kunnen geen veto geven.
+export const isTextModel = (id) =>
+  !/(embed|whisper|tts|audio|speech|transcri|imagen|image|veo|video|vision-only|aqa|guard|moderation|rerank|orpheus|playai|dall-e|sora|realtime|live)/i.test(id);
 
 // ---------- AI-volgorde (back-ups) ----------
 const hostOf = (u) => {

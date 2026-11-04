@@ -273,3 +273,9 @@ test('AI-volgorde: keys per model en hergebruik bij dezelfde provider', () => {
   bot.settings.setAi({ provider: 'none', fallbacks: [{ provider: 'gemini' }] });
   assert.deepEqual(bot.aiChain(), [], 'model 1 op geen AI = AI uit');
 });
+
+test('modellen ophalen vraagt om een key, en gebruikt anders die van hetzelfde type', async () => {
+  const { bot } = setup({});
+  await assert.rejects(bot.listAiModels({ provider: 'none' }), /provider/);
+  await assert.rejects(bot.listAiModels({ provider: 'gemini', fromSlot: null, newKey: '' }), /API-key/);
+});

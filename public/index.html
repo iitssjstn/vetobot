@@ -161,6 +161,18 @@
   .fields > div > label { margin-top: 0; }
   .fields > div { margin-bottom: 4px; }
   .kstate { float: right; font-size: 12px; }
+  .picker { margin-top: 10px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--panel); overflow: hidden; }
+  .picker .ph { display: flex; gap: 8px; align-items: center; padding: 8px; border-bottom: 1px solid var(--line); }
+  .picker .ph input { flex: 1; }
+  .picker .pl { max-height: 280px; overflow-y: auto; }
+  .picker .pi { display: flex; gap: 10px; align-items: center; width: 100%; text-align: left; padding: 8px 12px; border: 0;
+    border-bottom: 1px solid var(--line); background: none; color: var(--text); font: inherit; font-size: 13.5px; cursor: pointer; }
+  .picker .pi:last-child { border-bottom: 0; }
+  .picker .pi:hover, .picker .pi:focus-visible { background: var(--panel-2); outline: none; }
+  .picker .pi.cur { background: var(--accent-soft); }
+  .picker .pi code { background: none; border: 0; padding: 0; font-size: 12.5px; }
+  .picker .pi .muted { margin-left: auto; font-size: 12px; white-space: nowrap; }
+  .picker .pm { padding: 14px 12px; color: var(--muted); font-size: 13px; }
   .evtable td, .evtable th { padding: 8px 12px; }
   .evtable input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
   .steps { margin: 8px 0 0; padding-left: 20px; color: var(--muted); font-size: 13px; }
@@ -1267,15 +1279,16 @@ function renderAiRows() {
         <div><label>Provider</label><select data-f="provider">${providers}</select></div>
         ${r.provider === 'none' ? '' : `
         <div><label>Model</label><div style="display:flex;gap:8px">
-          <input data-f="model" value="${esc(r.model)}" placeholder="leeg = standaardmodel" list="ai-models-${i}" autocomplete="off">
-          <button class="btn" type="button" data-fetch="${i}" title="Modellen ophalen die je key mag gebruiken">Ophalen</button></div>
-          <datalist id="ai-models-${i}"></datalist></div>
+          <input data-f="model" value="${esc(r.model)}" placeholder="leeg = standaardmodel" autocomplete="off">
+          <button class="btn" type="button" data-fetch="${i}" title="Kies uit de modellen die je key mag gebruiken">Kiezen</button></div></div>
         ${r.provider === 'openai' ? `<div><label>Base-URL</label><input data-f="baseUrl" value="${esc(r.baseUrl || GROQ)}" placeholder="${GROQ}"></div>` : ''}
         <div><label>API-key <span class="kstate">${keyState}</span></label>
           <input data-f="newKey" type="password" value="${esc(r.newKey)}" autocomplete="off" placeholder="leeg = niet wijzigen"></div>`}
       </div>
+      ${picker.row === i ? pickerHtml(r) : ''}
     </div>`;
   }).join('');
+  if (picker.row != null) document.querySelector('[data-pick-search]')?.focus({ preventScroll: true });
   aiRows.forEach((r, i) => { const sel = document.querySelector(`[data-row="${i}"] [data-f="provider"]`); if (sel) sel.value = r.provider; });
   $('ai-add').hidden = off || aiRows.length >= 5;
   $('ai-count').textContent = off ? 'AI staat uit.' : `${aiRows.length} van 5 modellen`;
@@ -1286,7 +1299,9 @@ $('ai-rows').addEventListener('input', (e) => {
   if (!row || !f) return;
   aiRows[Number(row.dataset.row)][f] = e.target.value;
   aiDirty = true;
+  if (f === 'newKey' || f === 'baseUrl') modelCache.clear();
   if (f === 'provider') {
+    picker = { row: null };
     const r = aiRows[Number(row.dataset.row)];
     if (r.provider === 'openai' && !r.baseUrl) r.baseUrl = GROQ;
     renderAiRows();
@@ -1297,24 +1312,76 @@ $('ai-rows').addEventListener('click', async (e) => {
   if (mv) {
     const [i, d] = mv.dataset.move.split(':').map(Number);
     [aiRows[i], aiRows[i + d]] = [aiRows[i + d], aiRows[i]];
+    picker = { row: null };
     aiDirty = true; renderAiRows();
   } else if (del) {
     aiRows.splice(Number(del.dataset.del), 1);
+    picker = { row: null };
     aiDirty = true; renderAiRows();
   } else if (fe) {
     const i = Number(fe.dataset.fetch);
-    const msg = (t, c) => { $('ai-msg').className = `msg ${c ?? ''}`; $('ai-msg').textContent = t; };
-    if (aiDirty) return msg('Sla eerst op, dan haalt hij de modellen op met die instellingen.', 'err');
-    fe.disabled = true; msg(`Modellen ophalen voor model ${i + 1}…`);
-    try {
-      const { models } = await api('api/settings/ai/models', { slot: i + 1 });
-      $(`ai-models-${i}`).innerHTML = models.map(m => `<option value="${esc(m.id)}">${esc(m.label)}</option>`).join('');
-      msg(`${models.length} modellen gevonden voor model ${i + 1}. Klik in het veld Model om er een te kiezen.`, 'ok');
-      document.querySelector(`[data-row="${i}"] [data-f="model"]`)?.focus();
-    } catch (err) { msg(err.message, 'err'); }
-    finally { fe.disabled = false; }
+    if (picker.row === i) { picker = { row: null }; return renderAiRows(); }
+    openPicker(i);
+  } else if (e.target.closest('[data-pick-close]')) {
+    picker = { row: null }; renderAiRows();
+  } else if (e.target.closest('[data-pick-id]')) {
+    const i = picker.row;
+    aiRows[i].model = e.target.closest('[data-pick-id]').dataset.pickId;
+    picker = { row: null }; aiDirty = true; renderAiRows();
+    $('ai-msg').className = 'msg'; $('ai-msg').textContent = `Model ${i + 1}: ${aiRows[i].model}. Vergeet niet op te slaan.`;
   }
 });
+
+// ---------- Modelkiezer ----------
+let picker = { row: null };
+const modelCache = new Map();
+async function openPicker(i) {
+  const r = aiRows[i];
+  const key = `${r.provider}|${r.baseUrl}|${r.fromSlot}|${r.newKey ? 'new' : ''}`;
+  picker = { row: i, q: '', loading: !modelCache.has(key), error: null, models: modelCache.get(key) ?? [] };
+  renderAiRows();
+  if (modelCache.has(key)) return;
+  try {
+    const { models } = await api('api/settings/ai/models', { provider: r.provider, baseUrl: r.baseUrl, fromSlot: r.fromSlot, newKey: r.newKey });
+    modelCache.set(key, models);
+    if (picker.row === i) { picker.models = models; picker.loading = false; renderAiRows(); }
+  } catch (err) {
+    if (picker.row === i) { picker.error = err.message; picker.loading = false; renderAiRows(); }
+  }
+}
+function pickerHtml(r) {
+  const q = (picker.q ?? '').toLowerCase();
+  const list = picker.models.filter(m => !q || m.id.toLowerCase().includes(q) || String(m.label).toLowerCase().includes(q));
+  const ctx = (n) => n ? `${n >= 1e6 ? `${(n / 1e6).toFixed(1).replace('.0', '')}M` : `${Math.round(n / 1000)}k`} context` : '';
+  const body = picker.loading ? '<div class="pm">Modellen ophalen…</div>'
+    : picker.error ? `<div class="pm down">${esc(picker.error)}</div>`
+    : !list.length ? `<div class="pm">Geen modellen gevonden${q ? ` voor "${esc(picker.q)}"` : ''}.</div>`
+    : list.slice(0, 300).map(m => `<button type="button" class="pi ${m.id === r.model ? 'cur' : ''}" data-pick-id="${esc(m.id)}">
+        <code>${esc(m.id)}</code>${m.label && m.label !== m.id ? `<span class="muted" style="margin-left:0">${esc(m.label)}</span>` : ''}
+        ${m.free ? '<span class="badge ok" style="margin-left:auto">gratis</span>' : ''}
+        <span class="muted"${m.free ? ' style="margin-left:0"' : ''}>${ctx(m.context)}</span></button>`).join('');
+  return `<div class="picker">
+    <div class="ph"><input data-pick-search placeholder="Zoek model…" value="${esc(picker.q ?? '')}" autocomplete="off">
+      <span class="muted" style="font-size:12px;white-space:nowrap">${picker.loading || picker.error ? '' : `${list.length} van ${picker.models.length}`}</span>
+      <button class="btn sm" type="button" data-pick-close>Sluiten</button></div>
+    <div class="pl">${body}</div></div>`;
+}
+$('ai-rows').addEventListener('input', (e) => {
+  if (!e.target.matches('[data-pick-search]')) return;
+  picker.q = e.target.value;
+  const pos = e.target.selectionStart;
+  renderAiRows();
+  const el = document.querySelector('[data-pick-search]');
+  el?.setSelectionRange(pos, pos);
+});
+$('ai-rows').addEventListener('keydown', (e) => {
+  if (e.target.matches('[data-pick-search]') && e.key === 'Escape') { picker = { row: null }; renderAiRows(); }
+  if (e.target.matches('[data-pick-search]') && e.key === 'Enter') {
+    e.preventDefault();
+    document.querySelector('.picker [data-pick-id]')?.click();
+  }
+});
+
 $('ai-add').onclick = () => {
   const last = aiRows[aiRows.length - 1];
   aiRows.push({ provider: last?.provider === 'gemini' ? 'openai' : 'gemini', model: '', baseUrl: GROQ, fromSlot: null, newKey: '' });

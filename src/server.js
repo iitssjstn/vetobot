@@ -279,7 +279,7 @@ export function startServer({ config, bot, settings, secrets, auth, notifier, lo
   }));
 
   // Test de Bitvavo-keys zonder van modus te wisselen.
-  app.post('/api/settings/ai/models', wrap(async (req) => ({ ok: true, models: await bot.listAiModels(req.body?.slot ?? 1) })));
+  app.post('/api/settings/ai/models', wrap(async (req) => ({ ok: true, models: await bot.listAiModels(req.body ?? {}) })));
 
   app.post('/api/settings/ai/test', wrap(async () => ({ ok: true, ...(await bot.testAi()) })));
 

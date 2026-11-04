@@ -56,3 +56,11 @@ test('testChain test elk model los', async () => {
   assert.deepEqual(r.map((x) => [x.slot, x.ok]), [[1, false], [2, true]]);
   server.close();
 });
+
+test('alleen tekstmodellen komen in de keuzelijst', async () => {
+  const { isTextModel } = await import('../src/ai.js');
+  for (const id of ['llama-3.3-70b-versatile', 'gemini-3.8-flash', 'openai/gpt-oss-120b', 'qwen/qwen3-32b']) assert.ok(isTextModel(id), id);
+  for (const id of ['whisper-large-v3', 'playai-tts', 'meta-llama/llama-guard-4-12b', 'text-embedding-004', 'imagen-4.0', 'veo-3', 'gemini-2.5-flash-image']) {
+    assert.ok(!isTextModel(id), id);
+  }
+});

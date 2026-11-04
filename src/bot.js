@@ -253,10 +253,18 @@ export class Bot {
     });
   }
 
-  listAiModels(slot = 1) {
-    const cfg = this.aiChain().find((c) => c.slot === Number(slot));
-    if (!cfg) throw new Error(`Model ${slot} is niet ingesteld (sla eerst op)`);
-    return listModels(cfg);
+  // Haalt de modellen op zonder dat je eerst hoeft op te slaan. De key is de nieuw
+  // ingevulde key, anders die van het opgeslagen model, anders een key van een model
+  // met dezelfde provider.
+  async listAiModels({ provider, baseUrl, fromSlot, newKey } = {}) {
+    if (!['gemini', 'openai'].includes(provider)) throw new Error('Kies eerst een provider');
+    const url = String(baseUrl || 'https://api.groq.com/openai/v1').trim();
+    const chain = this.aiChain();
+    const same = (c) => c.provider === provider && (provider === 'gemini' || c.baseUrl === url);
+    const saved = chain.find((c) => c.slot === Number(fromSlot) && same(c));
+    const apiKey = String(newKey ?? '').trim() || saved?.apiKey || chain.find((c) => same(c) && c.apiKey)?.apiKey || '';
+    if (!apiKey) throw new Error('Vul eerst een API-key in voor dit model');
+    return listModels({ provider, baseUrl: url, apiKey, timeoutMs: this.config.ai.timeoutMs });
   }
 
   // Test de AI-koppeling met actuele data van de eerste gevolgde coin.
