@@ -21,11 +21,11 @@ De strategie kijkt alleen naar **gesloten** candles, en elke candle wordt maar �
 
 API-keys komen **nooit** in env-variabelen of `.env`-bestanden. Je vult ze in via het dashboard:
 
-- Ze worden versleuteld (AES-256-GCM) opgeslagen in `data/secrets.enc`.
+- Ze worden versleuteld (AES-256-GCM) opgeslagen in `data/users/<id>/secrets.enc`, per gebruiker met een eigen sleutel.
 - De sleutel daarvoor wordt bij de eerste start willekeurig gemaakt in `data/master.key`.
 - Na het opslaan zie je alleen nog of een key is ingesteld en de laatste 4 tekens.
 
-Dit beschermt tegen uitlekken via git, losse backups of het dashboard. Iemand met root op de server kan bij beide bestanden; dat geldt voor elke manier van opslaan op disk. Maak je een backup, neem `master.key` en `secrets.enc` dan samen mee, anders zijn de keys niet meer te ontsleutelen.
+Dit beschermt tegen uitlekken via git, losse backups of het dashboard. Iemand met root op de server kan bij beide bestanden; dat geldt voor elke manier van opslaan op disk. Maak je een backup, neem dan de hele `data/`-map mee (`master.key` en de mappen in `users/`), anders zijn de keys niet meer te ontsleutelen.
 
 ### First-run setup
 
@@ -37,7 +37,11 @@ docker compose logs vetobot
 
 Open het dashboard, vul de setup-code in en kies een gebruikersnaam en wachtwoord (minimaal 10 tekens) voor het admin-account. Daarna verdwijnt de setup en kun je alleen nog inloggen. De code zorgt ervoor dat alleen iemand met toegang tot je server het account kan aanmaken.
 
-Het wachtwoord wordt alleen als scrypt-hash opgeslagen in `data/auth.json`. Na 5 mislukte inlogpogingen wordt dat IP 5 minuten geblokkeerd. Wachtwoord vergeten? Stop de container, verwijder `data/auth.json` en start opnieuw voor een nieuwe setup. Je keys blijven bewaard.
+Wachtwoorden worden alleen als scrypt-hash opgeslagen in `data/users.json`. Na 5 mislukte inlogpogingen wordt dat IP 5 minuten geblokkeerd. Hoofdletters in de gebruikersnaam maken bij het inloggen niet uit. Gebruikersnaam en wachtwoord wijzig je bij Instellingen → Account.
+
+Admin-wachtwoord vergeten? Stop de container, hernoem `data/users.json` en start opnieuw voor een nieuwe setup. Let op: daarmee verdwijnen ook de andere accounts uit de lijst (hun mappen in `data/users/` blijven staan).
+
+Kwam je van een versie met één account? Dan worden `data/auth.json`, je instellingen, trades en keys bij de eerste start automatisch overgezet naar het admin-account.
 
 ## AI-providers
 
@@ -112,7 +116,7 @@ In het dashboard onder **Instellingen** regel je:
 - **AI-veto**: provider, model, base-URL en wat er gebeurt als de AI faalt
 - **API-keys** en je **wachtwoord**
 
-Deze keuzes worden opgeslagen in `data/settings.json` en blijven bewaard na een herstart.
+Deze keuzes worden opgeslagen in `data/users/<id>/settings.json` en blijven bewaard na een herstart.
 
 De environment variables hieronder zijn alleen beginwaarden voor de allereerste start; daarna gaat het dashboard voor. Geen ervan is geheim. In live-modus vraagt het dashboard je wachtwoord bij het wijzigen van risico of strategie.
 
@@ -166,6 +170,19 @@ Valt je server uit, dan kan vetobot zelf niets meer sturen. Daarom stuurt hij na
 2. Plak de ping-URL bij Heartbeat-URL in vetobot en klik op **Heartbeat testen**.
 3. Kies in healthchecks.io bij **Integrations** de **Webhook**-integratie met als URL je Discord-webhook, methode POST, header `Content-Type: application/json` en body `{"content": "<@JOUW_ID> vetobot is offline ($NAME)"}`. Dan word je getagd. Zonder tag kun je ook de Discord-integratie gebruiken.
 
+## Meerdere gebruikers
+
+Je kunt andere mensen uitnodigen. Iedereen heeft een eigen bot met eigen Bitvavo- en AI-keys, eigen saldo, trades en instellingen, in een eigen map `data/users/<id>/`.
+
+- **Uitnodigen**: alleen de admin kan dat, via **Gebruikers** → **Uitnodiging maken**. Je krijgt een link die één keer werkt en 7 dagen geldig is. Wie hem opent, kiest zelf een gebruikersnaam en wachtwoord. Zonder uitnodiging kan niemand een account maken.
+- **Nieuwe accounts beginnen in paper**, ook als `LIVE_TRADING=true` in je compose staat. Live zet iemand zelf aan, met zijn eigen wachtwoord en het woord `LIVE`, net als de admin.
+- **Zelf instellen of volgen**: een gebruiker stelt óf zelf coins, strategie en AI in, óf zet **Strategie volgen** aan. Dan koopt en verkoopt zijn bot mee met de trades van de admin, met zijn eigen keys en saldo. Coins, planning, strategie, stop-loss, take-profit en trailing stop komen dan van de admin; inzet per trade, max. open trades en daglimiet blijven van de gebruiker zelf. Zit hij aan zijn limiet, dan slaat hij die trade over. De AI wordt voor gevolgde trades niet aangeroepen, dus een volger heeft geen AI-key nodig. Verkoopt de admin terwijl een volger een check mist, dan verkoopt de volger bij zijn volgende check alsnog.
+- **Beheer**: bij Gebruikers zie je per account de modus, of hij volgt, open posities en resultaat. Uitschakelen stopt de bot en logt de gebruiker uit. Verwijderen vraagt je wachtwoord en zet de map opzij in `data/users/_verwijderd/` in plaats van hem te wissen.
+- **Gedeelde marktdata**: alle bots halen koersen via één gecachete verbinding, omdat Bitvavo de rate limit per IP telt. Orders en saldo gaan via de eigen keys van elke gebruiker.
+- De heartbeat (offline-melding) gaat over de server en wordt alleen door de admin ingesteld. Discord-meldingen en het dagoverzicht stelt iedereen zelf in.
+
+Let op als je dit voor anderen draait: je bewaart dan hun API-keys op jouw server en wie root heeft, kan erbij. Laat iedereen een Bitvavo-key maken **zonder opnamerechten**, gekoppeld aan het IP van je server. Handel je voor anderen tegen betaling of beheer je hun geld, dan kan dat onder de Europese MiCA-regels vergunningplichtig zijn. Voor vrienden die hun eigen account en eigen keys gebruiken is het een hulpmiddel, geen beleggingsadvies.
+
 ## Live trading
 
 Doe dit pas na weken paper trading met resultaten waar je tevreden over bent.
@@ -182,7 +199,7 @@ Beveiligingen bij het wisselen:
 - Zolang je live staat, kun je de Bitvavo-keys niet verwijderen.
 - In live-modus staat er een rode streep bovenaan het dashboard en een rode **LIVE**-badge.
 
-Paper en live hebben elk een eigen state-bestand (`data/state-paper.json` en `data/state-live.json`), dus ze lopen nooit door elkaar.
+Paper en live hebben elk een eigen state-bestand (`state-paper.json` en `state-live.json` in de map van de gebruiker), dus ze lopen nooit door elkaar.
 
 Let op: stop-loss en take-profit worden per check bekeken, niet direct op de exchange. Bij een interval van 15 minuten kan de koers in die tijd verder doorlopen dan je stop-loss.
 

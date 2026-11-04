@@ -17,6 +17,97 @@ export function createExchange(secrets) {
 
 export const hasTradingKeys = (ex) => Boolean(ex.apiKey && ex.secret);
 
+// ---------- Gedeelde marktdata voor meerdere gebruikers ----------
+// Bitvavo telt de rate limit per IP-adres, en alle gebruikers draaien op dezelfde server.
+// Daarom halen alle bots koersen en candles via één publieke verbinding met een korte cache.
+// Orders en saldo gaan via de eigen verbinding van elke gebruiker, met zijn eigen keys.
+export class SharedMarket {
+  constructor(ex = new ccxt.bitvavo({ enableRateLimit: true })) {
+    this.ex = ex;
+    this.cache = new Map();
+    this.inflight = new Map();
+  }
+
+  async #cached(key, ttlMs, fn) {
+    const hit = this.cache.get(key);
+    if (hit && Date.now() - hit.at < ttlMs) return hit.value;
+    if (this.inflight.has(key)) return this.inflight.get(key);
+    const p = (async () => {
+      try {
+        const value = await fn();
+        this.cache.set(key, { at: Date.now(), value });
+        return value;
+      } finally {
+        this.inflight.delete(key);
+      }
+    })();
+    this.inflight.set(key, p);
+    return p;
+  }
+
+  parseTimeframe(tf) {
+    return this.ex.parseTimeframe(tf);
+  }
+
+  get markets() {
+    return this.ex.markets;
+  }
+
+  loadMarkets() {
+    return this.#cached('markets', 3600000, () => this.ex.loadMarkets());
+  }
+
+  fetchOHLCV(pair, tf, since, limit) {
+    return this.#cached(`ohlcv:${pair}:${tf}:${limit}`, 5000, () => this.ex.fetchOHLCV(pair, tf, since, limit));
+  }
+
+  fetchTicker(pair) {
+    return this.#cached(`ticker:${pair}`, 3000, () => this.ex.fetchTicker(pair));
+  }
+
+  async fetchTickers(pairs) {
+    const out = {};
+    const missing = [];
+    for (const p of pairs) {
+      const hit = this.cache.get(`ticker:${p}`);
+      if (hit && Date.now() - hit.at < 3000) out[p] = hit.value;
+      else missing.push(p);
+    }
+    if (missing.length) {
+      const fresh = await this.ex.fetchTickers(missing);
+      for (const [p, t] of Object.entries(fresh)) {
+        this.cache.set(`ticker:${p}`, { at: Date.now(), value: t });
+        out[p] = t;
+      }
+    }
+    return out;
+  }
+}
+
+// Verbinding voor één gebruiker: marktdata uit de gedeelde cache, al het andere (orders,
+// saldo, keys) via de eigen ccxt-instantie van de gebruiker.
+export function userExchange(shared, privateEx) {
+  const viaShared = new Set(['fetchOHLCV', 'fetchTicker', 'fetchTickers', 'parseTimeframe']);
+  return new Proxy(privateEx, {
+    get(target, prop) {
+      if (viaShared.has(prop)) return shared[prop].bind(shared);
+      if (prop === 'markets') return shared.markets ?? target.markets;
+      // Beide laden: de gedeelde voor marktlijsten, de eigen voor orders (afronding per markt).
+      if (prop === 'loadMarkets') return async () => {
+        await shared.loadMarkets();
+        if (target.apiKey) await target.loadMarkets();
+        return shared.markets;
+      };
+      const v = target[prop];
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+    set(target, prop, value) {
+      target[prop] = value;
+      return true;
+    },
+  });
+}
+
 // Haalt candles op en laat de laatste (nog niet gesloten) candle weg.
 export async function fetchClosedCandles(ex, pair, timeframe, limit = 200) {
   const candles = await ex.fetchOHLCV(pair, timeframe, undefined, limit + 1);

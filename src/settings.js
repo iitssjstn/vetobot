@@ -110,6 +110,7 @@ export class Settings {
       },
       summaryLastSent: saved.summaryLastSent ?? null,
       modeChangedAt: saved.modeChangedAt ?? null,
+      follow: { enabled: Boolean(saved.follow?.enabled), since: saved.follow?.since ?? null },
     };
   }
 
@@ -194,6 +195,15 @@ export class Settings {
     const tmp = `${this.file}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2));
     fs.renameSync(tmp, this.file);
+  }
+
+  get follow() {
+    return this.data.follow;
+  }
+
+  setFollow(enabled) {
+    this.data.follow = { enabled: Boolean(enabled), since: enabled ? new Date().toISOString() : null };
+    this.#save();
   }
 
   setMode(mode) {

@@ -442,7 +442,7 @@ test('BTC-filter blokkeert altcoins als BTC daalt', async () => {
 
 test('alle posities bezet: signalen stil overslaan, geen AI en geen regel bij AI-signalen', async () => {
   const { bot, ex } = setup({});
-  await bot.setRisk({ stakeEur: 25, maxOpenTrades: 1, cooldownMinutes: 0 });
+  await bot.setRisk({ stakeEur: 25, maxOpenTrades: 1, cooldownMinutes: 0, stopLossPct: 0, takeProfitPct: 0 });
   bot.store.state.positions = { 'X/EUR': { pair: 'X/EUR', entryPrice: 1, amount: 1, costEur: 25 } };
   let aiAsked = 0;
   bot.settings.setAi({ provider: 'openai', model: 'm', baseUrl: 'http://127.0.0.1:9', failMode: 'reject' });
@@ -453,4 +453,14 @@ test('alle posities bezet: signalen stil overslaan, geen AI en geen regel bij AI
   assert.equal(aiAsked, 0, 'AI niet gevraagd');
   assert.match(bot.pairStatus['BTC/EUR'].reason, /alle 1 posities zijn bezet/);
   assert.ok(bot.activity.some((a) => /overgeslagen \(alle posities bezet\)/.test(a.message)));
+});
+
+test('posities in coins die niet (meer) in de lijst staan worden ook bewaakt', async () => {
+  const { bot, ex } = setup({});
+  await bot.setRisk({ stopLossPct: 5, takeProfitPct: 0 });
+  bot.store.state.positions = { 'OUD/EUR': { pair: 'OUD/EUR', entryPrice: 100, amount: 0.25, costEur: 25, highest: 100 } };
+  ex.fetchTicker = async () => ({ last: 90 });
+  await bot.tick();
+  assert.equal(bot.store.state.positions['OUD/EUR'], undefined);
+  assert.match(bot.store.state.trades.find((x) => x.pair === 'OUD/EUR').exitReason, /Stop-loss/);
 });

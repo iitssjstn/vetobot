@@ -1,7 +1,7 @@
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { COOKIE, readCookie } from './auth.js';
+import { COOKIE, readCookie } from './users.js';
 import { SECRET_NAMES, remapAiKeys } from './secrets.js';
 import { NOTIFY_EVENTS } from './notify.js';
 import { aiLabel } from './ai.js';
@@ -9,7 +9,10 @@ import { AI_PROVIDERS, MAX_PAIRS, TIMEFRAMES, RISK_LIMITS, STRATEGY_LIMITS } fro
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
-export function startServer({ config, bot, settings, secrets, auth, notifier, log = console }) {
+// Keys die over de server gaan en niet over één gebruiker. Alleen de admin mag ze zetten.
+const ADMIN_ONLY_SECRETS = new Set(['heartbeatUrl']);
+
+export function createApp({ users, manager, log = console }) {
   const app = express();
   app.disable('x-powered-by');
   // Achter Nginx Proxy Manager: echte client-IP voor de login-blokkade.
@@ -30,21 +33,23 @@ export function startServer({ config, bot, settings, secrets, auth, notifier, lo
     res.set('Set-Cookie', `${COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}${secure}`);
   };
   const clearCookie = (res) => res.set('Set-Cookie', `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
-  const fail = (res, err, status = 400) => res.status(status).json({ error: err.message });
+  const fail = (res, err, status = err.status ?? 400) => res.status(status).json({ error: err.message });
+  const httpError = (status, message) => Object.assign(new Error(message), { status });
 
   // --- Openbaar -------------------------------------------------------------
-  app.get('/healthz', (_req, res) => res.json({ ok: true, lastTickAt: bot.lastTickAt }));
+  app.get('/healthz', (_req, res) => res.json({ ok: true, lastTickAt: manager.leaderBot?.lastTickAt ?? null }));
   app.use(express.static(publicDir));
 
   app.get('/api/auth/status', (req, res) => {
-    const user = auth.verify(readCookie(req, COOKIE));
-    res.json({ setupRequired: !auth.isSetUp(), loggedIn: Boolean(user), username: user });
+    const user = users.verify(readCookie(req, COOKIE));
+    res.json({ setupRequired: !users.isSetUp(), loggedIn: Boolean(user), user: users.publicUser(user) });
   });
 
   app.post('/api/auth/setup', (req, res) => {
     try {
-      const token = auth.setup(req.body ?? {}, req.ip);
-      log.info(`Admin-account "${auth.data.username}" aangemaakt.`);
+      const { token, user } = users.setup(req.body ?? {}, req.ip);
+      log.info(`Admin-account "${user.username}" aangemaakt.`);
+      manager.startAll();
       setCookie(req, res, token);
       res.json({ ok: true });
     } catch (err) {
@@ -54,34 +59,69 @@ export function startServer({ config, bot, settings, secrets, auth, notifier, lo
 
   app.post('/api/auth/login', (req, res) => {
     try {
-      setCookie(req, res, auth.login(req.body ?? {}, req.ip));
+      const { token } = users.login(req.body ?? {}, req.ip);
+      setCookie(req, res, token);
       res.json({ ok: true });
     } catch (err) {
       fail(res, err, 401);
     }
   });
 
+  // Registreren kan alleen met een uitnodiging van de admin.
+  app.post('/api/auth/invite/check', (req, res) => {
+    res.json({ valid: users.checkInvite(req.body?.code) });
+  });
+
+  app.post('/api/auth/register', (req, res) => {
+    try {
+      const { token, user } = users.register(req.body ?? {}, req.ip);
+      log.info(`Nieuwe gebruiker "${user.username}" via uitnodiging.`);
+      manager.start(user);
+      setCookie(req, res, token);
+      res.json({ ok: true });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
   // --- Alles hieronder vereist een ingelogde sessie ------------------------
   app.use('/api', (req, res, next) => {
-    const user = auth.verify(readCookie(req, COOKIE));
+    const user = users.verify(readCookie(req, COOKIE));
     if (!user) return res.status(401).json({ error: 'Niet ingelogd' });
     // Extra CSRF-bescherming naast SameSite=Strict.
     if (req.method !== 'GET' && !req.is('application/json')) {
       return res.status(415).json({ error: 'Content-Type moet application/json zijn' });
     }
     req.user = user;
+    req.ctx = manager.get(user.id) ?? manager.start(user);
     next();
   });
 
+  const adminOnly = (req, res, next) => (req.user.role === 'admin' ? next() : res.status(403).json({ error: 'Alleen voor de admin' }));
+  const confirm = (req, password) => users.confirmPassword(req.user.id, password, req.ip);
+  // Wie volgt, neemt coins, planning en strategie over van de admin.
+  const notWhileFollowing = (bot, what) => {
+    if (bot.following) throw new Error(`Je volgt de strategie van ${bot.leader?.username ?? 'de admin'}, dus ${what} komt van de admin. Zet volgen eerst uit.`);
+  };
+
+  // Toon hooguit een korte foutmelding naar buiten; nooit stacktraces of keys.
+  const wrap = (fn) => async (req, res) => {
+    try {
+      res.json((await fn(req, req.ctx)) ?? { ok: true });
+    } catch (err) {
+      fail(res, err);
+    }
+  };
+
   app.post('/api/auth/logout', (req, res) => {
-    auth.logout(readCookie(req, COOKIE));
+    users.logout(readCookie(req, COOKIE));
     clearCookie(res);
     res.json({ ok: true });
   });
 
   app.post('/api/auth/password', (req, res) => {
     try {
-      auth.changePassword(req.body ?? {}, req.ip);
+      users.changePassword(req.user.id, req.body ?? {}, req.ip);
       clearCookie(res);
       res.json({ ok: true });
     } catch (err) {
@@ -89,34 +129,41 @@ export function startServer({ config, bot, settings, secrets, auth, notifier, lo
     }
   });
 
-  app.get('/api/settings/keys', (_req, res) => res.json(secrets.status()));
+  app.post('/api/auth/username', wrap((req, ctx) => {
+    const old = req.user.username;
+    const user = users.changeUsername(req.user.id, req.body ?? {}, req.ip);
+    ctx.bot.username = user.username;
+    log.info(`Gebruikersnaam gewijzigd: ${old} -> ${user.username}`);
+    return { ok: true, user: users.publicUser(user) };
+  }));
 
-  app.post('/api/settings/keys', (req, res) => {
-    try {
-      const updates = {};
-      for (const name of SECRET_NAMES) if (name in (req.body ?? {})) updates[name] = req.body[name];
-      const removesBitvavo = ['bitvavoApiKey', 'bitvavoApiSecret'].some((n) => n in updates && !updates[n]);
-      if (bot.mode === 'live' && removesBitvavo) {
-        throw new Error('Schakel eerst terug naar paper voordat je de Bitvavo-keys verwijdert');
-      }
-      secrets.update(updates);
-      log.info(`API-keys bijgewerkt door ${req.user}: ${Object.keys(updates).join(', ') || 'geen'}`);
-      res.json(secrets.status());
-    } catch (err) {
-      fail(res, err);
-    }
-  });
-
-  // Toon hooguit een korte foutmelding naar buiten; nooit stacktraces of keys.
-  const wrap = (fn) => async (req, res) => {
-    try {
-      res.json((await fn(req)) ?? { ok: true });
-    } catch (err) {
-      fail(res, err);
-    }
+  const keyStatus = (req) => {
+    const st = req.ctx.secrets.status();
+    if (req.user.role !== 'admin') for (const n of ADMIN_ONLY_SECRETS) delete st[n];
+    return st;
   };
 
-  app.get('/api/state', async (_req, res) => {
+  app.get('/api/settings/keys', (req, res) => res.json(keyStatus(req)));
+
+  app.post('/api/settings/keys', wrap((req, { bot, secrets }) => {
+    const updates = {};
+    for (const name of SECRET_NAMES) {
+      if (!(name in (req.body ?? {}))) continue;
+      if (ADMIN_ONLY_SECRETS.has(name) && req.user.role !== 'admin') throw httpError(403, 'Alleen de admin kan dit instellen');
+      updates[name] = req.body[name];
+    }
+    const removesBitvavo = ['bitvavoApiKey', 'bitvavoApiSecret'].some((n) => n in updates && !updates[n]);
+    if (bot.mode === 'live' && removesBitvavo) {
+      throw new Error('Schakel eerst terug naar paper voordat je de Bitvavo-keys verwijdert');
+    }
+    secrets.update(updates);
+    log.info(`API-keys bijgewerkt door ${req.user.username}: ${Object.keys(updates).join(', ') || 'geen'}`);
+    return keyStatus(req);
+  }));
+
+  app.get('/api/state', async (req, res) => {
+    const { bot, settings, secrets, notifier } = req.ctx;
+    const isAdmin = req.user.role === 'admin';
     const openPairs = Object.keys(bot.store.state.positions);
     if (openPairs.length) await bot.refreshPrices(openPairs).catch(() => {});
     const open = bot.openPositionsValue();
@@ -125,12 +172,23 @@ export function startServer({ config, bot, settings, secrets, auth, notifier, lo
     const closed = s.trades;
     const wins = closed.filter((t) => t.pnlEur > 0).length;
     const keys = secrets.status();
+    const leader = manager.leaderBot;
     res.json({
+      user: users.publicUser(req.user),
+      follow: {
+        available: !isAdmin && Boolean(leader),
+        enabled: Boolean(settings.follow?.enabled),
+        active: bot.following,
+        since: settings.follow?.since ?? null,
+        leader: leader?.username ?? null,
+        leaderPositions: leader ? Object.keys(leader.store.state.positions) : [],
+      },
       mode: bot.mode,
       modeChangedAt: settings.data.modeChangedAt,
-      pairs: settings.pairs,
+      pairs: bot.pairs,
+      ownPairs: settings.pairs,
       maxPairs: MAX_PAIRS,
-      timeframe: settings.timeframe,
+      timeframe: bot.timeframe,
       timeframes: TIMEFRAMES,
       ai: settings.ai,
       aiProviders: AI_PROVIDERS,
@@ -163,128 +221,187 @@ export function startServer({ config, bot, settings, secrets, auth, notifier, lo
       running: bot.running,
       currentStep: bot.currentStep,
       nextTickAt: bot.nextTickAt,
-      checkIntervalMinutes: settings.checkIntervalMinutes,
-      pairStatus: settings.pairs.map((pair) => ({ pair, ...bot.pairStatus[pair] })),
+      checkIntervalMinutes: bot.checkIntervalMinutes,
+      pairStatus: bot.pairs.map((pair) => ({ pair, ...bot.pairStatus[pair] })),
       activity: bot.activity.slice(0, 100),
       notify: settings.notify,
       notifyEvents: NOTIFY_EVENTS,
       discordSet: keys.discordWebhook.set,
-      heartbeatSet: keys.heartbeatUrl.set,
-      lastHeartbeat: notifier?.lastHeartbeat ?? null,
+      heartbeatSet: isAdmin ? keys.heartbeatUrl.set : false,
+      lastHeartbeat: isAdmin ? notifier?.lastHeartbeat ?? null : null,
       lastSummary: bot.store.state.lastSummary ?? null,
       serverTime: new Date().toISOString(),
     });
   });
 
-  app.post('/api/pause', wrap(() => {
+  app.post('/api/pause', wrap((_req, { bot }) => {
     bot.store.state.halted = { at: new Date().toISOString(), reason: 'Handmatig gepauzeerd', manual: true };
     bot.store.save();
   }));
 
-  app.post('/api/resume', wrap(() => {
+  app.post('/api/resume', wrap((_req, { bot }) => {
     bot.store.state.halted = null;
     bot.store.save();
   }));
 
-  app.post('/api/tick', wrap(async () => {
+  app.post('/api/tick', wrap(async (_req, { bot }) => {
     await (bot.runNow ? bot.runNow() : bot.tick());
     return { ok: true, lastTickAt: bot.lastTickAt, nextTickAt: bot.nextTickAt };
   }));
 
-  app.post('/api/positions/close', wrap(async (req) => {
+  app.post('/api/positions/close', wrap(async (req, { bot }) => {
     const pair = String(req.body?.pair ?? '');
     const trade = await bot.closeManual(pair);
-    log.info(`Positie ${pair} handmatig gesloten door ${req.user}`);
+    log.info(`Positie ${pair} handmatig gesloten door ${req.user.username}`);
     return { ok: true, trade };
   }));
 
   // Overschakelen tussen paper en live. Live vereist het wachtwoord en het woord LIVE.
-  app.post('/api/settings/mode', wrap(async (req) => {
-    const { mode, password, confirm } = req.body ?? {};
-    auth.confirmPassword(password, req.ip);
-    if (mode === 'live' && String(confirm ?? '').trim() !== 'LIVE') {
+  app.post('/api/settings/mode', wrap(async (req, { bot }) => {
+    const { mode, password, confirm: word } = req.body ?? {};
+    confirm(req, password);
+    if (mode === 'live' && String(word ?? '').trim() !== 'LIVE') {
       throw new Error('Typ LIVE ter bevestiging');
     }
     await bot.switchMode(mode);
-    log.warn(`Modus gewijzigd naar ${mode} door ${req.user}`);
+    log.warn(`Modus gewijzigd naar ${mode} door ${req.user.username}`);
     return { ok: true, mode: bot.mode, liveBalance: bot.liveBalance };
   }));
 
+  // Strategie van de admin volgen (of niet). Bestaande eigen posities blijven gewoon bewaakt.
+  app.post('/api/settings/follow', wrap((req, { bot, settings }) => {
+    if (req.user.role === 'admin') throw new Error('De admin is zelf de leider en kan niet volgen');
+    const enabled = Boolean(req.body?.enabled);
+    if (bot.mode === 'live') confirm(req, req.body?.password);
+    settings.setFollow(enabled);
+    bot.onScheduleChange?.();
+    log.info(`${req.user.username} ${enabled ? 'volgt nu' : 'volgt niet meer'} de strategie van de admin`);
+    return { ok: true, follow: settings.follow, following: bot.following };
+  }));
+
   // In live-modus gaat het om echt geld, dus dan is je wachtwoord nodig.
-  app.post('/api/settings/risk', wrap(async (req) => {
-    if (bot.mode === 'live') auth.confirmPassword(req.body?.password, req.ip);
+  app.post('/api/settings/risk', wrap(async (req, { bot, settings }) => {
+    if (bot.mode === 'live') confirm(req, req.body?.password);
     await bot.setRisk(req.body?.risk);
-    log.info(`Risico gewijzigd door ${req.user}: ${JSON.stringify(settings.risk)}`);
+    log.info(`Risico gewijzigd door ${req.user.username}: ${JSON.stringify(settings.risk)}`);
     return { ok: true, risk: bot.risk };
   }));
 
-  app.post('/api/settings/strategy', wrap(async (req) => {
-    if (bot.mode === 'live') auth.confirmPassword(req.body?.password, req.ip);
+  app.post('/api/settings/strategy', wrap(async (req, { bot }) => {
+    notWhileFollowing(bot, 'de strategie');
+    if (bot.mode === 'live') confirm(req, req.body?.password);
     await bot.setStrategy(req.body?.strategy);
     return { ok: true, strategy: bot.strategy };
   }));
 
   // Geen wachtwoord nodig: het is nepgeld. Het dashboard vraagt wel om bevestiging.
-  app.post('/api/paper/reset', wrap(async (req) => {
+  app.post('/api/paper/reset', wrap(async (req, { bot }) => {
     await bot.resetPaper(req.body?.startBalanceEur);
-    log.warn(`Paper-account gereset door ${req.user}`);
+    log.warn(`Paper-account gereset door ${req.user.username}`);
   }));
 
-  app.post('/api/settings/schedule', wrap(async (req) => {
+  app.post('/api/settings/schedule', wrap(async (req, { bot }) => {
+    notWhileFollowing(bot, 'de planning');
     await bot.setSchedule({ timeframe: req.body?.timeframe, checkIntervalMinutes: req.body?.checkIntervalMinutes });
-    log.info(`Planning gewijzigd door ${req.user}: elke ${settings.checkIntervalMinutes * 60} sec, ${settings.timeframe}`);
-    return { ok: true, timeframe: settings.timeframe, checkIntervalMinutes: settings.checkIntervalMinutes, nextTickAt: bot.nextTickAt };
+    log.info(`Planning gewijzigd door ${req.user.username}: elke ${bot.checkIntervalMinutes * 60} sec, ${bot.timeframe}`);
+    return { ok: true, timeframe: bot.timeframe, checkIntervalMinutes: bot.checkIntervalMinutes, nextTickAt: bot.nextTickAt };
   }));
 
-  app.post('/api/settings/notify', wrap((req) => {
+  app.post('/api/settings/notify', wrap((req, { settings }) => {
     settings.setNotify(req.body ?? {});
     return { ok: true, notify: settings.notify };
   }));
 
-  app.post('/api/summary/apply', wrap(async (req) => {
-    if (bot.mode === 'live') auth.confirmPassword(req.body?.password, req.ip);
+  app.post('/api/summary/apply', wrap(async (req, { bot }) => {
+    notWhileFollowing(bot, 'de strategie');
+    if (bot.mode === 'live') confirm(req, req.body?.password);
     const keys = Array.isArray(req.body?.keys) ? req.body.keys.map(String) : [];
     const applied = await bot.applySummarySuggestions(keys);
-    log.info(`AI-voorstel overgenomen door ${req.user}: ${applied.map((x) => x.key).join(', ')}`);
+    log.info(`AI-voorstel overgenomen door ${req.user.username}: ${applied.map((x) => x.key).join(', ')}`);
     return { ok: true, applied };
   }));
 
-  app.post('/api/summary/now', wrap(async () => ({ ok: true, summary: await bot.dailySummary() })));
+  app.post('/api/summary/now', wrap(async (_req, { bot }) => ({ ok: true, summary: await bot.dailySummary() })));
 
-  app.post('/api/settings/notify/test', wrap(async () => {
+  app.post('/api/settings/notify/test', wrap(async (_req, { notifier }) => {
     await notifier.test();
   }));
 
-  app.post('/api/settings/heartbeat/test', wrap(async () => {
+  app.post('/api/settings/heartbeat/test', adminOnly, wrap(async (_req, { notifier }) => {
     const r = await notifier.heartbeat(true, { force: true });
     if (!r) throw new Error('Er is nog geen heartbeat-URL ingesteld');
     if (r.error) throw new Error(`Heartbeat mislukt: ${r.error}`);
     return { ok: true, lastHeartbeat: r };
   }));
 
-  app.get('/api/markets', wrap(async () => ({ markets: await bot.listMarkets() })));
+  app.get('/api/markets', wrap(async (_req, { bot }) => ({ markets: await bot.listMarkets() })));
 
-  app.post('/api/settings/pairs', wrap(async (req) => {
+  app.post('/api/settings/pairs', wrap(async (req, { bot, settings }) => {
+    notWhileFollowing(bot, 'de coinlijst');
     await bot.setPairs(req.body?.pairs);
-    log.info(`Coins gewijzigd door ${req.user}: ${settings.pairs.join(', ')}`);
+    log.info(`Coins gewijzigd door ${req.user.username}: ${settings.pairs.join(', ')}`);
     return { ok: true, pairs: settings.pairs };
   }));
 
-  app.post('/api/settings/ai', wrap((req) => {
+  app.post('/api/settings/ai', wrap((req, { settings, secrets }) => {
     const body = req.body ?? {};
     settings.setAi(body);
     // Keys verhuizen mee met het verschuiven of verwijderen van modellen.
     if (Array.isArray(body.keyMap)) remapAiKeys(secrets, body.keyMap, body.newKeys, 1 + settings.ai.fallbacks.length);
-    log.info(`AI-instelling gewijzigd door ${req.user}: ${settings.ai.provider}`);
+    log.info(`AI-instelling gewijzigd door ${req.user.username}: ${settings.ai.provider}`);
     return { ok: true, ai: settings.ai };
   }));
 
+  app.post('/api/settings/ai/models', wrap(async (req, { bot }) => ({ ok: true, models: await bot.listAiModels(req.body ?? {}) })));
+
+  app.post('/api/settings/ai/test', wrap(async (_req, { bot }) => ({ ok: true, ...(await bot.testAi()) })));
+
   // Test de Bitvavo-keys zonder van modus te wisselen.
-  app.post('/api/settings/ai/models', wrap(async (req) => ({ ok: true, models: await bot.listAiModels(req.body ?? {}) })));
+  app.post('/api/settings/keys/test', wrap(async (_req, { bot }) => ({ ok: true, liveBalance: await bot.refreshLiveBalance() })));
 
-  app.post('/api/settings/ai/test', wrap(async () => ({ ok: true, ...(await bot.testAi()) })));
+  // --- Gebruikersbeheer (alleen admin) ---------------------------------------
+  app.get('/api/admin/users', adminOnly, wrap(() => ({ users: manager.overview(), invites: users.listInvites() })));
 
-  app.post('/api/settings/keys/test', wrap(async () => ({ ok: true, liveBalance: await bot.refreshLiveBalance() })));
+  app.post('/api/admin/invites', adminOnly, wrap((req) => {
+    const { code, invite } = users.createInvite(req.user.id, req.body?.note ?? '');
+    log.info(`Uitnodiging aangemaakt door ${req.user.username}${invite.note ? ` (${invite.note})` : ''}`);
+    // De code wordt alleen nu getoond; opgeslagen wordt alleen een hash.
+    return { ok: true, code, invite };
+  }));
 
+  app.post('/api/admin/invites/revoke', adminOnly, wrap((req) => {
+    users.revokeInvite(String(req.body?.id ?? ''));
+  }));
+
+  app.post('/api/admin/users/disable', adminOnly, wrap((req) => {
+    const id = String(req.body?.id ?? '');
+    const disabled = Boolean(req.body?.disabled);
+    users.setDisabled(id, disabled);
+    if (disabled) manager.stop(id);
+    else manager.start(users.get(id));
+    log.warn(`Gebruiker ${users.get(id)?.username} ${disabled ? 'uitgeschakeld' : 'weer ingeschakeld'} door ${req.user.username}`);
+    return { ok: true, users: manager.overview() };
+  }));
+
+  app.post('/api/admin/users/remove', adminOnly, wrap((req) => {
+    const id = String(req.body?.id ?? '');
+    const u = users.get(id);
+    if (!u) throw new Error('Gebruiker niet gevonden');
+    const ctx = manager.get(id);
+    if (ctx?.settings.mode === 'live' && Object.keys(ctx.stores.live.state.positions).length) {
+      throw new Error(`${u.username} heeft nog open live-posities. Schakel het account eerst uit of laat de posities sluiten.`);
+    }
+    confirm(req, req.body?.password);
+    users.remove(id);
+    manager.archive(id);
+    log.warn(`Gebruiker ${u.username} verwijderd door ${req.user.username}`);
+    return { ok: true, users: manager.overview() };
+  }));
+
+  return app;
+}
+
+export function startServer({ config, users, manager, log = console }) {
+  const app = createApp({ users, manager, log });
   return app.listen(config.server.port, () => log.info(`Dashboard op poort ${config.server.port}`));
 }

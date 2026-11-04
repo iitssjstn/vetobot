@@ -68,7 +68,7 @@ export class Bot {
     }
     try {
       this.#step('BTC-trend bepalen');
-      const candles = await fetchClosedCandles(this.ex, 'BTC/EUR', this.settings.timeframe, 120);
+      const candles = await fetchClosedCandles(this.ex, 'BTC/EUR', this.timeframe, 120);
       const closes = candles.map((c) => c[4]);
       const e = ema(closes, 50).at(-1);
       this.btcTrend = e == null ? null : { up: closes.at(-1) > e, close: closes.at(-1), ema50: e, at: new Date().toISOString() };
@@ -84,7 +84,7 @@ export class Bot {
     if (t.skippedFull) parts.push(`${t.skippedFull} signaal${t.skippedFull === 1 ? '' : 'en'} overgeslagen (alle posities bezet)`);
     if (!t.buySignals && !t.skippedFull) parts.push('geen koopsignaal, AI niet nodig');
     else {
-      parts.push(`${t.buySignals} koopsignaal${t.buySignals === 1 ? '' : 'en'}`);
+      parts.push(`${t.buySignals} ${t.buySignals === 1 ? 'koopsignaal' : 'koopsignalen'}`);
       if (t.blocked) parts.push(`${t.blocked} geblokkeerd door je limieten`);
       if (t.aiCalls) parts.push(`AI ${t.aiCalls}× gevraagd`);
     }
@@ -102,13 +102,67 @@ export class Bot {
     return this.settings.mode;
   }
 
+  // ---------- Volgen ----------
+  // Een volger koopt en verkoopt mee met de leider (de admin). Strategie, coins, planning en
+  // de stop-percentages komen van de leider; bedragen en limieten blijven van de volger zelf.
+  get following() {
+    return Boolean(this.leader && this.leader !== this && this.settings.follow?.enabled);
+  }
+
+  get pairs() {
+    return this.following ? this.leader.pairs : this.settings.pairs;
+  }
+
+  get timeframe() {
+    return this.following ? this.leader.timeframe : this.settings.timeframe;
+  }
+
+  get checkIntervalMinutes() {
+    return this.following ? this.leader.checkIntervalMinutes : this.settings.checkIntervalMinutes;
+  }
+
   // Risico-instellingen uit het dashboard, aangevuld met vaste waarden (fee) uit de config.
   get risk() {
-    return { ...this.config.risk, ...this.settings.risk };
+    const own = { ...this.config.risk, ...this.settings.risk };
+    if (!this.following) return own;
+    const l = this.leader.risk;
+    return { ...own, stopLossPct: l.stopLossPct, takeProfitPct: l.takeProfitPct, trailingStopPct: l.trailingStopPct,
+      atrStopMult: l.atrStopMult, cooldownMinutes: l.cooldownMinutes };
   }
 
   get strategy() {
-    return { ...this.config.strategy, ...this.settings.strategy };
+    return this.following ? this.leader.strategy : { ...this.config.strategy, ...this.settings.strategy };
+  }
+
+  // Een trade van de leider meedoen. Eigen limieten (aantal trades, daglimiet, budget, saldo)
+  // gelden gewoon; de AI wordt niet opnieuw gevraagd, die heeft de leider al gevraagd.
+  mirror(type, { pair, reason, indicators }) {
+    return this.#exclusive(async () => {
+      if (!this.following) return;
+      const pos = this.store.state.positions[pair];
+      try {
+        if (type === 'open' && !pos) {
+          const blocked = checkEntry(this.store, { risk: this.risk }, this.broker.mode, this.ex, this.liveBalance,
+            { pair, openPnlEur: this.openPositionsValue().pnlEur });
+          if (blocked) {
+            this.store.addDecision({ pair, signal: 'buy', outcome: 'blocked', reason: `Volgen: ${blocked}`, indicators });
+            this.#event('warn', pair, `Trade van ${this.leader.username ?? 'de leider'} niet gevolgd: ${blocked}`);
+          } else {
+            await this.#open(pair, `Gevolgd: ${reason}`, indicators);
+            this.store.state.positions[pair].followed = true;
+          }
+        } else if (type === 'close' && pos?.followed) {
+          await this.#close(pair, `Gevolgd: ${reason}`);
+          if (this.pairStatus[pair]) this.pairStatus[pair].inPosition = false;
+        }
+      } catch (err) {
+        this.#event('error', pair, `Volgen mislukt: ${err.message}`);
+        this.#notify('errors', { title: `Volgen mislukt voor ${pair}`, message: err.message, level: 'error' });
+      } finally {
+        this.#step(null);
+        this.store.save();
+      }
+    });
   }
 
   // Welke kruising per coin al beoordeeld is. Staat in het state-bestand van de
@@ -180,12 +234,12 @@ export class Bot {
       openPosities: positions.map((p) => ({ ...p, changePct: p.changePct == null ? null : +p.changePct.toFixed(2) })),
       signalen: { totaal: decisions.length, goedgekeurd: count('approved'), afgewezenDoorAi: count('vetoed'), geblokkeerd: count('blocked') },
       aiRedenenAfwijzing: decisions.filter((d) => d.outcome === 'vetoed').slice(0, 5).map((d) => `${d.pair}: ${d.reason}`),
-      markt: this.settings.pairs.map((p) => {
+      markt: this.pairs.map((p) => {
         const ps = this.pairStatus[p] ?? {};
         return { pair: p, price: ps.price ?? null, trend: ps.trend ?? null, rsi: ps.rsi != null ? +ps.rsi.toFixed(1) : null,
           change24Candles: ps.change24 != null ? +ps.change24.toFixed(2) : null };
       }),
-      instellingen: { ...this.risk, ...this.strategy, timeframe: this.settings.timeframe, checkIntervalMin: this.settings.checkIntervalMinutes },
+      instellingen: { ...this.risk, ...this.strategy, timeframe: this.timeframe, checkIntervalMin: this.checkIntervalMinutes },
     };
 
     let analysis = null;
@@ -304,8 +358,8 @@ export class Bot {
 
   // Test de AI-koppeling met actuele data van de eerste gevolgde coin.
   async testAi() {
-    const pair = this.settings.pairs[0];
-    const timeframe = this.settings.timeframe;
+    const pair = this.pairs[0];
+    const timeframe = this.timeframe;
     let candles = [];
     let indicators = null;
     try {
@@ -518,7 +572,9 @@ export class Bot {
     try {
       this.#resetHaltIfNewDay();
       await this.#updateBtcTrend();
-      for (const pair of this.settings.pairs) {
+      // Gevolgde coins plus coins waarin nog een positie open staat, zodat een positie
+      // altijd bewaakt blijft, ook als de coin uit de lijst is gehaald.
+      for (const pair of [...new Set([...this.pairs, ...Object.keys(this.store.state.positions)])]) {
         try {
           await this.#handlePair(pair);
         } catch (err) {
@@ -543,12 +599,12 @@ export class Bot {
       // Bij checks sneller dan elke minuut: rustige checks hooguit één keer per minuut loggen.
       const t = this.tickStats;
       const quiet = !errors && !t.buySignals && !t.opened && !t.closed;
-      if (!quiet || this.settings.checkIntervalMinutes >= 1 || Date.now() - (this.lastQuietLog ?? 0) >= 60000) {
+      if (!quiet || this.checkIntervalMinutes >= 1 || Date.now() - (this.lastQuietLog ?? 0) >= 60000) {
         this.#event(errors ? 'warn' : 'info', null, `Check klaar in ${((Date.now() - started) / 1000).toFixed(1)}s: ` +
           this.#summary(errors));
         if (quiet) this.lastQuietLog = Date.now();
       }
-      this.notifier?.heartbeat(errors === 0).catch(() => {});
+      if (this.heartbeatEnabled !== false) this.notifier?.heartbeat(errors === 0).catch(() => {});
     } finally {
       this.running = false;
       this.#step(null);
@@ -567,7 +623,7 @@ export class Bot {
     this.tickStats && this.tickStats.pairs++;
     const strategy = this.strategy;
     const risk = this.risk;
-    const timeframe = this.settings.timeframe;
+    const timeframe = this.timeframe;
     const position = this.store.state.positions[pair];
 
     // 1. Open positie beheren
@@ -602,7 +658,7 @@ export class Bot {
     const candles = await fetchClosedCandles(this.ex, pair, timeframe, Math.min(1400, need));
     const lastCandleTs = candles.at(-1)?.[0];
     // Kijk terug over alle candles sinds de vorige check, plus één als marge.
-    const lookback = Math.min(50, Math.ceil(this.settings.checkIntervalMinutes / (TIMEFRAME_MINUTES[timeframe] ?? 60)) + 1);
+    const lookback = Math.min(50, Math.ceil(this.checkIntervalMinutes / (TIMEFRAME_MINUTES[timeframe] ?? 60)) + 1);
     let result = evaluate(candles, strategy, lookback);
     if (result.signal === 'buy' && strategy.btcFilter && pair !== 'BTC/EUR' && this.btcTrend && !this.btcTrend.up) {
       result = { ...result, signal: 'none', reason: 'Kruising, maar BTC zit in een dalende trend (BTC-filter)', filtered: true };
@@ -622,6 +678,16 @@ export class Bot {
       positionChangePct,
       error: null,
     };
+
+    if (this.following) {
+      // Volger: koopt en verkoopt alleen mee met de leider (zie mirror). Heeft de leider een
+      // gevolgde positie niet meer (bijv. gemist tijdens een herstart), dan alsnog verkopen.
+      if (position?.followed && !this.leader.store.state.positions[pair]) {
+        await this.#close(pair, 'Gevolgd: leider heeft deze positie niet meer');
+        this.pairStatus[pair].inPosition = false;
+      }
+      return;
+    }
 
     if (position) {
       if (result.signal === 'sell') {
@@ -725,6 +791,8 @@ export class Bot {
       atrAtEntry: indicators?.atr ?? null,
     };
     this.#event('info', pair, `Gekocht: ${fmtAmount(fill.amount)} @ ${fmtPrice(fill.price)} (${this.broker.mode})`);
+    // Volgers laten meedoen (alleen gezet op de bot van de leider).
+    this.onTrade?.('open', { pair, reason, indicators });
     this.#notify('trades', {
       title: `Gekocht: ${pair}`,
       message: reason,
@@ -761,6 +829,7 @@ export class Bot {
       exitReason: reason,
     });
     this.#event(pnlEur >= 0 ? 'info' : 'warn', pair, `Verkocht @ ${fmtPrice(fill.price)}, resultaat ${fmtSigned(pnlEur)} (${reason})`);
+    this.onTrade?.('close', { pair, reason });
     const isStop = reason.startsWith('Stop-loss');
     this.#notify(isStop ? 'stoploss' : 'trades', {
       title: `${isStop ? 'Stop-loss' : 'Verkocht'}: ${pair}`,

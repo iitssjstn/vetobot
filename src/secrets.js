@@ -41,11 +41,16 @@ export function remapAiKeys(secrets, keyMap, newKeys, count) {
 }
 
 export class SecretStore {
-  constructor(dataDir) {
+  // dataDir: waar secrets.enc staat. Met meerdere gebruikers heeft elke gebruiker een eigen
+  // map en een eigen sleutel: die wordt afgeleid van data/master.key (keyDir) en de
+  // gebruikers-ID (scope), zodat de keys van gebruikers niet met elkaars sleutel te openen zijn.
+  constructor(dataDir, { keyDir = dataDir, scope = null } = {}) {
     fs.mkdirSync(dataDir, { recursive: true });
-    this.keyFile = path.join(dataDir, 'master.key');
+    fs.mkdirSync(keyDir, { recursive: true });
+    this.keyFile = path.join(keyDir, 'master.key');
     this.file = path.join(dataDir, 'secrets.enc');
-    this.masterKey = this.#loadOrCreateMasterKey();
+    const master = this.#loadOrCreateMasterKey();
+    this.masterKey = scope ? crypto.createHmac('sha256', master).update(`vetobot-user:${scope}`).digest() : master;
     this.values = this.#load();
     this.listeners = [];
   }

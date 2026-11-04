@@ -117,6 +117,12 @@
   table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
   th, td { text-align: left; padding: 10px 16px; border-bottom: 1px solid var(--line); vertical-align: middle; }
   th { color: var(--muted); font-weight: 550; font-size: 12px; background: var(--panel-2); white-space: nowrap; }
+  .lock-note { display: flex; gap: 8px; align-items: center; margin: 0; padding: 10px 18px; font-size: 13px;
+    color: var(--accent); background: var(--accent-soft); border-bottom: 1px solid var(--line); }
+  .panel.locked > .panel-b, .panel.locked > form.panel-b { opacity: .55; }
+  .invite-link { display: flex; gap: 8px; margin-top: 12px; }
+  .invite-link input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+  .follow-on { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
   th .sortbtn { all: unset; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; color: inherit; }
   th .sortbtn:hover, th .sortbtn.on { color: var(--text); }
   th .sortbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
@@ -303,6 +309,8 @@
   <symbol id="i-wallet" viewBox="0 0 24 24"><path d="M20 7V5a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H5a2 2 0 0 1-2-2V6"/><path d="M17 13h.01"/></symbol>
  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.2a6.5 6.5 0 0 1 3.5 5.8"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
   <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></symbol>
 </svg>
 
@@ -340,6 +348,27 @@
   </form>
 </div>
 
+<!-- ============ Registreren via uitnodiging ============ -->
+<div class="auth-wrap" id="view-register" hidden>
+  <form class="auth panel" id="register-form">
+    <div class="brand"><span class="logo"><svg class="i"><use href="#i-shield"/></svg></span>vetobot</div>
+    <h2 style="margin:0 0 6px;font-size:19px">Account aanmaken</h2>
+    <p id="r-intro">Je bent uitgenodigd voor vetobot. Kies een gebruikersnaam en wachtwoord.</p>
+    <label for="g-user">Gebruikersnaam</label>
+    <input id="g-user" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required minlength="3" maxlength="32">
+    <div class="help">3 tot 32 tekens: letters, cijfers, punt, streepje of underscore.</div>
+    <label for="g-pass">Wachtwoord</label>
+    <input id="g-pass" type="password" autocomplete="new-password" required minlength="10">
+    <div class="help">Minimaal 10 tekens.</div>
+    <label for="g-pass2">Wachtwoord herhalen</label>
+    <input id="g-pass2" type="password" autocomplete="new-password" required minlength="10">
+    <div class="help">Je begint in paper (nepgeld). Daarna vul je zelf je Bitvavo- en AI-keys in, of je kiest ervoor de strategie van de beheerder te volgen.</div>
+    <div class="row-actions"><button class="btn primary" type="submit" style="width:100%;justify-content:center">Account aanmaken</button></div>
+    <div class="msg err" id="register-error" style="margin-top:10px"></div>
+    <div class="help" style="text-align:center"><a href="#" id="to-login">Ik heb al een account</a></div>
+  </form>
+</div>
+
 <!-- ============ App ============ -->
 <div class="app" id="view-app" hidden>
   <aside id="aside">
@@ -351,6 +380,7 @@
     <button class="nav" data-view="trades"><svg class="i"><use href="#i-history"/></svg>Trades<span class="count" id="c-trades"></span></button>
     <button class="nav" data-view="activity"><svg class="i"><use href="#i-list"/></svg>Activiteit</button>
     <button class="nav" data-view="settings"><svg class="i"><use href="#i-gear"/></svg>Instellingen</button>
+    <button class="nav" data-view="users" id="nav-users" hidden><svg class="i"><use href="#i-users"/></svg>Gebruikers<span class="count" id="c-users"></span></button>
     <div class="aside-foot">
       <div id="side-mode"></div>
       <div class="user"><span id="side-user"></span>
@@ -442,8 +472,48 @@
       </div>
     </section>
 
-    <section data-section="settings" hidden>
+    <section data-section="users" hidden>
       <div class="panel">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-link"/></svg>Iemand uitnodigen</h2></div>
+        <form class="panel-b" id="inv-form">
+          <div class="fields" style="max-width:640px">
+            <div><label for="inv-note" style="margin-top:0">Voor wie (alleen voor jezelf, optioneel)</label><input id="inv-note" maxlength="60" placeholder="bijv. Piet"></div>
+            <div style="display:flex;align-items:flex-end"><button class="btn primary" type="submit">Uitnodiging maken</button></div>
+          </div>
+          <div id="inv-result" hidden>
+            <div class="invite-link"><input id="inv-url" readonly aria-label="Uitnodigingslink"><button class="btn" type="button" id="inv-copy">Kopiëren</button></div>
+            <div class="help">Stuur deze link naar die persoon. Hij werkt één keer en is 7 dagen geldig. De link wordt maar één keer getoond, want vetobot bewaart alleen een versleutelde vingerafdruk ervan.</div>
+          </div>
+          <span class="msg" id="inv-msg"></span>
+        </form>
+      </div>
+      <div class="panel gap">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-users"/></svg>Gebruikers</h2><span class="hint">Elk account heeft een eigen bot, eigen keys en eigen saldo</span></div>
+        <div class="scroll" id="users-table"></div>
+      </div>
+      <div class="panel gap">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-history"/></svg>Uitnodigingen</h2></div>
+        <div class="scroll" id="invites-table"></div>
+      </div>
+    </section>
+
+    <section data-section="settings" hidden>
+      <div class="panel" id="follow" hidden>
+        <div class="panel-h"><h2><svg class="i"><use href="#i-users"/></svg>Strategie volgen</h2><span class="hint" id="fl-state"></span></div>
+        <div class="panel-b">
+          <p id="fl-text" style="margin-top:0"></p>
+          <ul class="muted" style="margin:0 0 4px;padding-left:18px;font-size:13.5px;line-height:1.6">
+            <li>Je bot koopt en verkoopt mee met de trades van <b class="fl-leader"></b>, met <b>je eigen</b> Bitvavo-keys en saldo.</li>
+            <li>Coins, planning, strategie, stop-loss, take-profit en trailing stop komen van <b class="fl-leader"></b>.</li>
+            <li>Inzet per trade, max. open trades en daglimiet stel je zelf in bij Risico &amp; inzet. Is je limiet bereikt, dan sla je een trade over.</li>
+            <li>De AI wordt voor gevolgde trades niet gebruikt; dat heeft <b class="fl-leader"></b> al gedaan. Je hebt dus geen AI-key nodig.</li>
+            <li>Verkoopt <b class="fl-leader"></b>, dan verkoop jij ook. Gemiste verkopen worden bij de volgende check alsnog gedaan.</li>
+          </ul>
+          <div class="row-actions"><button class="btn primary" id="fl-toggle" type="button"></button><span class="msg" id="fl-msg"></span></div>
+        </div>
+      </div>
+
+      <div class="panel gap">
         <div class="panel-h"><h2><svg class="i"><use href="#i-bolt"/></svg>Handelsmodus</h2></div>
         <div class="panel-b modecard">
           <div><div class="big" id="mc-title"></div><p id="mc-text"></p></div>
@@ -612,6 +682,7 @@
             </div>
           </form>
 
+          <div id="hb-wrap">
           <div class="sub-h" style="margin-top:26px">Server offline-melding (heartbeat)</div>
           <div class="help" style="margin-top:0">Als je server uitvalt, kan vetobot zelf niets meer sturen. Daarom stuurt hij na elke check een seintje naar een externe dienst.
             Blijven die uit, dan stuurt díe dienst jou een melding.</div>
@@ -639,6 +710,7 @@
               <span class="msg" id="hb-msg"></span>
             </div>
           </form>
+          </div>
         </div>
       </div>
 
@@ -663,8 +735,16 @@
       </div>
 
       <div class="panel gap">
-        <div class="panel-h"><h2><svg class="i"><use href="#i-lock"/></svg>Wachtwoord</h2></div>
+        <div class="panel-h"><h2><svg class="i"><use href="#i-lock"/></svg>Account</h2></div>
+        <form class="panel-b" id="un-form" style="max-width:460px;border-bottom:1px solid var(--line)">
+          <label for="u-new" style="margin-top:0">Gebruikersnaam</label>
+          <input id="u-new" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required minlength="3" maxlength="32">
+          <label for="u-pass">Wachtwoord ter bevestiging</label>
+          <input id="u-pass" type="password" autocomplete="current-password" required>
+          <div class="row-actions"><button class="btn" type="submit">Naam wijzigen</button><span class="msg" id="un-msg"></span></div>
+        </form>
         <form class="panel-b" id="pw-form" style="max-width:460px">
+          <div class="sub-h" style="margin-top:0">Wachtwoord wijzigen</div>
           <label for="p-cur" style="margin-top:0">Huidig wachtwoord</label>
           <input id="p-cur" type="password" autocomplete="current-password" required>
           <label for="p-new">Nieuw wachtwoord</label>
@@ -805,16 +885,16 @@ function table(rows, cols, empty, emptyIcon = 'list', rowAttr) {
 // ---------- Views ----------
 let pollTimer, state, me, lastNums = {};
 const titles = { dashboard: 'Dashboard', market: 'Markt', positions: 'Posities', signals: 'AI-signalen',
-  trades: 'Trades', activity: 'Activiteit', settings: 'Instellingen' };
+  trades: 'Trades', activity: 'Activiteit', settings: 'Instellingen', users: 'Gebruikers' };
 const isOn = (section) => !document.querySelector(`[data-section="${section}"]`).hidden;
 
 function show(view) {
-  for (const v of ['setup', 'login', 'app']) $(`view-${v}`).hidden = v !== view;
+  for (const v of ['setup', 'login', 'register', 'app']) $(`view-${v}`).hidden = v !== view;
   clearTimeout(pollTimer);
   if (view === 'app') {
     load().then(poll).catch(() => {});
     const start = location.hash.slice(1);
-    go(titles[start] ? start : 'dashboard');
+    go(titles[start] && (start !== 'users' || me?.role === 'admin') ? start : 'dashboard');
   }
 }
 
@@ -848,6 +928,7 @@ function go(section, anchor) {
   $('title').textContent = titles[section];
   $('aside').classList.remove('open');
   if (section === 'settings') { renderSettings(); loadMarkets(); loadKeys(); }
+  if (section === 'users') loadUsers();
   if (anchor) setTimeout(() => $(anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
   else window.scrollTo({ top: 0 });
   history.replaceState(null, '', `#${section}`);
@@ -862,11 +943,36 @@ function poll() {
     state?.running ? 2000 : state?.positions?.length ? 5000 : 15000);
 }
 
+// Een uitnodigingslink ziet eruit als https://…/#invite=CODE
+const inviteCode = () => new URLSearchParams(location.hash.slice(1)).get('invite');
+
 async function init() {
   const s = await api('api/auth/status');
-  me = s.username;
+  me = s.user;
+  const code = inviteCode();
+  if (code && !s.setupRequired) {
+    const { valid } = await api('api/auth/invite/check', { code }).catch(() => ({ valid: false }));
+    $('r-intro').textContent = valid
+      ? 'Je bent uitgenodigd voor vetobot. Kies een gebruikersnaam en wachtwoord.'
+      : 'Deze uitnodiging is ongeldig, al gebruikt of verlopen. Vraag de beheerder om een nieuwe link.';
+    $('register-form').querySelector('button[type=submit]').disabled = !valid;
+    return show('register');
+  }
   show(s.setupRequired ? 'setup' : s.loggedIn ? 'app' : 'login');
 }
+$('to-login').onclick = (e) => { e.preventDefault(); history.replaceState(null, '', location.pathname); show('login'); };
+$('register-form').onsubmit = async (e) => {
+  e.preventDefault(); $('register-error').textContent = '';
+  if ($('g-pass').value !== $('g-pass2').value) { $('register-error').textContent = 'Wachtwoorden komen niet overeen'; return; }
+  try {
+    await api('api/auth/register', { code: inviteCode(), username: $('g-user').value, password: $('g-pass').value });
+    $('g-pass').value = $('g-pass2').value = '';
+    history.replaceState(null, '', location.pathname);
+    me = (await api('api/auth/status')).user;
+    show('app');
+    toast('Welkom! Je begint in paper. Vul bij Instellingen je keys in of zet Strategie volgen aan.', 'ok', 9000);
+  } catch (err) { $('register-error').textContent = err.message; }
+};
 
 // ---------- Auth ----------
 $('setup-form').onsubmit = async (e) => {
@@ -874,17 +980,27 @@ $('setup-form').onsubmit = async (e) => {
   if ($('s-pass').value !== $('s-pass2').value) { $('setup-error').textContent = 'Wachtwoorden komen niet overeen'; return; }
   try {
     await api('api/auth/setup', { code: $('s-code').value, username: $('s-user').value, password: $('s-pass').value });
-    me = $('s-user').value.trim(); show('app');
+    me = (await api('api/auth/status')).user; show('app');
   } catch (err) { $('setup-error').textContent = err.message; }
 };
 $('login-form').onsubmit = async (e) => {
   e.preventDefault(); $('login-error').textContent = '';
   try {
     await api('api/auth/login', { username: $('l-user').value, password: $('l-pass').value });
-    me = $('l-user').value.trim(); $('l-pass').value = ''; show('app');
+    $('l-pass').value = ''; me = (await api('api/auth/status')).user; show('app');
   } catch (err) { $('login-error').textContent = err.message; }
 };
 $('logout').onclick = async () => { await api('api/auth/logout', {}).catch(() => {}); show('login'); };
+$('un-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const msg = (t, c) => { $('un-msg').className = `msg ${c ?? ''}`; $('un-msg').textContent = t; };
+  try {
+    const r = await api('api/auth/username', { username: $('u-new').value, password: $('u-pass').value });
+    me = r.user; $('u-pass').value = '';
+    $('side-user').textContent = me.username;
+    msg('Gewijzigd. Log voortaan in met je nieuwe naam.', 'ok');
+  } catch (err) { msg(err.message, 'err'); }
+};
 $('pw-form').onsubmit = async (e) => {
   e.preventDefault(); $('pw-error').textContent = '';
   try {
@@ -904,9 +1020,11 @@ async function load() {
   $('mode-badge').textContent = live ? 'LIVE' : 'PAPER';
   $('mode-badge').className = `badge ${s.mode}`;
   $('view-app').classList.toggle('is-live', live);
-  $('meta').textContent = `${s.pairs.length} coins · check elke ${fmtIv(s.checkIntervalMinutes)} · ${s.timeframe}-candles · AI: ${s.ai.provider === 'none' ? 'uit' : s.ai.provider}${s.ai.model ? ` (${s.ai.model})` : ''}`;
+  $('meta').textContent = (s.follow?.active ? `Volgt ${s.follow.leader} · ` : '') + `${s.pairs.length} coins · check elke ${fmtIv(s.checkIntervalMinutes)} · ${s.timeframe}-candles · AI: ${s.ai.provider === 'none' ? 'uit' : s.ai.provider}${s.ai.model ? ` (${s.ai.model})` : ''}`;
   $('side-mode').innerHTML = `Modus: <b class="${live ? 'down' : ''}">${live ? 'Live' : 'Paper'}</b>`;
-  $('side-user').textContent = me ?? '';
+  me = s.user ?? me;
+  $('side-user').textContent = me?.username ?? '';
+  $('nav-users').hidden = me?.role !== 'admin';
   $('pause').innerHTML = s.halted?.manual ? `${icon('play')}<span>Hervatten</span>` : `${icon('pause')}<span>Pauzeren</span>`;
   $('c-market').textContent = s.pairs.length;
   $('c-positions').textContent = s.positions.length || '';
@@ -1166,6 +1284,7 @@ function renderSettings() {
   $('r-pass-wrap').hidden = !live;
   $('st-pass-wrap').hidden = !live;
   $('paper-reset').hidden = live;
+  renderFollow();
   renderNotify();
   if (!document.activeElement?.closest('#strat-form') && !stratDirty) {
     $('st-fast').value = s.strategy.emaFast;
@@ -1240,6 +1359,145 @@ $('mode-form').addEventListener('submit', async (e) => {
     await load();
   } catch (err) { $('md-error').textContent = err.message; }
   finally { $('md-go').disabled = false; }
+});
+
+// ---------- Instellingen: strategie volgen ----------
+// Panelen die van de admin komen zolang je volgt. inert maakt ze niet bedienbaar, ook niet met het toetsenbord.
+const LOCKABLE = { schedule: 'De planning', strategy: 'De strategie', coins: 'De coinlijst' };
+function renderFollow() {
+  const s = state; if (!s) return;
+  const f = s.follow ?? {};
+  const isAdmin = s.user?.role === 'admin';
+  $('follow').hidden = !f.available && !f.enabled;
+  $('hb-wrap').hidden = !isAdmin;
+  if (document.activeElement !== $('u-new') && !$('u-new').dataset.touched) $('u-new').value = s.user?.username ?? '';
+  const leader = esc(f.leader ?? 'de admin');
+  document.querySelectorAll('.fl-leader').forEach(el => el.innerHTML = leader);
+  $('follow').classList.toggle('follow-on', Boolean(f.active));
+  $('fl-state').innerHTML = f.active ? '<span class="badge ok">Aan</span>' : '<span class="badge soft">Uit</span>';
+  $('fl-text').innerHTML = f.active
+    ? `Je volgt nu de strategie van <b>${leader}</b>${f.since ? ` sinds ${time(f.since)}` : ''}. ${f.leaderPositions?.length ? `Hij heeft nu ${f.leaderPositions.length} open positie(s).` : 'Hij heeft nu geen open posities.'}`
+    : `In plaats van zelf een strategie in te stellen, kun je de trades van <b>${leader}</b> automatisch volgen.`;
+  $('fl-toggle').textContent = f.enabled ? 'Volgen uitzetten' : 'Strategie volgen';
+  $('fl-toggle').className = f.enabled ? 'btn' : 'btn primary';
+  for (const [id, what] of Object.entries(LOCKABLE)) {
+    const panel = $(id);
+    panel.classList.toggle('locked', Boolean(f.active));
+    for (const b of panel.querySelectorAll(':scope > .panel-b, :scope > form.panel-b')) b.inert = Boolean(f.active);
+    let note = panel.querySelector('.lock-note');
+    if (f.active && !note) {
+      note = document.createElement('p'); note.className = 'lock-note';
+      panel.querySelector('.panel-h').after(note);
+    }
+    if (note) {
+      note.hidden = !f.active;
+      note.innerHTML = `${icon('users')}<span>${what} komt van ${leader}, omdat je diens strategie volgt.</span>`;
+    }
+  }
+  let rn = $('risk').querySelector('.lock-note');
+  if (f.active && !rn) { rn = document.createElement('p'); rn.className = 'lock-note'; $('risk').querySelector('.panel-h').after(rn); }
+  if (rn) {
+    rn.hidden = !f.active;
+    rn.innerHTML = `${icon('users')}<span>Stop-loss, take-profit, trailing stop en cooldown komen van ${leader}. Inzet, max. open trades en daglimiet zijn van jou.</span>`;
+  }
+}
+$('u-new').addEventListener('input', () => { $('u-new').dataset.touched = '1'; });
+$('fl-toggle').onclick = async () => {
+  const f = state.follow; const enable = !f.enabled; const live = state.mode === 'live';
+  const leader = esc(f.leader ?? 'de admin');
+  const done = await ask({
+    title: enable ? `Strategie van ${f.leader ?? 'de admin'} volgen?` : 'Volgen uitzetten?',
+    sub: enable
+      ? (live ? 'Je staat in LIVE. Je bot gaat echte orders plaatsen zodra de admin koopt.' : 'Je staat in paper, dus er gaat geen echt geld om.')
+      : 'Je bot gebruikt daarna weer je eigen coins, planning en strategie.',
+    body: enable
+      ? askRows([['Inzet per trade', eur2(state.risk.stakeEur)], ['Max. open trades', state.risk.maxOpenTrades], ['Volgt', leader]])
+      : '<p class="muted" style="margin:0">Posities die je nu open hebt, blijven bewaakt met je eigen stop-loss en take-profit.</p>',
+    confirmText: enable ? 'Volgen' : 'Uitzetten',
+    danger: enable && live,
+    password: live,
+    action: (password) => api('api/settings/follow', { enabled: enable, password }),
+  });
+  if (!done) return;
+  toast(enable ? `Je volgt nu ${leader}.` : 'Volgen staat uit.');
+  await load(); renderSettings();
+};
+
+// ---------- Gebruikers (admin) ----------
+let usersData = null;
+async function loadUsers() {
+  try { usersData = await api('api/admin/users'); renderUsers(); }
+  catch (err) { $('users-table').innerHTML = `<div class="empty">${esc(err.message)}</div>`; }
+}
+function renderUsers() {
+  if (!usersData) return;
+  const { users, invites } = usersData;
+  $('c-users').textContent = users.length > 1 ? users.length : '';
+  $('users-table').innerHTML = table(users, [
+    ['Gebruiker', u => `<b>${esc(u.username)}</b> ${u.role === 'admin' ? '<span class="badge soft">admin</span>' : ''}${u.disabled ? ' <span class="badge bad">uit</span>' : ''}`],
+    ['Modus', u => u.mode === 'live' ? '<span class="badge live">LIVE</span>' : u.mode ? '<span class="badge paper">PAPER</span>' : '<span class="muted">–</span>'],
+    ['Strategie', u => u.role === 'admin' ? '<span class="muted">leider</span>' : u.following ? '<span class="badge ok">volgt</span>' : 'eigen'],
+    ['Bitvavo-keys', u => u.bitvavoKeysSet ? 'ingesteld' : '<span class="muted">nee</span>'],
+    ['Open', u => `<span class="num">${u.openPositions}</span>`, 'r'],
+    ['Trades', u => `<span class="num">${u.trades}</span>`, 'r'],
+    ['Resultaat', u => `<span class="num">${signEur(u.realizedEur)}</span>`, 'r'],
+    ['Laatst ingelogd', u => `<span class="muted">${time(u.lastLoginAt)}</span>`],
+    ['', u => u.role === 'admin' ? '' : `<div style="display:flex;gap:6px;justify-content:flex-end">
+      <button class="btn sm" data-u-toggle="${esc(u.id)}">${u.disabled ? 'Inschakelen' : 'Uitschakelen'}</button>
+      <button class="btn sm danger" data-u-remove="${esc(u.id)}">Verwijderen</button></div>`, 'r'],
+  ], 'Nog geen gebruikers.', 'users');
+  const status = (i) => i.usedBy ? `<span class="badge ok">gebruikt door ${esc(i.usedBy)}</span>`
+    : i.expired ? '<span class="badge soft">verlopen</span>' : `<span class="badge wait">open tot ${time(i.expiresAt)}</span>`;
+  $('invites-table').innerHTML = table(invites, [
+    ['Voor', i => i.note ? esc(i.note) : '<span class="muted">–</span>'],
+    ['Gemaakt', i => `<span class="muted">${time(i.createdAt)}</span>`],
+    ['Status', status],
+    ['', i => !i.usedBy ? `<button class="btn sm" data-inv-revoke="${esc(i.id)}">${i.expired ? 'Opruimen' : 'Intrekken'}</button>` : '', 'r'],
+  ], 'Nog geen uitnodigingen gemaakt.', 'link');
+}
+$('inv-form').onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    const { code } = await api('api/admin/invites', { note: $('inv-note').value.trim() });
+    $('inv-url').value = `${location.origin}${location.pathname}#invite=${encodeURIComponent(code)}`;
+    $('inv-result').hidden = false; $('inv-note').value = '';
+    $('inv-url').select();
+    loadUsers();
+  } catch (err) { $('inv-msg').className = 'msg err'; $('inv-msg').textContent = err.message; }
+};
+$('inv-copy').onclick = async () => {
+  try { await navigator.clipboard.writeText($('inv-url').value); toast('Link gekopieerd.'); }
+  catch { $('inv-url').select(); toast('Kopiëren lukte niet automatisch. De link is geselecteerd, kopieer hem zelf.', 'err'); }
+};
+document.addEventListener('click', async (e) => {
+  const t = e.target.closest('[data-u-toggle], [data-u-remove], [data-inv-revoke]');
+  if (!t || !usersData) return;
+  if (t.dataset.invRevoke) {
+    await api('api/admin/invites/revoke', { id: t.dataset.invRevoke }).catch(err => toast(esc(err.message), 'err'));
+    return loadUsers();
+  }
+  const id = t.dataset.uToggle ?? t.dataset.uRemove;
+  const u = usersData.users.find(x => x.id === id); if (!u) return;
+  if (t.dataset.uToggle) {
+    const off = !u.disabled;
+    const done = await ask({
+      title: off ? `${u.username} uitschakelen?` : `${u.username} weer inschakelen?`,
+      sub: off ? 'De bot van dit account stopt en de gebruiker wordt uitgelogd. Open posities blijven staan maar worden niet meer bewaakt.'
+        : 'De bot van dit account start weer en de gebruiker kan weer inloggen.',
+      confirmText: off ? 'Uitschakelen' : 'Inschakelen', danger: off && u.mode === 'live' && u.openPositions > 0,
+      action: () => api('api/admin/users/disable', { id, disabled: off }),
+    });
+    if (done) { toast(off ? `${esc(u.username)} is uitgeschakeld.` : `${esc(u.username)} is weer actief.`); loadUsers(); }
+    return;
+  }
+  const done = await ask({
+    title: `${u.username} verwijderen?`,
+    sub: 'Het account kan daarna niet meer inloggen. De gegevens worden niet gewist maar opzij gezet in data/users/_verwijderd/.',
+    body: askRows([['Modus', u.mode === 'live' ? 'LIVE' : 'paper'], ['Open posities', u.openPositions], ['Trades', u.trades]]),
+    confirmText: 'Verwijderen', danger: true, password: true,
+    action: (password) => api('api/admin/users/remove', { id, password }),
+  });
+  if (done) { toast(`${esc(u.username)} is verwijderd.`); loadUsers(); }
 });
 
 // ---------- Instellingen: coins ----------
