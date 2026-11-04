@@ -950,6 +950,7 @@ function go(section, anchor) {
   document.querySelectorAll('.nav').forEach(n => n.classList.toggle('active', n.dataset.view === section));
   $('title').textContent = titles[section];
   $('aside').classList.remove('open');
+  render();
   if (section === 'settings') { renderSettings(); loadMarkets(); loadKeys(); }
   if (section === 'users') loadUsers();
   if (anchor) setTimeout(() => $(anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
@@ -1037,7 +1038,30 @@ $('pw-form').onsubmit = async (e) => {
 async function load() {
   state = await api('api/state');
   state._offset = new Date(state.serverTime).getTime() - Date.now();
-  const s = state;
+  render();
+}
+
+// Grote blokken (tabellen, logs, coinlijst) alleen opnieuw opbouwen als de inhoud echt
+// veranderd is, en alleen op de pagina die je bekijkt. Verborgen pagina's worden bijgewerkt
+// zodra je ernaartoe gaat (go() roept render() aan). Anders bouwt de browser elke paar
+// seconden honderden rijen opnieuw op, wat het dashboard traag maakt en hover/scrollen stoort.
+const innerHTMLDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
+for (const id of ['alerts', 'tiles', 'dash-market', 'market', 'dash-positions', 'positions', 'signals', 'trades',
+  'dash-activity', 'activity', 'dash-summary', 'coin-list', 'coin-chips', 'presets', 'users-table', 'invites-table']) {
+  const el = $(id);
+  Object.defineProperty(el, 'innerHTML', {
+    get() { return innerHTMLDesc.get.call(el); },
+    set(html) {
+      if (el._html === html) return;
+      if (el.closest('[data-section]')?.hidden) return;
+      el._html = html;
+      innerHTMLDesc.set.call(el, html);
+    },
+  });
+}
+
+function render() {
+  const s = state; if (!s) return;
   const live = s.mode === 'live';
 
   $('mode-badge').textContent = live ? 'LIVE' : 'PAPER';
@@ -1106,13 +1130,13 @@ async function load() {
   const judgement = (p) => p.error ? `<span class="down">Fout: ${esc(p.error)}</span>`
     : `${esc(p.reason ?? 'Nog niet gecheckt')}${p.inPosition && p.positionChangePct != null ? ` · positie <span class="${cls(p.positionChangePct)}">${pct(p.positionChangePct)}</span>` : ''}`;
   const pairCell = (p) => pairHtml(p.pair) + (p.inPosition ? ' <span class="badge soft">positie</span>' : '');
-  $('dash-market').innerHTML = table(s.pairStatus.slice(0, 8), [
+  if (isOn('dashboard')) $('dash-market').innerHTML = table(s.pairStatus.slice(0, 8), [
     ['Coin', pairCell],
     ['Koers', p => `<span class="num">${eur(p.price)}</span>`, 'r'],
     ['Trend', trend],
     ['RSI', p => `<span class="num">${p.rsi != null ? p.rsi.toFixed(0) : '–'}</span>`, 'r'],
   ], 'Nog geen data. De eerste check loopt.', 'chart');
-  $('market').innerHTML = table(s.pairStatus, [
+  if (isOn('market')) $('market').innerHTML = table(s.pairStatus, [
     ['Coin', pairCell],
     ['Koers', p => `<span class="num">${eur(p.price)}</span>`, 'r'],
     ['24 candles', p => `<span class="num ${cls(p.change24)}">${pct(p.change24)}</span>`, 'r'],
@@ -1134,12 +1158,12 @@ async function load() {
     ['', p => `<button class="btn sm danger" data-close="${esc(p.pair)}">Sluiten</button>`, 'r'],
   ];
   const posEmpty = 'Geen open posities. De bot opent er een bij een koopsignaal dat door de regels en de AI komt.';
-  $('dash-positions').innerHTML = table(s.positions, posCols, posEmpty, 'brief');
-  $('positions').innerHTML = table(s.positions, posCols, posEmpty, 'brief');
+  if (isOn('dashboard')) $('dash-positions').innerHTML = table(s.positions, posCols, posEmpty, 'brief');
+  if (isOn('positions')) $('positions').innerHTML = table(s.positions, posCols, posEmpty, 'brief');
   $('pos-hint').textContent = `Koersen live, elke 5 sec · P/L inclusief verkoopfee · Stop-loss ${s.risk.stopLossPct ? `−${s.risk.stopLossPct}%` : 'uit'} · take-profit ${s.risk.takeProfitPct ? `+${s.risk.takeProfitPct}%` : 'uit'}`;
 
   const outcome = { approved: ['Goedgekeurd', 'ok'], vetoed: ['Afgewezen door AI', 'bad'], blocked: ['Geblokkeerd', 'wait'] };
-  $('signals').innerHTML = table(s.decisions, [
+  if (isOn('signals')) $('signals').innerHTML = table(s.decisions, [
     ['Tijd', d => `<span class="muted">${time(d.at)}</span>`],
     ['Coin', d => pairHtml(d.pair)],
     ['Uitkomst', d => { const [t, c] = outcome[d.outcome] || [d.outcome, 'soft']; return `<span class="badge ${c}">${t}</span>`; }],
@@ -1148,7 +1172,7 @@ async function load() {
     ['Reden', d => `<div class="reason">${esc(d.reason)}${d.aiError ? ' <span class="warnc">(AI-fout)</span>' : ''}</div>`],
   ], 'Nog geen koopsignalen. Bij 1h-candles kan dat even duren.', 'pulse');
 
-  $('trades').innerHTML = table(s.trades, [
+  if (isOn('trades')) $('trades').innerHTML = table(s.trades, [
     ['Gesloten', t => `<span class="muted">${time(t.closedAt)}</span>`],
     ['Coin', t => pairHtml(t.pair)],
     ['In', t => `<span class="num">${eur(t.entryPrice)}</span>`, 'r'],
@@ -1162,13 +1186,13 @@ async function load() {
     `<div class="row"><span class="t">${new Date(a.at).toLocaleTimeString('nl-NL')}</span>` +
     `<span class="${lvl[a.level] ?? ''}">${a.pair ? `<b>${esc(a.pair)}</b> ` : ''}${esc(a.message)}</span></div>`).join('')
     : `<div class="empty">${icon('list')}Nog geen activiteit sinds de laatste herstart.</div>`;
-  $('dash-activity').innerHTML = logHtml(s.activity.slice(0, 15));
-  $('activity').innerHTML = logHtml(s.activity);
+  if (isOn('dashboard')) $('dash-activity').innerHTML = logHtml(s.activity.slice(0, 15));
+  if (isOn('activity')) $('activity').innerHTML = logHtml(s.activity);
 
   const sum = s.lastSummary;
   if (!sumBox()) {
   $('dash-summary-meta').textContent = sum ? `${time(sum.at)} · ${sum.mode === 'live' ? 'live' : 'paper'}` : `Elke dag om ${s.notify?.summaryTime ?? '08:00'}`;
-  $('dash-summary').innerHTML = !sum
+  if (isOn('dashboard')) $('dash-summary').innerHTML = !sum
     ? `<div class="muted">Nog geen overzicht. Het eerste komt om ${esc(s.notify?.summaryTime ?? '08:00')}, of verstuur er nu een bij Instellingen → Meldingen.</div>`
     : `<div class="grid tiles" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:14px">` +
         `<div><div class="muted" style="font-size:12px">Resultaat 24u</div><div class="num ${cls(sum.pnlEur)}" style="font-size:18px;font-weight:700">${eur2(sum.pnlEur)}</div></div>` +
@@ -1182,7 +1206,9 @@ async function load() {
 
   if (isOn('settings')) {
     renderSettings();
-    if (!coinsDirty) { selected = [...s.pairs]; renderChips(); renderCoinList(); }
+    // Coinlijst (honderden rijen) alleen opnieuw opbouwen als de gekozen coins veranderd zijn.
+    const key = s.pairs.join(',');
+    if (!coinsDirty && key !== lastPairsKey) { lastPairsKey = key; selected = [...s.pairs]; renderChips(); renderCoinList(); }
   }
 }
 
@@ -1535,6 +1561,7 @@ document.addEventListener('click', async (e) => {
 let markets = null, selected = [], coinsDirty = false;
 // Standaard op volume, hoogste eerst. Klik op een kolomkop om te sorteren, nog een keer om om te draaien.
 let coinSort = { key: 'volumeEur', dir: -1 };
+let lastPairsKey = null;
 async function loadMarkets() {
   coinsDirty = false;
   selected = [...(state?.pairs ?? [])];
@@ -1577,7 +1604,12 @@ function toggle(pair) {
   const max = state?.maxPairs ?? 30;
   if (selected.includes(pair)) selected = selected.filter(p => p !== pair);
   else if (selected.length < max) selected.push(pair);
-  else { $('coin-msg').className = 'msg err'; $('coin-msg').textContent = `Maximaal ${max} coins.`; return; }
+  else {
+    $('coin-msg').className = 'msg err'; $('coin-msg').textContent = `Maximaal ${max} coins.`;
+    // Het vinkje is al door de browser gezet; lijst geforceerd opnieuw tekenen om dat terug te draaien.
+    $('coin-list')._html = null; renderCoinList();
+    return;
+  }
   $('coin-msg').textContent = '';
   coinsDirty = true;
   renderChips(); renderCoinList();

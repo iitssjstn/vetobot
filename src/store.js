@@ -49,7 +49,9 @@ export class Store {
 
   save() {
     const tmp = `${this.file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(this.state, null, 2));
+    // Compact (zonder inspringing): sneller en ongeveer de helft kleiner. Dit gebeurt bij elke
+    // check en bij de snelle positiebewaking, dus op een trage CPU telt dat.
+    fs.writeFileSync(tmp, JSON.stringify(this.state));
     fs.renameSync(tmp, this.file);
   }
 

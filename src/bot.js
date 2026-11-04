@@ -902,13 +902,17 @@ export class Bot {
     try {
       await this.#exclusive(async () => {
         const risk = this.risk;
+        let changed = false;
         for (const pair of Object.keys(this.store.state.positions)) {
           const position = this.store.state.positions[pair];
           if (!position) continue;
           try {
             const price = await fetchPrice(this.ex, pair);
+            // Een nieuw hoogste punt (voor de trailing stop) moet bewaard blijven.
+            if (price > (position.highest ?? position.entryPrice)) changed = true;
             if (await this.#manageExit(pair, position, price, risk)) {
               closed++;
+              changed = true;
               continue;
             }
             this.pairStatus[pair] = {
@@ -919,7 +923,8 @@ export class Bot {
             this.#event('error', pair, `Positie bewaken: ${err.message}`);
           }
         }
-        this.store.save();
+        // Alleen opslaan als er iets veranderde (verkoop, nieuw hoogste punt, AI-winstcheck).
+        if (changed) this.store.save();
       });
     } finally {
       this.watching = false;

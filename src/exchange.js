@@ -28,7 +28,17 @@ export class SharedMarket {
     this.inflight = new Map();
   }
 
+  // Ruimt af en toe items op die al lang niet meer gebruikt zijn (bijv. coins die uit de lijst
+  // zijn gehaald), zodat het geheugen niet blijft groeien. Candles kunnen groot zijn.
+  #sweep() {
+    const now = Date.now();
+    if (now - (this.lastSweep ?? 0) < 60000) return;
+    this.lastSweep = now;
+    for (const [k, v] of this.cache) if (k !== 'markets' && now - v.at > 10 * 60000) this.cache.delete(k);
+  }
+
   async #cached(key, ttlMs, fn) {
+    this.#sweep();
     const hit = this.cache.get(key);
     if (hit && Date.now() - hit.at < ttlMs) return hit.value;
     if (this.inflight.has(key)) return this.inflight.get(key);

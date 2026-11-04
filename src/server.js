@@ -1,5 +1,8 @@
 import express from 'express';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { COOKIE, readCookie } from './users.js';
 import { SECRET_NAMES, remapAiKeys } from './secrets.js';
@@ -28,6 +31,44 @@ export function createApp({ users, manager, log = console }) {
     next();
   });
 
+  // Gzip voor JSON-antwoorden: /api/state wordt elke paar seconden opgehaald en is
+  // tientallen kB groot; gecomprimeerd is dat een fractie, wat vooral op mobiel scheelt.
+  const gzipOk = (req) => /\bgzip\b/.test(req.headers['accept-encoding'] || '');
+  app.use((req, res, next) => {
+    const json = res.json.bind(res);
+    res.json = (obj) => {
+      const body = JSON.stringify(obj);
+      if (body.length < 2048 || !gzipOk(req)) return json(obj);
+      res.set({ 'Content-Type': 'application/json; charset=utf-8', 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding' });
+      res.end(zlib.gzipSync(body, { level: 6 }));
+      return res;
+    };
+    next();
+  });
+
+  // Het dashboard (één HTML-bestand van ±150 kB) gecomprimeerd en met een ETag, zodat de
+  // browser hem na de eerste keer niet opnieuw downloadt zolang hij niet veranderd is.
+  // Wordt bij een wijziging van het bestand (nieuwe versie) opnieuw ingelezen.
+  let page = null;
+  const loadPage = () => {
+    const file = path.join(publicDir, 'index.html');
+    const mtime = fs.statSync(file).mtimeMs;
+    if (page?.mtime === mtime) return page;
+    const raw = fs.readFileSync(file);
+    page = { mtime, raw, gz: zlib.gzipSync(raw, { level: 9 }), etag: `"${crypto.createHash('sha1').update(raw).digest('hex').slice(0, 16)}"` };
+    return page;
+  };
+  const sendPage = (req, res) => {
+    const p = loadPage();
+    res.set({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', ETag: p.etag, Vary: 'Accept-Encoding' });
+    if (req.headers['if-none-match'] === p.etag) return res.status(304).end();
+    if (gzipOk(req)) {
+      res.set('Content-Encoding', 'gzip');
+      return res.end(p.gz);
+    }
+    res.end(p.raw);
+  };
+
   const setCookie = (req, res, token) => {
     const secure = req.secure ? '; Secure' : '';
     res.set('Set-Cookie', `${COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}${secure}`);
@@ -38,6 +79,8 @@ export function createApp({ users, manager, log = console }) {
 
   // --- Openbaar -------------------------------------------------------------
   app.get('/healthz', (_req, res) => res.json({ ok: true, lastTickAt: manager.leaderBot?.lastTickAt ?? null }));
+  app.get('/', sendPage);
+  app.get('/index.html', sendPage);
   app.use(express.static(publicDir));
 
   app.get('/api/auth/status', (req, res) => {

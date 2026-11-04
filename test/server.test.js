@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
+import zlib from 'node:zlib';
 import { Users } from '../src/users.js';
 import { BotManager } from '../src/manager.js';
 import { SharedMarket } from '../src/exchange.js';
@@ -51,7 +53,7 @@ async function setup() {
     return { get: (u) => call('GET', u), post: (u, b = {}) => call('POST', u, b) };
   };
   const close = () => { manager.stopAll(); server.close(); };
-  return { users, manager, client, close };
+  return { users, manager, client, close, base };
 }
 
 test('setup, uitnodigen, registreren en elk zijn eigen bot', async () => {
@@ -157,6 +159,39 @@ test('gebruikersnaam wijzigen, uitschakelen en verwijderen', async () => {
     assert.equal(manager.get(pietId), null);
     // De admin kan zichzelf niet verwijderen
     assert.equal((await admin.post('/api/admin/users/remove', { id: users.admin.id, password: PW })).status, 400);
+  } finally {
+    close();
+  }
+});
+
+test('dashboard en API gecomprimeerd; pagina met ETag zodat hij niet steeds opnieuw wordt gedownload', async () => {
+  const { users, client, close, base } = await setup();
+  try {
+    const raw = (url, headers = {}) => new Promise((resolve, reject) => {
+      http.get(base + url, { headers }, (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+      }).on('error', reject);
+    });
+    const page = await raw('/', { 'Accept-Encoding': 'gzip' });
+    assert.equal(page.status, 200);
+    assert.equal(page.headers['content-encoding'], 'gzip');
+    assert.ok(page.headers.etag);
+    assert.match(zlib.gunzipSync(page.body).toString(), /<title>/);
+    const again = await raw('/', { 'Accept-Encoding': 'gzip', 'If-None-Match': page.headers.etag });
+    assert.equal(again.status, 304);
+    assert.equal(again.body.length, 0);
+    const plain = await raw('/');
+    assert.equal(plain.headers['content-encoding'], undefined);
+    assert.match(plain.body.toString(), /<title>/);
+
+    // /api/state is groot genoeg om gecomprimeerd te worden; fetch pakt het zelf uit.
+    const admin = client();
+    await admin.post('/api/auth/setup', { username: 'justin', password: PW, code: users.setupCode });
+    const st = await admin.get('/api/state');
+    assert.equal(st.status, 200);
+    assert.equal(st.body.user.username, 'justin');
   } finally {
     close();
   }
