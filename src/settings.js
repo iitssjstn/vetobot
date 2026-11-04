@@ -23,6 +23,9 @@ export const RISK_LIMITS = {
   liveBudgetEur: [0, 100000000],
   trailingStopPct: [0, 100],
   atrStopMult: [0, 20],
+  watchSeconds: [0, 3600],
+  aiExitMinPct: [0, 1000],
+  aiExitEveryMin: [0, 1440],
 };
 export const LIVE_MIN_STAKE_EUR = 5;
 export const STRATEGY_LIMITS = {
@@ -59,6 +62,11 @@ const RISK_LABELS = {
   adxMin: 'Minimale ADX',
   volumeMult: 'Volumefilter',
   btcFilter: 'BTC-filter',
+  maxChasePct: 'Max. stijging na signaal',
+  useOpenCandle: 'Lopende candle meenemen',
+  watchSeconds: 'Posities bewaken elke',
+  aiExitMinPct: 'AI winst nemen vanaf',
+  aiExitEveryMin: 'AI winstcheck elke',
   feePct: 'Fee',
   emaFast: 'EMA fast',
   emaSlow: 'EMA slow',
@@ -142,7 +150,7 @@ export class Settings {
 
   setRisk(values) {
     // Velden die ontbreken houden hun huidige waarde.
-    this.data.risk = validated({ ...this.data.risk, ...values }, RISK_LIMITS, ['maxOpenTrades', 'cooldownMinutes']);
+    this.data.risk = validated({ ...this.data.risk, ...values }, RISK_LIMITS, ['maxOpenTrades', 'cooldownMinutes', 'watchSeconds']);
     this.#save();
   }
 

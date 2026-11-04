@@ -1,5 +1,6 @@
 // AI-veto: de AI mag een koopsignaal alleen goedkeuren of afwijzen.
-// Positiegrootte, stop-loss en verkopen worden nooit door de AI bepaald.
+// Positiegrootte en stops worden nooit door de AI bepaald. Optioneel mag de AI bij een
+// positie in de winst adviseren om eerder te verkopen (winst nemen), zie askExitChain.
 
 const SYSTEM_PROMPT = `Je bent een risicofilter voor een crypto trading bot.
 Een regelgebaseerde strategie wil een positie openen. Jij beoordeelt alleen of dit
@@ -80,7 +81,8 @@ async function fetchWithTimeout(url, options, timeoutMs, attempt = 0) {
 
 async function fetchOnce(url, options, timeoutMs) {
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  // Zonder ingestelde time-out niet meteen afbreken, maar na 30 seconden.
+  const t = setTimeout(() => ctrl.abort(), timeoutMs > 0 ? timeoutMs : 30000);
   try {
     const res = await fetch(url, { ...options, signal: ctrl.signal });
     if (!res.ok) {
@@ -264,6 +266,61 @@ const hostOf = (u) => {
 };
 export const aiLabel = (cfg) => `${cfg.provider === 'gemini' ? 'Gemini' : hostOf(cfg.baseUrl)} · ${cfg.model || defaultModel(cfg.provider)}`;
 const callModel = (cfg, prompt, opts) => (cfg.provider === 'gemini' ? askGemini(cfg, prompt, opts) : askOpenAICompatible(cfg, prompt, opts));
+
+// ---------- Winst nemen ----------
+// Bij een open positie in de winst mag de AI adviseren om nu te verkopen. Hij kan alleen
+// eerder verkopen dan de regels; stop-loss en trailing stop blijven altijd gelden.
+const EXIT_PROMPT = `Je bewaakt een open positie van een crypto trading bot. De positie staat in de winst.
+Beslis of de bot de winst NU moet nemen (verkopen) of nog even moet vasthouden.
+Verkoop als het momentum afneemt, de koers terugvalt vanaf de top, de RSI oververhit raakt,
+het volume opdroogt of de korte trend keert. Houd alleen vast als de stijging duidelijk doorzet.
+Bij twijfel neem je de winst: een zekere kleine winst is beter dan een winst die verdampt.
+Antwoord uitsluitend met JSON in deze vorm:
+{"decision": "sell" | "hold", "reason": "korte uitleg in het Nederlands"}`;
+
+export function buildExitPrompt({ pair, timeframe, position, price, indicators, recentCandles, feePct = 0.25 }) {
+  const n = (v, d = 2) => (v == null ? 'onbekend' : Number(v).toFixed(d));
+  const change = ((price - position.entryPrice) / position.entryPrice) * 100;
+  const top = position.highest ?? position.entryPrice;
+  const minutes = position.openedAt ? Math.round((Date.now() - Date.parse(position.openedAt)) / 60000) : null;
+  const candles = (recentCandles ?? []).map((c) => `${new Date(c[0]).toISOString()} O:${c[1]} H:${c[2]} L:${c[3]} C:${c[4]} V:${c[5]}`).join('\n');
+  return `Pair: ${pair}
+Timeframe: ${timeframe}
+Instapkoers: ${position.entryPrice}
+Huidige koers: ${price}
+Resultaat nu: ${n(change)}% (na fees ongeveer ${n(change - 2 * feePct)}%)
+Hoogste koers sinds aankoop: ${top} (nu ${n(((price - top) / top) * 100)}% daaronder)
+Positie open sinds: ${minutes == null ? 'onbekend' : `${minutes} minuten`}
+RSI: ${n(indicators?.rsi, 1)}
+EMA fast / slow: ${n(indicators?.emaFast, 4)} / ${n(indicators?.emaSlow, 4)} (${indicators && indicators.emaFast > indicators.emaSlow ? 'trend omhoog' : 'trend omlaag'})
+ADX: ${n(indicators?.adx, 1)}
+Volume laatste candle: ${indicators?.volumeRatio == null ? 'onbekend' : `${n(indicators.volumeRatio, 1)}× het gemiddelde`}
+
+Laatste candles (de laatste loopt nog):
+${candles}`;
+}
+
+export function parseExit(text) {
+  if (!text) throw new Error('Leeg antwoord van AI');
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error('Geen JSON in AI-antwoord');
+  const obj = JSON.parse(match[0]);
+  const decision = String(obj.decision || '').toLowerCase();
+  if (!['sell', 'hold'].includes(decision)) throw new Error(`Ongeldige decision "${obj.decision}"`);
+  return { decision, reason: String(obj.reason || '').slice(0, 500) };
+}
+
+// Gooit nooit. Lukt geen enkel model, dan "hold" met error: true (de regels blijven gelden).
+export async function askExitChain(chain, context) {
+  if (!chain.length) return { decision: 'hold', reason: 'Geen AI ingesteld', provider: 'none', error: true };
+  const prompt = buildExitPrompt(context);
+  try {
+    const r = await runChain(chain, async (cfg) => parseExit(await callModel(cfg, prompt, { system: EXIT_PROMPT })));
+    return { ...r.result, provider: aiLabel(r.cfg), usedSlot: r.cfg.slot, fallbackErrors: r.errors };
+  } catch (err) {
+    return { decision: 'hold', reason: `Alle AI-modellen faalden: ${err.message}`, provider: 'geen', error: true, chainErrors: err.chainErrors ?? [] };
+  }
+}
 
 // Probeert de modellen op volgorde. Gooit fn een fout (verbinding, quota, time-out,
 // onleesbaar antwoord), dan volgt het volgende model. Lukt geen enkele, dan gooit runChain

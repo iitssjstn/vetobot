@@ -1,6 +1,6 @@
 import { evaluate } from './strategy.js';
 import { ema } from './indicators.js';
-import { askVetoChain, testChain, listModels, writeSummaryChain, aiLabel } from './ai.js';
+import { askVetoChain, askExitChain, testChain, listModels, writeSummaryChain, aiLabel } from './ai.js';
 import { TIMEFRAME_MINUTES, fmtInterval, LIVE_MIN_STAKE_EUR } from './settings.js';
 import { cleanSuggestions, currentValues, applySuggestions } from './suggest.js';
 import { fetchClosedCandles, fetchPrice, hasTradingKeys } from './exchange.js';
@@ -637,25 +637,8 @@ export class Bot {
     if (position) {
       this.#step(`${pair}: positie controleren`);
       const price = await fetchPrice(this.ex, pair);
-      const changePct = ((price - position.entryPrice) / position.entryPrice) * 100;
-      positionChangePct = changePct;
-      position.highest = Math.max(position.highest ?? position.entryPrice, price);
-      const fromTop = ((price - position.highest) / position.highest) * 100;
-      // ATR-stop vervangt de vaste stop-loss als hij aan staat én bij de aankoop een ATR bekend was.
-      const atrStop = risk.atrStopMult > 0 && position.atrAtEntry ? position.entryPrice - risk.atrStopMult * position.atrAtEntry : null;
-      // 0 = uit
-      const exit = atrStop != null && price <= atrStop ? `ATR-stop (${changePct.toFixed(2)}%, stop op ${fmtPrice(atrStop)})`
-        : atrStop == null && risk.stopLossPct > 0 && changePct <= -risk.stopLossPct ? `Stop-loss (${changePct.toFixed(2)}%)`
-        : risk.trailingStopPct > 0 && fromTop <= -risk.trailingStopPct ? `Trailing stop (${fromTop.toFixed(2)}% vanaf top ${fmtPrice(position.highest)}, resultaat ${changePct.toFixed(2)}%)`
-        : risk.takeProfitPct > 0 && changePct >= risk.takeProfitPct ? `Take-profit (${changePct.toFixed(2)}%)` : null;
-      if (exit) {
-        await this.#close(pair, exit);
-        this.pairStatus[pair] = {
-          ...this.pairStatus[pair], at: new Date().toISOString(), price, signal: 'sell',
-          reason: exit, inPosition: false, positionChangePct: null, error: null,
-        };
-        return;
-      }
+      positionChangePct = ((price - position.entryPrice) / position.entryPrice) * 100;
+      if (await this.#manageExit(pair, position, price, risk)) return;
     }
 
     this.#step(`${pair}: candles ophalen`);
@@ -826,6 +809,98 @@ export class Bot {
         { name: 'Hoeveelheid', value: `${fmtAmount(fill.amount)} ${pair.split('/')[0]}` },
       ],
     });
+  }
+
+  // Stop-loss, ATR-stop, trailing stop en take-profit op de actuele koers. Geeft de reden
+  // terug als de positie gesloten moet worden, anders null. Werkt het hoogste punt bij.
+  #exitReason(position, price, risk) {
+    const changePct = ((price - position.entryPrice) / position.entryPrice) * 100;
+    position.highest = Math.max(position.highest ?? position.entryPrice, price);
+    const fromTop = ((price - position.highest) / position.highest) * 100;
+    // ATR-stop vervangt de vaste stop-loss als hij aan staat én bij de aankoop een ATR bekend was.
+    const atrStop = risk.atrStopMult > 0 && position.atrAtEntry ? position.entryPrice - risk.atrStopMult * position.atrAtEntry : null;
+    // 0 = uit
+    return atrStop != null && price <= atrStop ? `ATR-stop (${changePct.toFixed(2)}%, stop op ${fmtPrice(atrStop)})`
+      : atrStop == null && risk.stopLossPct > 0 && changePct <= -risk.stopLossPct ? `Stop-loss (${changePct.toFixed(2)}%)`
+      : risk.trailingStopPct > 0 && fromTop <= -risk.trailingStopPct ? `Trailing stop (${fromTop.toFixed(2)}% vanaf top ${fmtPrice(position.highest)}, resultaat ${changePct.toFixed(2)}%)`
+      : risk.takeProfitPct > 0 && changePct >= risk.takeProfitPct ? `Take-profit (${changePct.toFixed(2)}%)` : null;
+  }
+
+  // Regels eerst, daarna eventueel de AI (winst nemen). Geeft true als de positie is gesloten.
+  async #manageExit(pair, position, price, risk) {
+    const exit = this.#exitReason(position, price, risk) ?? (await this.#aiExit(pair, position, price, risk));
+    if (!exit) return false;
+    await this.#close(pair, exit);
+    this.pairStatus[pair] = {
+      ...this.pairStatus[pair], at: new Date().toISOString(), price, signal: 'sell',
+      reason: exit, inPosition: false, positionChangePct: null, error: null,
+    };
+    return true;
+  }
+
+  // AI laten beslissen of de winst nu genomen moet worden. Alleen boven de ingestelde winst,
+  // hooguit eens per zoveel minuten per positie, en niet voor volgers (die verkopen mee met de leider).
+  // Geeft de verkoopreden terug, of null.
+  async #aiExit(pair, position, price, risk) {
+    if (this.following || !(risk.aiExitMinPct > 0)) return null;
+    const changePct = ((price - position.entryPrice) / position.entryPrice) * 100;
+    if (changePct < risk.aiExitMinPct) return null;
+    const chain = this.aiChain();
+    if (!chain.some((c) => c.apiKey)) return null;
+    const everyMs = (risk.aiExitEveryMin > 0 ? risk.aiExitEveryMin : 3) * 60000;
+    if (position.aiExit?.at && Date.now() - Date.parse(position.aiExit.at) < everyMs) return null;
+    position.aiExit = { at: new Date().toISOString(), decision: null, reason: null };
+    this.#step(`${pair}: AI vragen of de winst genomen moet worden`);
+    const timeframe = this.timeframe;
+    const candles = await fetchClosedCandles(this.ex, pair, timeframe, 60, { includeOpen: true }).catch(() => []);
+    const ind = candles.length ? evaluate(candles, this.strategy, 1).indicators : null;
+    if (this.tickStats) this.tickStats.aiCalls++;
+    const r = await askExitChain(chain, { pair, timeframe, position, price, indicators: ind, recentCandles: candles.slice(-12), feePct: risk.feePct });
+    if (r.error) {
+      this.#event('warn', pair, `AI-winstcheck mislukt, de regels blijven gelden: ${r.reason}`);
+      return null;
+    }
+    position.aiExit = { at: position.aiExit.at, decision: r.decision, reason: r.reason, provider: r.provider };
+    this.store.save();
+    if (r.decision === 'sell') return `AI neemt winst (${changePct.toFixed(2)}%): ${r.reason}`;
+    this.#event('info', pair, `AI houdt vast bij ${changePct.toFixed(2)}% winst: ${r.reason}`);
+    return null;
+  }
+
+  // Snelle bewaking van open posities tussen de checks door: alleen koersen ophalen en
+  // stops, take-profit en de AI-winstcheck toepassen. Slaat over als er al een check loopt.
+  async watchPositions() {
+    if (this.running || this.watching || this.tickQueued) return 0;
+    if (!Object.keys(this.store.state.positions).length) return 0;
+    this.watching = true;
+    let closed = 0;
+    try {
+      await this.#exclusive(async () => {
+        const risk = this.risk;
+        for (const pair of Object.keys(this.store.state.positions)) {
+          const position = this.store.state.positions[pair];
+          if (!position) continue;
+          try {
+            const price = await fetchPrice(this.ex, pair);
+            if (await this.#manageExit(pair, position, price, risk)) {
+              closed++;
+              continue;
+            }
+            this.pairStatus[pair] = {
+              ...this.pairStatus[pair], pair, price, inPosition: true,
+              positionChangePct: ((price - position.entryPrice) / position.entryPrice) * 100,
+            };
+          } catch (err) {
+            this.#event('error', pair, `Positie bewaken: ${err.message}`);
+          }
+        }
+        this.store.save();
+      });
+    } finally {
+      this.watching = false;
+      if (!this.running) this.#step(null);
+    }
+    return closed;
   }
 
   async #close(pair, reason) {

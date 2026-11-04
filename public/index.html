@@ -566,7 +566,7 @@
 
       <div class="panel gap" id="risk">
         <div class="panel-h"><h2><svg class="i"><use href="#i-shield"/></svg>Risico &amp; inzet</h2>
-          <span class="hint">Jij bepaalt deze waarden; de AI kan er niet aan komen</span></div>
+          <span class="hint">Jij bepaalt deze waarden; de AI kan ze niet veranderen</span></div>
         <form class="panel-b" id="risk-form">
           <div class="fields">
             <div><label for="r-stake">Inzet per trade (€)</label><input id="r-stake" type="number" min="0.1" step="any" required></div>
@@ -580,6 +580,9 @@
             <div><label for="r-budget">Live budgetplafond (€, 0 = uit)</label><input id="r-budget" type="number" min="0" step="any" required></div>
             <div><label for="r-trail">Trailing stop (% vanaf top, 0 = uit)</label><input id="r-trail" type="number" min="0" max="100" step="any" required></div>
             <div><label for="r-atr">ATR-stop (× ATR, 0 = uit)</label><input id="r-atr" type="number" min="0" max="20" step="any" required></div>
+            <div><label for="r-watch">Posities bewaken elke (sec, 0 = alleen bij check)</label><input id="r-watch" type="number" min="0" max="3600" step="1" required></div>
+            <div><label for="r-aiexit">AI mag winst nemen vanaf (%, 0 = uit)</label><input id="r-aiexit" type="number" min="0" max="1000" step="any" required></div>
+            <div><label for="r-aievery">AI-winstcheck hooguit elke (min)</label><input id="r-aievery" type="number" min="0.5" max="1440" step="any" required></div>
             <div id="r-pass-wrap"><label for="r-pass">Je wachtwoord (verplicht in live)</label><input id="r-pass" type="password" autocomplete="current-password"></div>
           </div>
           <div class="help" id="risk-help"></div>
@@ -600,7 +603,7 @@
               <p><b>RSI (oververhit).</b> De RSI loopt van 0 tot 100 en laat zien hoe hard een coin de laatste tijd gestegen is. Boven de 70 geldt een coin vaak als "oververhit": de kans op een terugval is groter. Met <b>Max RSI bij instap</b> koopt de bot niet meer als de RSI boven die grens ligt.</p>
               <p><b>Extra filters (optioneel).</b> Ze houden alleen koopsignalen tegen, nooit verkopen. Het <b>trendfilter</b> koopt alleen boven een lange gemiddelde lijn, de <b>ADX</b> slaat zijwaartse markten over, het <b>volumefilter</b> wil meer handel dan normaal en het <b>BTC-filter</b> koopt geen altcoins als Bitcoin daalt. Elk filter geeft minder, maar meestal betere signalen.</p>
               <p><b>Slimmer uitstappen (bij Risico &amp; inzet).</b> Een <b>trailing stop</b> schuift mee omhoog met de koers, zodat een sterke stijging niet te vroeg wordt afgekapt. Een <b>ATR-stop</b> past de stop-loss aan de beweeglijkheid van de coin aan.</p>
-              <p><b>Daarna de AI.</b> Komt een koopsignaal door je regels en limieten, dan mag de AI het nog afwijzen. Verkopen (signaal, stop-loss, take-profit) gaat altijd zonder AI.</p>
+              <p><b>Daarna de AI.</b> Komt een koopsignaal door je regels en limieten, dan mag de AI het nog afwijzen. Verkopen gaat via de regels (signaal, stop-loss, trailing stop, take-profit). Staat <b>AI mag winst nemen</b> aan bij Risico &amp; inzet, dan mag de AI bij een positie in de winst ook adviseren om eerder te verkopen.</p>
               <p><b>Kant-en-klare strategieën</b> vind je bovenaan Instellingen, van zeer voorzichtig tot zeer riskant.</p>
             </div>
           </details>
@@ -1329,6 +1332,9 @@ function renderSettings() {
     $('r-budget').value = s.risk.liveBudgetEur ?? 0;
     $('r-trail').value = s.risk.trailingStopPct ?? 0;
     $('r-atr').value = s.risk.atrStopMult ?? 0;
+    $('r-watch').value = s.risk.watchSeconds ?? 0;
+    $('r-aiexit').value = s.risk.aiExitMinPct ?? 0;
+    $('r-aievery').value = s.risk.aiExitEveryMin || 3;
     riskHelp();
   }
   if (!document.activeElement?.closest('#sched-form') && !schedDirty) {
@@ -1615,6 +1621,13 @@ function riskHelp() {
       : '<span class="warnc">Stop-loss staat uit: een positie wordt alleen verkocht bij een verkoopsignaal of take-profit.</span>',
   ];
   if (tp === 0) parts.push('<span class="muted">Take-profit staat uit.</span>');
+  const watch = Number($('r-watch').value);
+  parts.push(watch > 0 ? `Open posities worden elke ${Math.max(5, watch)} sec bewaakt, los van de check.`
+    : `<span class="muted">Stops en take-profit worden alleen bij de check bekeken (elke ${fmtIv(state?.checkIntervalMinutes ?? 15)}).</span>`);
+  const aiExit = Number($('r-aiexit').value);
+  if (aiExit > 0) parts.push(state?.aiKeySet
+    ? `Vanaf ${String(aiExit).replace('.', ',')}% winst vraagt de bot de AI of hij de winst nu moet nemen, hooguit elke ${String(Number($('r-aievery').value) || 3).replace('.', ',')} min per positie.`
+    : '<span class="muted">AI-winstcheck staat aan, maar er is geen AI ingesteld; dan gebeurt er niets.</span>');
   if (Number($('r-trail').value) > 0) parts.push(`Trailing stop: verkoopt als de koers ${String($('r-trail').value).replace('.', ',')}% onder het hoogste punt sinds aankoop zakt.`);
   const cool = Number($('r-cool').value), slip = Number($('r-slip').value), fee = Number($('r-fee').value);
   parts.push(cool > 0 ? `Na een verkoop wordt dezelfde coin ${cool} min niet opnieuw gekocht.`
@@ -1633,7 +1646,8 @@ $('risk-form').onsubmit = async (e) => {
   const risk = { stakeEur: $('r-stake').value, maxOpenTrades: $('r-max').value, maxDailyLossEur: $('r-daily').value,
     stopLossPct: $('r-sl').value, takeProfitPct: $('r-tp').value, feePct: $('r-fee').value,
     cooldownMinutes: $('r-cool').value, slippagePct: $('r-slip').value, liveBudgetEur: $('r-budget').value,
-    trailingStopPct: $('r-trail').value, atrStopMult: $('r-atr').value };
+    trailingStopPct: $('r-trail').value, atrStopMult: $('r-atr').value,
+    watchSeconds: $('r-watch').value, aiExitMinPct: $('r-aiexit').value, aiExitEveryMin: $('r-aievery').value };
   if (state.mode === 'live' && !$('r-pass').value) { $('risk-msg').className = 'msg err'; $('risk-msg').textContent = 'Vul je wachtwoord in'; return; }
   try {
     await api('api/settings/risk', { risk, password: $('r-pass').value });
@@ -1740,6 +1754,9 @@ const HELP = {
   'st-open': 'Normaal kijkt de bot alleen naar gesloten candles, zodat een signaal vaststaat. Met <b>Ja</b> telt ook de candle die nog loopt mee: je ziet een kruising tot een hele candle eerder, maar hij kan binnen die candle ook weer verdwijnen, waardoor je vaker te vroeg koopt. Vooral nuttig bij lange candles (1 uur of meer). Een kortere candle-tijd bij Planning is meestal de betere manier om sneller te zijn.',
   'st-btc': 'Bijna alle coins bewegen mee met Bitcoin. Met dit filter koopt de bot geen andere coins zolang BTC onder zijn gemiddelde van 50 candles ligt. BTC zelf wordt niet gefilterd.',
   'r-trail': 'De stop schuift mee omhoog met de koers. Bij 2% verkoopt de bot zodra de koers 2% onder het hoogste punt sinds aankoop zakt. Zo laat je winnaars doorlopen en zet je winst vast. Werkt naast de stop-loss en take-profit; zet de take-profit op 0 om winnaars echt te laten lopen. 0 = uit.',
+  'r-watch': 'Normaal kijkt de bot alleen bij elke check naar je open posities. Met deze instelling haalt hij daartussen elke zoveel seconden de koers op en past hij stop-loss, trailing stop, take-profit en de AI-winstcheck direct toe. Zo pak je een piek voordat hij weer weg is. Kost geen AI en weinig verkeer (koersen zijn gedeeld en gecachet). Minimaal 5 seconden. <b>Gebruikelijk:</b> 10 tot 30. 0 = alleen bij de check.',
+  'r-aiexit': 'Staat een positie minstens zoveel procent in de winst, dan vraagt de bot de AI of hij de winst nu moet nemen of nog moet vasthouden. De AI kijkt naar momentum, RSI, volume en hoe ver de koers onder de top zit, en neemt bij twijfel de winst. De AI kan alleen <b>eerder</b> verkopen: stop-loss, trailing stop en take-profit blijven gewoon gelden. Kies minstens 2× de fee (± 0,5%), anders blijft er na fees niets over. <b>Gebruikelijk:</b> 1 tot 2. 0 = uit.',
+  'r-aievery': 'Hoe vaak de AI per positie opnieuw gevraagd mag worden. Lager = sneller reageren, maar meer AI-calls (let op de limieten van gratis providers zoals Groq). <b>Gebruikelijk:</b> 2 tot 5 minuten.',
   'r-atr': 'Een stop-loss die meebeweegt met de beweeglijkheid van de coin. De ATR is hoeveel een coin gemiddeld per candle beweegt. Bij 2 ligt de stop op instapkoers − 2 × ATR: ruimer bij wilde coins, krapper bij rustige. <b>Vervangt</b> de vaste stop-loss als hij aan staat. <b>Gebruikelijk:</b> 1,5 tot 3. 0 = uit.',
   'paper-start': 'Het nep-saldo waarmee paper trading begint. Kies een bedrag dat lijkt op wat je live zou inzetten, dan zijn de resultaten beter te vergelijken.',
   'ai-fail': 'Wat er met een koopsignaal gebeurt als geen enkel AI-model antwoordt (fouten, tegoed op). <b>Afwijzen</b> is het veiligst: geen AI, geen trade. <b>Doorlaten</b> betekent dat alleen je eigen regels beslissen.',

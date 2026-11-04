@@ -78,7 +78,7 @@ export class BotManager {
     bot.username = user.username;
     // De heartbeat gaat over de server, dus alleen de admin stuurt hem.
     bot.heartbeatEnabled = user.role === 'admin';
-    const ctx = { user, dir, settings, secrets, exchange, brokers, stores, notifier, bot, timer: null };
+    const ctx = { user, dir, settings, secrets, exchange, brokers, stores, notifier, bot, timer: null, watchTimer: null };
     this.contexts.set(user.id, ctx);
     this.#wire();
     return ctx;
@@ -117,11 +117,25 @@ export class BotManager {
     return ctx.bot.tick().catch((err) => this.log.error(`Tick mislukt (${ctx.user.username}):`, err));
   }
 
+  // Snelle bewaking van open posities tussen de checks door (stops, take-profit, AI-winstcheck).
+  // Het interval wordt elke keer opnieuw gelezen, zodat een wijziging in het dashboard direct geldt.
+  #watch(ctx) {
+    clearTimeout(ctx.watchTimer);
+    const sec = Number(ctx.bot.risk.watchSeconds) || 0;
+    // 0 = uit: dan alleen bij de gewone check. Toch elke 30 sec kijken of het weer aan staat.
+    const wait = sec > 0 ? Math.max(5, sec) * 1000 : 30000;
+    ctx.watchTimer = setTimeout(async () => {
+      if (sec > 0) await ctx.bot.watchPositions().catch((err) => this.log.error(`Bewaken mislukt (${ctx.user.username}):`, err));
+      if (this.contexts.get(ctx.user.id) === ctx) this.#watch(ctx);
+    }, wait);
+  }
+
   start(user) {
     const ctx = this.ensure(user);
     ctx.bot.onScheduleChange = () => this.#schedule(ctx);
     ctx.bot.runNow = () => this.#run(ctx);
     this.#run(ctx);
+    this.#watch(ctx);
     return ctx;
   }
 
@@ -153,6 +167,7 @@ export class BotManager {
     const ctx = this.contexts.get(userId);
     if (!ctx) return;
     clearTimeout(ctx.timer);
+    clearTimeout(ctx.watchTimer);
     ctx.stores.paper.save();
     ctx.stores.live.save();
     this.contexts.delete(userId);

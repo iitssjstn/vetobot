@@ -60,6 +60,11 @@ export const config = {
     trailingStopPct: num('TRAILING_STOP_PCT', 0),
     // ATR-stop: stop-loss op instapkoers − zoveel × ATR, in plaats van het vaste percentage (0 = uit).
     atrStopMult: num('ATR_STOP_MULT', 0),
+    // Open posities elke zoveel seconden bewaken (stop-loss, take-profit, trailing), los van de check (0 = alleen bij de check).
+    watchSeconds: num('WATCH_SECONDS', 15),
+    // AI laten beslissen over winst nemen vanaf zoveel % winst (0 = uit), hooguit eens per zoveel minuten per positie.
+    aiExitMinPct: num('AI_EXIT_MIN_PCT', 1),
+    aiExitEveryMin: num('AI_EXIT_EVERY_MIN', 3),
   },
 
   paper: {

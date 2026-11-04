@@ -13,7 +13,7 @@ Elke check (standaard elke 15 minuten, instelbaar in het dashboard) loopt de bot
 3. Komt het signaal daardoor, dan krijgt de **AI** de indicatoren en de laatste candles, en antwoordt met `approve` of `reject` plus een reden.
 4. Alles wordt gelogd en is te zien in het dashboard.
 
-De AI bepaalt nooit bedragen, stop-losses of verkopen. Reageert de AI niet, geeft hij onzin terug of is er geen AI-key, dan wordt de trade afgewezen (`AI_FAIL_MODE=reject`).
+De AI bepaalt nooit bedragen of stop-losses. Wel kan hij optioneel een positie die in de winst staat eerder laten verkopen (zie **Sneller winst nemen** hieronder). Reageert de AI niet, geeft hij onzin terug of is er geen AI-key, dan wordt de trade afgewezen (`AI_FAIL_MODE=reject`).
 
 De strategie kijkt alleen naar **gesloten** candles, en elke candle wordt maar één keer beoordeeld.
 
@@ -111,6 +111,7 @@ In het dashboard onder **Instellingen** regel je:
 - **Risico & inzet**: inzet per trade, maximaal aantal open trades, stop-loss, take-profit, dagelijkse verlieslimiet (telt ook open verliezen mee), fee, afkoelperiode na een verkoop en slippage in paper. Stop-loss, take-profit en daglimiet kun je met 0 uitzetten
 - **Strategie**: EMA fast, EMA slow, RSI-periode, maximale RSI bij instap, en optionele filters: trend-EMA (alleen kopen boven de lange trend), minimale ADX (zijwaartse markten overslaan), volumefilter en BTC-filter (geen altcoins als Bitcoin daalt)
 - **Strategieën**: bovenaan Instellingen staan acht kant-en-klare strategieën, van Zeer voorzichtig (4-uurscandles, alle filters, een paar trades per maand) tot Zeer riskant (minuutcandles, geen filters). Toepassen zet planning, strategie, filters en stops; inzet, max. open trades en daglimiet blijven van jezelf. Het profiel dat je nu gebruikt, wordt gemarkeerd.
+- **Sneller winst nemen**: open posities worden elke paar seconden bewaakt (**Posities bewaken elke**, standaard 15 sec), los van de gewone check. Stop-loss, trailing stop en take-profit gaan dus direct af, niet pas bij de volgende check. Met **AI mag winst nemen vanaf** (standaard 1%) vraagt de bot de AI, zodra een positie zoveel in de winst staat, of hij de winst nu moet nemen; hooguit eens per **AI-winstcheck hooguit elke** minuten (standaard 3) per positie. De AI kan alleen eerder verkopen, nooit later; de stops blijven altijd gelden. Volgers verkopen mee met de admin en vragen zelf geen AI.
 - **Actuele signalen**: een kruising telt alleen als hij vers is, dus op een candle die sinds de vorige check is bijgekomen. Na een herstart koopt de bot niet op een kruising van uren geleden. Met **Max. stijging sinds signaal** (standaard 1%) slaat hij een aankoop over als de koers sinds het signaal al verder is gestegen. Met **Lopende candle meenemen** telt ook de candle die nog loopt mee: sneller, maar met meer valse signalen (standaard uit).
 - **Slimmer uitstappen**: trailing stop vanaf het hoogste punt sinds aankoop, en een ATR-stop die de vaste stop-loss vervangt en meebeweegt met de beweeglijkheid van de coin
 - **Paper-account**: opnieuw beginnen met een zelfgekozen startsaldo

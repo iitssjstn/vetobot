@@ -528,3 +528,84 @@ test('lopende candle meenemen geeft het signaal een candle eerder', async () => 
   assert.equal(await run(0), false, 'zonder lopende candle nog geen kruising');
   assert.equal(await run(1), true, 'met lopende candle al wel');
 });
+
+// ---------- Snelle bewaking en AI-winstcheck ----------
+import http from 'node:http';
+
+// Nep-AI (OpenAI-compatibel) die antwoordt met wat er in aiAnswer staat.
+let aiAnswer = 'hold';
+let aiCalls = 0;
+const aiServer = http.createServer((req, res) => {
+  aiCalls++;
+  req.resume();
+  req.on('end', () => {
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ decision: aiAnswer, reason: aiAnswer === 'sell' ? 'momentum neemt af' : 'stijging zet door' }) } }] }));
+  });
+});
+await new Promise((r) => aiServer.listen(0, r));
+test.after(() => aiServer.close());
+
+function withAi(bot) {
+  bot.settings.setAi({ provider: 'openai', model: 'm', baseUrl: `http://127.0.0.1:${aiServer.address().port}/v1`, failMode: 'approve' });
+  bot.secrets = { get: (n) => (n === 'aiApiKey' ? 'k' : '') };
+}
+
+test('bewaking tussen checks door: take-profit direct, zonder te wachten op de volgende check', async () => {
+  const { bot, ex } = setup({});
+  await bot.setRisk({ takeProfitPct: 2, stopLossPct: 5, aiExitMinPct: 0 });
+  await openPaperPosition(bot, ex);
+  const entry = bot.store.state.positions['BTC/EUR'].entryPrice;
+  ex.fetchTicker = async () => ({ last: entry * 1.01 });
+  assert.equal(await bot.watchPositions(), 0, '1% winst: nog vasthouden');
+  ex.fetchTicker = async () => ({ last: entry * 1.025 });
+  assert.equal(await bot.watchPositions(), 1);
+  assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
+  assert.match(bot.store.state.trades[0].exitReason, /Take-profit/);
+});
+
+test('AI-winstcheck: AI kan de winst eerder nemen dan de take-profit', async () => {
+  const { bot, ex } = setup({});
+  await bot.setRisk({ takeProfitPct: 0, stopLossPct: 5, trailingStopPct: 0, aiExitMinPct: 1, aiExitEveryMin: 3 });
+  await openPaperPosition(bot, ex);
+  withAi(bot);
+  const entry = bot.store.state.positions['BTC/EUR'].entryPrice;
+  aiCalls = 0;
+  // Onder de drempel: AI wordt niet gevraagd
+  ex.fetchTicker = async () => ({ last: entry * 1.005 });
+  await bot.watchPositions();
+  assert.equal(aiCalls, 0);
+  // Boven de drempel, AI houdt vast
+  aiAnswer = 'hold';
+  ex.fetchTicker = async () => ({ last: entry * 1.015 });
+  await bot.watchPositions();
+  assert.equal(aiCalls, 1);
+  assert.ok(bot.store.state.positions['BTC/EUR']);
+  assert.ok(bot.activity.some((a) => /AI houdt vast bij 1\.50% winst/.test(a.message)));
+  // Binnen 3 minuten niet opnieuw vragen
+  aiAnswer = 'sell';
+  await bot.watchPositions();
+  assert.equal(aiCalls, 1);
+  // Na de wachttijd wel, en dan verkopen
+  bot.store.state.positions['BTC/EUR'].aiExit.at = new Date(Date.now() - 4 * 60000).toISOString();
+  await bot.watchPositions();
+  assert.equal(aiCalls, 2);
+  assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
+  assert.match(bot.store.state.trades[0].exitReason, /AI neemt winst \(1\.50%\): momentum neemt af/);
+});
+
+test('AI-winstcheck staat uit zonder AI-key of met drempel 0', async () => {
+  const { bot, ex } = setup({});
+  await bot.setRisk({ takeProfitPct: 0, aiExitMinPct: 1 });
+  await openPaperPosition(bot, ex);
+  aiCalls = 0;
+  const entry = bot.store.state.positions['BTC/EUR'].entryPrice;
+  ex.fetchTicker = async () => ({ last: entry * 1.05 });
+  await bot.watchPositions();
+  assert.equal(aiCalls, 0, 'geen AI ingesteld');
+  withAi(bot);
+  await bot.setRisk({ aiExitMinPct: 0 });
+  await bot.watchPositions();
+  assert.equal(aiCalls, 0, 'drempel 0 = uit');
+  assert.ok(bot.store.state.positions['BTC/EUR']);
+});
