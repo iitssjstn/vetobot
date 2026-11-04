@@ -310,9 +310,9 @@
     <h2 style="margin:0 0 6px;font-size:19px">Admin-account aanmaken</h2>
     <p>Eerste keer hier. De setup-code staat in de containerlogs: <code>docker compose logs vetobot</code></p>
     <label for="s-code">Setup-code</label>
-    <input id="s-code" autocomplete="off" required placeholder="bijv. 3F9A1C2B">
+    <input id="s-code" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" required placeholder="bijv. 3F9A1C2B">
     <label for="s-user">Gebruikersnaam</label>
-    <input id="s-user" autocomplete="username" required minlength="3" maxlength="32">
+    <input id="s-user" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required minlength="3" maxlength="32">
     <label for="s-pass">Wachtwoord</label>
     <input id="s-pass" type="password" autocomplete="new-password" required minlength="10">
     <div class="help">Minimaal 10 tekens.</div>
@@ -329,7 +329,7 @@
     <div class="brand"><span class="logo"><svg class="i"><use href="#i-shield"/></svg></span>vetobot</div>
     <p>Log in om verder te gaan.</p>
     <label for="l-user">Gebruikersnaam</label>
-    <input id="l-user" autocomplete="username" required>
+    <input id="l-user" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required>
     <label for="l-pass">Wachtwoord</label>
     <input id="l-pass" type="password" autocomplete="current-password" required>
     <div class="row-actions"><button class="btn primary" type="submit" style="width:100%;justify-content:center">Inloggen</button></div>
@@ -685,7 +685,7 @@
       <input id="md-pass" type="password" autocomplete="current-password">
       <div id="md-confirm-wrap">
         <label for="md-confirm">Typ <b>LIVE</b> ter bevestiging</label>
-        <input id="md-confirm" autocomplete="off">
+        <input id="md-confirm" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false">
       </div>
       <div class="msg err" id="md-error" style="margin-top:10px"></div>
     </div>

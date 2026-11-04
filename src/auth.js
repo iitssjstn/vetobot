@@ -83,7 +83,8 @@ export class Auth {
   login({ username, password }, ip) {
     this.#checkLock(ip);
     if (!this.isSetUp() || typeof password !== 'string') this.#fail(ip, 'Onjuiste gebruikersnaam of wachtwoord');
-    const okUser = safeEqual(String(username ?? '').trim(), this.data.username);
+    // Hoofdletterongevoelig: telefoons maken van de eerste letter vaak een hoofdletter.
+    const okUser = safeEqual(String(username ?? '').trim().toLowerCase(), this.data.username.toLowerCase());
     const okPass = safeEqual(this.#hash(password, this.data.salt), this.data.hash);
     if (!okUser || !okPass) this.#fail(ip, 'Onjuiste gebruikersnaam of wachtwoord');
     this.fails.delete(ip);
