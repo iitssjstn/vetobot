@@ -102,7 +102,7 @@ In het dashboard onder **Instellingen** regel je:
 
 - **Handelsmodus**: paper of live (zie hieronder)
 - **Planning**: hoe vaak de bot checkt (1 tot 60 minuten) en de candle-tijd (1 minuut tot 1 dag)
-- **Risico & inzet**: inzet per trade, maximaal aantal open trades, stop-loss, take-profit, dagelijkse verlieslimiet en fee. Stop-loss, take-profit en daglimiet kun je met 0 uitzetten
+- **Risico & inzet**: inzet per trade, maximaal aantal open trades, stop-loss, take-profit, dagelijkse verlieslimiet (telt ook open verliezen mee), fee, afkoelperiode na een verkoop en slippage in paper. Stop-loss, take-profit en daglimiet kun je met 0 uitzetten
 - **Strategie**: EMA fast, EMA slow, RSI-periode en de maximale RSI bij instap
 - **Paper-account**: opnieuw beginnen met een zelfgekozen startsaldo
 - **Coins**: kies uit alle EUR-markten op Bitvavo, gesorteerd op volume, maximaal 100
@@ -126,6 +126,8 @@ De environment variables hieronder zijn alleen beginwaarden voor de allereerste 
 | `STOP_LOSS_PCT` / `TAKE_PROFIT_PCT` | `3` / `6` | Exit-percentages |
 | `MAX_DAILY_LOSS_EUR` | `20` | Daarna geen nieuwe trades tot morgen |
 | `FEE_PCT` | `0.25` | Fee voor paper trading |
+| `COOLDOWN_MINUTES` | `30` | Na een verkoop dezelfde coin zoveel minuten niet kopen (0 = uit) |
+| `PAPER_SLIPPAGE_PCT` | `0.1` | Paper koopt iets duurder en verkoopt iets goedkoper, zoals live met spread |
 | `PAPER_START_BALANCE_EUR` | `500` | Startsaldo paper trading |
 | `AI_PROVIDER` | `none` | `none`, `gemini` of `openai` |
 | `AI_MODEL` | leeg | Leeg = standaardmodel van de provider |

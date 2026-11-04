@@ -17,6 +17,8 @@ export const RISK_LIMITS = {
   takeProfitPct: [0, 10000],
   maxDailyLossEur: [0, 100000000],
   feePct: [0, 5],
+  cooldownMinutes: [0, 10080],
+  slippagePct: [0, 5],
 };
 export const STRATEGY_LIMITS = {
   emaFast: [2, 500],
@@ -37,6 +39,8 @@ const RISK_LABELS = {
   stopLossPct: 'Stop-loss',
   takeProfitPct: 'Take-profit',
   maxDailyLossEur: 'Dagelijkse verlieslimiet',
+  cooldownMinutes: 'Afkoelperiode',
+  slippagePct: 'Slippage (paper)',
   feePct: 'Fee',
   emaFast: 'EMA fast',
   emaSlow: 'EMA slow',
@@ -74,7 +78,7 @@ export class Settings {
       pairs: saved.pairs ?? defaults.pairs,
       timeframe: saved.timeframe ?? defaults.timeframe,
       checkIntervalMinutes: saved.checkIntervalMinutes ?? defaults.checkIntervalMinutes,
-      risk: Object.fromEntries(Object.keys(RISK_LIMITS).map((k) => [k, saved.risk?.[k] ?? defaults.risk[k]])),
+      risk: Object.fromEntries(Object.keys(RISK_LIMITS).map((k) => [k, saved.risk?.[k] ?? defaults.risk?.[k] ?? 0])),
       notify: {
         discordUserId: saved.notify?.discordUserId ?? NOTIFY_DEFAULTS.discordUserId,
         events: { ...NOTIFY_DEFAULTS.events, ...saved.notify?.events },
@@ -111,7 +115,8 @@ export class Settings {
   }
 
   setRisk(values) {
-    this.data.risk = validated(values, RISK_LIMITS, ['maxOpenTrades']);
+    // Velden die ontbreken houden hun huidige waarde.
+    this.data.risk = validated({ ...this.data.risk, ...values }, RISK_LIMITS, ['maxOpenTrades', 'cooldownMinutes']);
     this.#save();
   }
 

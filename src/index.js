@@ -20,7 +20,10 @@ const auth = new Auth(config.dataDir);
 const exchange = createExchange(secrets);
 
 // Paper en live hebben elk een eigen broker en state-bestand, zodat ze nooit door elkaar lopen.
-const brokers = { paper: new PaperBroker(exchange, () => settings.risk.feePct), live: new LiveBroker(exchange) };
+const brokers = {
+  paper: new PaperBroker(exchange, () => settings.risk.feePct, () => settings.risk.slippagePct),
+  live: new LiveBroker(exchange),
+};
 const stores = {
   paper: new Store(config.dataDir, 'paper', config.paper.startBalanceEur),
   live: new Store(config.dataDir, 'live', config.paper.startBalanceEur),

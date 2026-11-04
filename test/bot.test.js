@@ -303,3 +303,50 @@ test('open posities: waarde en P/L met live koers en verkoopfee, koersen gecache
   assert.equal(v.costEur, 50);
   assert.equal(v.complete, true);
 });
+
+test('afkoelperiode en daglimiet met open verlies blokkeren nieuwe aankopen', async () => {
+  const { checkEntry } = await import('../src/risk.js');
+  const { bot } = setup({});
+  const risk = { ...bot.risk, maxOpenTrades: 5, maxDailyLossEur: 20, cooldownMinutes: 30 };
+  bot.store.state.lastExit = { 'BTC/EUR': new Date(Date.now() - 10 * 60000).toISOString() };
+  assert.match(checkEntry(bot.store, { risk }, 'paper', bot.ex, null, { pair: 'BTC/EUR' }), /Afkoelperiode: nog 20 min/);
+  assert.equal(checkEntry(bot.store, { risk }, 'paper', bot.ex, null, { pair: 'ETH/EUR' }), null, 'andere coin mag wel');
+  assert.equal(checkEntry(bot.store, { risk: { ...risk, cooldownMinutes: 0 } }, 'paper', bot.ex, null, { pair: 'BTC/EUR' }), null);
+  // Geen gesloten verlies, maar € 25 open verlies: limiet van € 20 is bereikt
+  assert.match(checkEntry(bot.store, { risk }, 'paper', bot.ex, null, { pair: 'ETH/EUR', openPnlEur: -25 }), /Daglimiet.*open -25/);
+  // Open winst telt niet als buffer
+  assert.equal(checkEntry(bot.store, { risk }, 'paper', bot.ex, null, { pair: 'ETH/EUR', openPnlEur: 50 }), null);
+});
+
+test('na een verkoop wordt de verkooptijd per coin bewaard', async () => {
+  const { bot, ex } = setup({});
+  await openPaperPosition(bot, ex);
+  await bot.closeManual('BTC/EUR');
+  assert.ok(bot.store.state.lastExit['BTC/EUR']);
+});
+
+test('paper-slippage maakt kopen duurder en verkopen goedkoper', async () => {
+  const ex = { fetchTicker: async () => ({ last: 100 }) };
+  const b = new PaperBroker(ex, 0, () => 0.5);
+  const buy = await b.buy('BTC/EUR', 100);
+  assert.ok(Math.abs(buy.price - 100.5) < 1e-9);
+  const sell = await b.sell('BTC/EUR', 1);
+  assert.ok(Math.abs(sell.price - 99.5) < 1e-9);
+});
+
+test('een herstart koopt niet opnieuw op dezelfde kruising', async () => {
+  const { bot, ex, dir, settings, stores } = setup({});
+  await bot.setRisk({ ...bot.settings.risk, cooldownMinutes: 0 });
+  await openPaperPosition(bot, ex);
+  await bot.closeManual('BTC/EUR');
+  // Nieuwe bot op dezelfde opslag, alsof de container herstart
+  const reloaded = { paper: new Store(dir, 'paper', 500), live: new Store(dir, 'live', 500) };
+  assert.ok(reloaded.paper.state.seenSignals['BTC/EUR'], 'kruising staat in het state-bestand');
+  const bot2 = new Bot({
+    config: bot.config, exchange: ex, settings, stores: reloaded, log: quiet,
+    brokers: { paper: new PaperBroker(ex, 0.25), live: bot.brokers.live },
+  });
+  await bot2.tick();
+  assert.deepEqual(bot2.store.state.positions, {}, 'geen dubbele aankoop');
+  void stores;
+});

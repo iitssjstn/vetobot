@@ -35,7 +35,6 @@ export class Bot {
     this.liveBalance = null;
     this.queue = Promise.resolve();
     this.log = log;
-    this.lastSignalCandle = {};
     this.lastTickAt = null;
     this.lastError = null;
     this.running = false;
@@ -90,6 +89,13 @@ export class Bot {
 
   get strategy() {
     return { ...this.config.strategy, ...this.settings.strategy };
+  }
+
+  // Welke kruising per coin al beoordeeld is. Staat in het state-bestand van de
+  // huidige modus, zodat een herstart geen dubbele aankoop op dezelfde kruising geeft.
+  get seenSignals() {
+    this.store.state.seenSignals ??= {};
+    return this.store.state.seenSignals;
   }
 
   get broker() {
@@ -303,7 +309,8 @@ export class Bot {
   setStrategy(values) {
     return this.#exclusive(async () => {
       this.settings.setStrategy(values);
-      this.lastSignalCandle = {};
+      this.store.state.seenSignals = {};
+      this.store.save();
       const s = this.strategy;
       this.#event('info', null, `Strategie: EMA ${s.emaFast}/${s.emaSlow}, RSI ${s.rsiPeriod}, max RSI ${s.rsiMaxEntry}`);
     });
@@ -315,7 +322,6 @@ export class Bot {
       const n = Number(startBalanceEur);
       if (!Number.isFinite(n) || n < 5 || n > 100000000) throw new Error('Startsaldo moet tussen 5 en 100.000.000 liggen');
       this.stores.paper.reset(Math.round(n * 100) / 100);
-      if (this.mode === 'paper') this.lastSignalCandle = {};
       this.#event('warn', null, `Paper-account opnieuw begonnen met ${n.toFixed(2)} EUR`);
     });
   }
@@ -332,9 +338,7 @@ export class Bot {
   // Past candle-tijd en check-interval aan. De timer in index.js luistert via onScheduleChange.
   setSchedule(schedule) {
     return this.#exclusive(async () => {
-      const oldTf = this.settings.timeframe;
       this.settings.setSchedule(schedule);
-      if (this.settings.timeframe !== oldTf) this.lastSignalCandle = {};
       this.#event('info', null, `Planning: elke ${this.settings.checkIntervalMinutes} min checken, ${this.settings.timeframe}-candles`);
       this.onScheduleChange?.();
     });
@@ -444,7 +448,6 @@ export class Bot {
         }
       }
       this.settings.setMode(mode);
-      this.lastSignalCandle = {};
       this.#event('warn', null, mode === 'live'
         ? 'Overgeschakeld naar LIVE trading. Er worden nu echte orders geplaatst.'
         : 'Overgeschakeld naar paper trading.');
@@ -585,12 +588,13 @@ export class Bot {
     // Zelfde candle niet twee keer beoordelen.
     // Dezelfde kruising niet twee keer beoordelen.
     const signalKey = result.crossAt ?? lastCandleTs;
-    if (this.lastSignalCandle[pair] === signalKey) return;
-    this.lastSignalCandle[pair] = signalKey;
+    if (this.seenSignals[pair] === signalKey) return;
+    this.seenSignals[pair] = signalKey;
     if (this.tickStats) this.tickStats.buySignals++;
     this.#event('info', pair, `Koopsignaal: ${result.reason}`);
 
-    const blocked = checkEntry(this.store, { risk: this.risk }, this.broker.mode, this.ex, this.liveBalance);
+    const blocked = checkEntry(this.store, { risk: this.risk }, this.broker.mode, this.ex, this.liveBalance,
+      { pair, openPnlEur: this.openPositionsValue().pnlEur });
     if (blocked) {
       if (this.tickStats) this.tickStats.blocked++;
       this.store.addDecision({ pair, signal: 'buy', outcome: 'blocked', reason: blocked, indicators: result.indicators });
@@ -676,6 +680,8 @@ export class Bot {
     const pnlEur = fill.costEur - pos.costEur;
     if (this.broker.mode === 'paper') this.store.state.balanceEur += fill.costEur;
     delete this.store.state.positions[pair];
+    this.store.state.lastExit ??= {};
+    this.store.state.lastExit[pair] = new Date().toISOString();
     this.store.addTrade({
       pair,
       mode: this.broker.mode,

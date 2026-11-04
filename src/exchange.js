@@ -35,9 +35,12 @@ export async function fetchPrice(ex, pair) {
 
 export class PaperBroker {
   // feePct mag een getal of een functie zijn, zodat de fee uit het dashboard direct geldt.
-  constructor(ex, feePct) {
+  // slippagePct (getal of functie): koop zoveel procent duurder en verkoop zoveel goedkoper
+  // dan de laatste koers, zodat paper niet rooskleuriger is dan live.
+  constructor(ex, feePct, slippagePct = 0) {
     this.ex = ex;
     this.fee = typeof feePct === 'function' ? feePct : () => feePct;
+    this.slip = typeof slippagePct === 'function' ? slippagePct : () => slippagePct;
     this.mode = 'paper';
   }
 
@@ -45,15 +48,19 @@ export class PaperBroker {
     return this.fee();
   }
 
+  get slippagePct() {
+    return this.slip() ?? 0;
+  }
+
   async buy(pair, stakeEur) {
-    const price = await fetchPrice(this.ex, pair);
+    const price = (await fetchPrice(this.ex, pair)) * (1 + this.slippagePct / 100);
     const feeEur = (stakeEur * this.feePct) / 100;
     const amount = (stakeEur - feeEur) / price;
     return { amount, price, costEur: stakeEur, feeEur };
   }
 
   async sell(pair, amount) {
-    const price = await fetchPrice(this.ex, pair);
+    const price = (await fetchPrice(this.ex, pair)) * (1 - this.slippagePct / 100);
     const gross = amount * price;
     const feeEur = (gross * this.feePct) / 100;
     return { amount, price, costEur: gross - feeEur, feeEur };

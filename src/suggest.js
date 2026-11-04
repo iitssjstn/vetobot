@@ -10,6 +10,7 @@ export const SUGGESTABLE = {
   rsiMaxEntry: { group: 'strategy', label: 'Max RSI bij instap', limits: STRATEGY_LIMITS.rsiMaxEntry },
   stopLossPct: { group: 'risk', label: 'Stop-loss (%)', limits: RISK_LIMITS.stopLossPct },
   takeProfitPct: { group: 'risk', label: 'Take-profit (%)', limits: RISK_LIMITS.takeProfitPct },
+  cooldownMinutes: { group: 'risk', label: 'Afkoelperiode (min)', int: true, limits: RISK_LIMITS.cooldownMinutes },
   timeframe: { group: 'schedule', label: 'Candle-tijd', options: TIMEFRAMES },
   checkIntervalMinutes: { group: 'schedule', label: 'Check elke (min)', int: true, limits: [1, 240] },
 };
@@ -19,6 +20,7 @@ export function currentValues(bot) {
     ...bot.strategy,
     stopLossPct: bot.risk.stopLossPct,
     takeProfitPct: bot.risk.takeProfitPct,
+    cooldownMinutes: bot.risk.cooldownMinutes,
     timeframe: bot.settings.timeframe,
     checkIntervalMinutes: bot.settings.checkIntervalMinutes,
   };
@@ -70,7 +72,8 @@ export async function applySuggestions(bot, suggestions, keys) {
   }
   if (groups.has('risk')) {
     const r = bot.settings.risk;
-    await bot.setRisk({ ...r, stopLossPct: val('stopLossPct', r.stopLossPct), takeProfitPct: val('takeProfitPct', r.takeProfitPct) });
+    await bot.setRisk({ ...r, stopLossPct: val('stopLossPct', r.stopLossPct), takeProfitPct: val('takeProfitPct', r.takeProfitPct),
+      cooldownMinutes: val('cooldownMinutes', r.cooldownMinutes) });
   }
   if (groups.has('schedule')) {
     await bot.setSchedule({

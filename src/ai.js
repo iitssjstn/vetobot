@@ -105,7 +105,7 @@ huidige instellingen passen bij wat je ziet (bijv. veel stop-losses, geen enkel 
 Verzin geen cijfers die niet in de data staan. Geef geen garanties en voorspel geen koersen.
 
 Doe daarnaast, alleen als de data daar echt aanleiding toe geeft, een voorstel voor andere instellingen.
-Je mag ALLEEN deze velden voorstellen: emaFast, emaSlow, rsiPeriod, rsiMaxEntry, stopLossPct, takeProfitPct,
+Je mag ALLEEN deze velden voorstellen: emaFast, emaSlow, rsiPeriod, rsiMaxEntry, stopLossPct, takeProfitPct, cooldownMinutes,
 timeframe (een van 1m, 5m, 15m, 30m, 1h, 2h, 4h, 1d) en checkIntervalMinutes. Stel nooit bedragen voor.
 Laat velden weg die je niet wilt veranderen. Geen goede reden? Laat "voorstel" dan leeg ({}).
 

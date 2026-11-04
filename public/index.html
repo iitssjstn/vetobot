@@ -452,6 +452,8 @@
             <div><label for="r-sl">Stop-loss (%, 0 = uit)</label><input id="r-sl" type="number" min="0" max="100" step="any" required></div>
             <div><label for="r-tp">Take-profit (%, 0 = uit)</label><input id="r-tp" type="number" min="0" step="any" required></div>
             <div><label for="r-fee">Fee per order (%)</label><input id="r-fee" type="number" min="0" max="5" step="any" required></div>
+            <div><label for="r-cool">Afkoelperiode na verkoop (min, 0 = uit)</label><input id="r-cool" type="number" min="0" max="10080" step="1" required></div>
+            <div><label for="r-slip">Slippage in paper (%)</label><input id="r-slip" type="number" min="0" max="5" step="any" required></div>
             <div id="r-pass-wrap"><label for="r-pass">Je wachtwoord (verplicht in live)</label><input id="r-pass" type="password" autocomplete="current-password"></div>
           </div>
           <div class="help" id="risk-help"></div>
@@ -1010,6 +1012,8 @@ function renderSettings() {
     $('r-sl').value = s.risk.stopLossPct;
     $('r-tp').value = s.risk.takeProfitPct;
     $('r-fee').value = s.risk.feePct;
+    $('r-cool').value = s.risk.cooldownMinutes ?? 0;
+    $('r-slip').value = s.risk.slippagePct ?? 0;
     riskHelp();
   }
   if (!document.activeElement?.closest('#sched-form') && !schedDirty) {
@@ -1130,6 +1134,10 @@ function riskHelp() {
       : '<span class="warnc">Stop-loss staat uit: een positie wordt alleen verkocht bij een verkoopsignaal of take-profit.</span>',
   ];
   if (tp === 0) parts.push('<span class="muted">Take-profit staat uit.</span>');
+  const cool = Number($('r-cool').value), slip = Number($('r-slip').value), fee = Number($('r-fee').value);
+  parts.push(cool > 0 ? `Na een verkoop wordt dezelfde coin ${cool} min niet opnieuw gekocht.`
+    : '<span class="warnc">Afkoelperiode uit: na een verkoop kan hij dezelfde coin direct weer kopen.</span>');
+  parts.push(`Een volledige ronde (kopen + verkopen) kost ongeveer ${((fee + (state?.mode === 'live' ? 0 : slip)) * 2).toFixed(2).replace('.', ',')}%${state?.mode === 'live' ? ' aan fees, plus de spread' : ' aan fee en slippage'}.`);
   if (daily === 0) parts.push('<span class="warnc">De dagelijkse verlieslimiet staat uit.</span>');
   const bal = state?.mode === 'live' ? state.liveBalance?.eurFree : state?.balanceEur;
   if (bal != null && total > bal) parts.push(`<span class="warnc">Dat is meer dan je ${state.mode === 'live' ? 'Bitvavo-' : 'paper-'}saldo van ${eur2(bal)}; de bot slaat trades over als het saldo op is.</span>`);
@@ -1140,7 +1148,8 @@ document.querySelectorAll('#risk-form input[type=number]').forEach(i => i.oninpu
 $('risk-form').onsubmit = async (e) => {
   e.preventDefault();
   const risk = { stakeEur: $('r-stake').value, maxOpenTrades: $('r-max').value, maxDailyLossEur: $('r-daily').value,
-    stopLossPct: $('r-sl').value, takeProfitPct: $('r-tp').value, feePct: $('r-fee').value };
+    stopLossPct: $('r-sl').value, takeProfitPct: $('r-tp').value, feePct: $('r-fee').value,
+    cooldownMinutes: $('r-cool').value, slippagePct: $('r-slip').value };
   if (state.mode === 'live' && !$('r-pass').value) { $('risk-msg').className = 'msg err'; $('risk-msg').textContent = 'Vul je wachtwoord in'; return; }
   try {
     await api('api/settings/risk', { risk, password: $('r-pass').value });

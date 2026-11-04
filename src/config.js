@@ -41,6 +41,10 @@ export const config = {
     takeProfitPct: num('TAKE_PROFIT_PCT', 6),
     maxDailyLossEur: num('MAX_DAILY_LOSS_EUR', 20),
     feePct: num('FEE_PCT', 0.25),
+    // Na een verkoop deze coin zoveel minuten niet opnieuw kopen (0 = uit).
+    cooldownMinutes: num('COOLDOWN_MINUTES', 30),
+    // Paper: koop iets duurder en verkoop iets goedkoper dan de laatste koers, zoals live met spread.
+    slippagePct: num('PAPER_SLIPPAGE_PCT', 0.1),
   },
 
   paper: {
