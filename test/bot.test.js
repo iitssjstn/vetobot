@@ -188,3 +188,12 @@ test('de bot stuurt meldingen bij kopen, stop-loss en een heartbeat na elke chec
   assert.ok(sent.some((s) => s.event === 'stoploss'));
   assert.ok(beats.length >= 2 && beats.every((b) => b === true));
 });
+
+test('na elke check staat er een samenvatting in het log', async () => {
+  const { bot, ex } = setup({});
+  ex.prices = [...Array(40)].map((_, i) => 100 - i); // alleen daling: geen signaal
+  await bot.tick();
+  assert.match(bot.activity[0].message, /1 coin bekeken, geen koopsignaal, AI niet nodig/);
+  await openPaperPosition(bot, ex);
+  assert.ok(bot.activity.some((a) => /1 koopsignaal/.test(a.message) && /1 gekocht/.test(a.message)));
+});

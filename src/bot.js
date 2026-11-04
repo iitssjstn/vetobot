@@ -50,6 +50,21 @@ export class Bot {
     this.notifier.send(event, payload).catch(() => {});
   }
 
+  #summary(errors) {
+    const t = this.tickStats;
+    const parts = [`${t.pairs} coin${t.pairs === 1 ? '' : 's'} bekeken`];
+    if (!t.buySignals) parts.push('geen koopsignaal, AI niet nodig');
+    else {
+      parts.push(`${t.buySignals} koopsignaal${t.buySignals === 1 ? '' : 'en'}`);
+      if (t.blocked) parts.push(`${t.blocked} geblokkeerd door je limieten`);
+      if (t.aiCalls) parts.push(`AI ${t.aiCalls}× gevraagd`);
+    }
+    if (t.opened) parts.push(`${t.opened} gekocht`);
+    if (t.closed) parts.push(`${t.closed} verkocht`);
+    if (errors) parts.push(`${errors} fout${errors === 1 ? '' : 'en'}`);
+    return parts.join(', ');
+  }
+
   #step(text) {
     this.currentStep = text;
   }
@@ -257,6 +272,8 @@ export class Bot {
     this.running = true;
     const started = Date.now();
     let errors = 0;
+    // Telt per check wat er gebeurde, voor de samenvatting in het activiteitenlog.
+    this.tickStats = { pairs: 0, buySignals: 0, aiCalls: 0, blocked: 0, opened: 0, closed: 0 };
     try {
       this.#resetHaltIfNewDay();
       for (const pair of this.settings.pairs) {
@@ -281,8 +298,8 @@ export class Bot {
       this.lastTickAt = new Date().toISOString();
       if (!errors) this.lastError = null;
       this.store.save();
-      this.#event('info', null, `Check klaar in ${((Date.now() - started) / 1000).toFixed(1)}s` +
-        (errors ? ` met ${errors} fout(en)` : ''));
+      this.#event(errors ? 'warn' : 'info', null, `Check klaar in ${((Date.now() - started) / 1000).toFixed(1)}s: ` +
+        this.#summary(errors));
       this.notifier?.heartbeat(errors === 0).catch(() => {});
     } finally {
       this.running = false;
@@ -299,6 +316,7 @@ export class Bot {
   }
 
   async #handlePair(pair) {
+    this.tickStats && this.tickStats.pairs++;
     const strategy = this.strategy;
     const risk = this.risk;
     const timeframe = this.settings.timeframe;
@@ -359,16 +377,19 @@ export class Bot {
     const signalKey = result.crossAt ?? lastCandleTs;
     if (this.lastSignalCandle[pair] === signalKey) return;
     this.lastSignalCandle[pair] = signalKey;
+    if (this.tickStats) this.tickStats.buySignals++;
     this.#event('info', pair, `Koopsignaal: ${result.reason}`);
 
     const blocked = checkEntry(this.store, { risk: this.risk }, this.broker.mode, this.ex, this.liveBalance);
     if (blocked) {
+      if (this.tickStats) this.tickStats.blocked++;
       this.store.addDecision({ pair, signal: 'buy', outcome: 'blocked', reason: blocked, indicators: result.indicators });
       this.#event('warn', pair, `Geblokkeerd door risicoregels: ${blocked}`);
       return;
     }
 
     this.#step(`${pair}: AI om oordeel vragen`);
+    if (this.tickStats && this.settings.ai.provider !== 'none') this.tickStats.aiCalls++;
     const veto = await askVeto({ ...this.config.ai, ...this.settings.ai, apiKey: this.secrets?.get('aiApiKey') }, {
       pair,
       timeframe,
@@ -397,6 +418,7 @@ export class Bot {
 
   async #open(pair, reason) {
     this.#step(`${pair}: kopen`);
+    if (this.tickStats) this.tickStats.opened++;
     const stake = this.risk.stakeEur;
     const fill = await this.broker.buy(pair, stake);
     if (this.broker.mode === 'paper') this.store.state.balanceEur -= fill.costEur;
@@ -424,6 +446,7 @@ export class Bot {
 
   async #close(pair, reason) {
     this.#step(`${pair}: verkopen`);
+    if (this.tickStats) this.tickStats.closed++;
     const pos = this.store.state.positions[pair];
     const fill = await this.broker.sell(pair, pos.amount);
     const pnlEur = fill.costEur - pos.costEur;
