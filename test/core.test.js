@@ -1,0 +1,84 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { ema, rsi } from '../src/indicators.js';
+import { evaluate } from '../src/strategy.js';
+import { parseDecision, askVeto } from '../src/ai.js';
+import { checkEntry } from '../src/risk.js';
+import { Store } from '../src/store.js';
+
+const params = { emaFast: 3, emaSlow: 6, rsiPeriod: 5, rsiMaxEntry: 70 };
+const candlesFrom = (closes) => closes.map((c, i) => [i * 3600000, c, c, c, c, 1]);
+
+test('ema van constante reeks is die constante', () => {
+  const out = ema([5, 5, 5, 5, 5], 3);
+  assert.equal(out.at(-1), 5);
+  assert.equal(out[0], null);
+});
+
+test('rsi is 100 bij alleen stijgingen en 0 bij alleen dalingen', () => {
+  assert.equal(rsi([1, 2, 3, 4, 5, 6, 7], 5).at(-1), 100);
+  assert.equal(rsi([7, 6, 5, 4, 3, 2, 1], 5).at(-1), 0);
+});
+
+// Loopt de reeks candle voor candle af, zoals de bot dat live doet.
+const signalsOver = (closes, p) =>
+  closes.map((_, i) => evaluate(candlesFrom(closes.slice(0, i + 1)), p).signal);
+
+test('strategie geeft koopsignaal na een daling met draai omhoog', () => {
+  const closes = [...Array(15)].map((_, i) => 30 - i).concat([16.5, 17.5, 18.5, 19.5]);
+  const signals = signalsOver(closes, { ...params, rsiMaxEntry: 100 });
+  assert.ok(signals.includes('buy'));
+  assert.ok(!signals.slice(0, 15).includes('buy'), 'geen koopsignaal tijdens de daling');
+});
+
+test('strategie geeft verkoopsignaal na een stijging met draai omlaag', () => {
+  const closes = [...Array(15)].map((_, i) => 10 + i).concat([23.5, 22.5, 21.5, 20.5]);
+  assert.ok(signalsOver(closes, params).includes('sell'));
+});
+
+test('RSI-filter blokkeert een koopsignaal bij een te hoge RSI', () => {
+  const closes = [...Array(15)].map((_, i) => 30 - i).concat([16.5, 17.5, 18.5, 19.5]);
+  assert.ok(!signalsOver(closes, { ...params, rsiMaxEntry: 1 }).includes('buy'));
+});
+
+test('strategie zonder genoeg data geeft geen signaal', () => {
+  assert.equal(evaluate(candlesFrom([1, 2, 3]), params).signal, 'none');
+});
+
+test('parseDecision leest JSON, ook met tekst eromheen', () => {
+  assert.deepEqual(parseDecision('ok: {"decision":"Reject","reason":"te volatiel"}'), {
+    decision: 'reject',
+    reason: 'te volatiel',
+  });
+  assert.throws(() => parseDecision('{"decision":"maybe"}'));
+  assert.throws(() => parseDecision('geen json'));
+});
+
+test('askVeto valt bij een fout terug op reject', async () => {
+  const res = await askVeto(
+    { provider: 'openai', apiKey: 'x', baseUrl: 'http://127.0.0.1:9', timeoutMs: 500, failMode: 'reject' },
+    { pair: 'BTC/EUR', timeframe: '1h', indicators: { close: 1, emaFast: 1, emaSlow: 1, rsi: 50, change24: 0 }, recentCandles: [] },
+  );
+  assert.equal(res.decision, 'reject');
+  assert.equal(res.error, true);
+});
+
+test('risicoregels blokkeren bij te veel open trades en bij dagverlies', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vetobot-'));
+  const store = new Store(dir, 'paper', 500);
+  const config = { risk: { stakeEur: 25, maxOpenTrades: 1, maxDailyLossEur: 10 } };
+  assert.equal(checkEntry(store, config, 'paper'), null);
+
+  store.state.positions['BTC/EUR'] = {};
+  assert.match(checkEntry(store, config, 'paper'), /open trades/);
+
+  store.state.positions = {};
+  store.addTrade({ closedAt: new Date().toISOString(), pnlEur: -12 });
+  assert.match(checkEntry(store, config, 'paper'), /Dagverlies/);
+
+  store.save();
+  assert.equal(new Store(dir, 'paper', 500).state.trades.length, 1);
+});

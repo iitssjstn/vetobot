@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vetobot</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --card: #ffffff; --text: #1c1b19; --muted: #6b6862; --line: #e4e1db;
+    --up: #1f7a4d; --down: #b3362f; --accent: #3a4fb0; --warn: #a86a00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141413; --card: #1d1d1b; --text: #ecebe7; --muted: #9b988f; --line: #2e2d2a;
+      --up: #4cc38a; --down: #f0726a; --accent: #8c9cf0; --warn: #e0a640;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; justify-content: space-between; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 28px 0 10px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    border: 1px solid var(--line); }
+  .paper { color: var(--accent); } .live { color: var(--down); border-color: var(--down); }
+  .meta { color: var(--muted); font-size: 13px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-top: 16px; }
+  .tile { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .tile .k { color: var(--muted); font-size: 12px; }
+  .tile .v { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  tr:last-child td { border-bottom: 0; }
+  .up { color: var(--up); } .down { color: var(--down); } .warnc { color: var(--warn); }
+  .empty { padding: 14px; color: var(--muted); }
+  .banner { margin-top: 16px; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--warn); color: var(--warn); }
+  button { font: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--card); color: var(--text); cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  .reason { max-width: 420px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>vetobot <span id="mode" class="badge"></span></h1>
+      <div class="meta" id="meta"></div>
+    </div>
+    <div>
+      <button id="tick">Nu checken</button>
+      <button id="pause">Pauzeren</button>
+    </div>
+  </header>
+
+  <div id="banner"></div>
+  <div class="grid" id="tiles"></div>
+
+  <h2>Open posities</h2>
+  <div class="card" id="positions"></div>
+
+  <h2>AI-beslissingen</h2>
+  <div class="card" id="decisions"></div>
+
+  <h2>Afgesloten trades</h2>
+  <div class="card" id="trades"></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const eur = (n) => n == null ? '–' : new Intl.NumberFormat('nl-NL', { style: 'currency', currency: 'EUR' }).format(n);
+const pct = (n) => n == null ? '–' : `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
+const cls = (n) => n > 0 ? 'up' : n < 0 ? 'down' : '';
+const time = (s) => s ? new Date(s).toLocaleString('nl-NL', { dateStyle: 'short', timeStyle: 'short' }) : '–';
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function table(rows, cols, emptyText) {
+  if (!rows.length) return `<div class="empty">${emptyText}</div>`;
+  return `<table><thead><tr>${cols.map(c => `<th>${c[0]}</th>`).join('')}</tr></thead><tbody>` +
+    rows.map(r => `<tr>${cols.map(c => `<td>${c[1](r)}</td>`).join('')}</tr>`).join('') + '</tbody></table>';
+}
+
+let state;
+async function load() {
+  const res = await fetch('api/state');
+  state = await res.json();
+  const s = state;
+
+  $('mode').textContent = s.mode.toUpperCase();
+  $('mode').className = `badge ${s.mode}`;
+  $('meta').textContent = `${s.pairs.join(', ')} · ${s.timeframe} · AI: ${s.aiProvider} · laatste check ${time(s.lastTickAt)}`;
+  $('pause').textContent = s.halted?.manual ? 'Hervatten' : 'Pauzeren';
+
+  let banner = '';
+  if (s.halted) banner += `<div class="banner">Nieuwe trades gepauzeerd: ${esc(s.halted.reason)}</div>`;
+  if (s.lastError) banner += `<div class="banner">Laatste fout (${time(s.lastError.at)}, ${esc(s.lastError.pair)}): ${esc(s.lastError.message)}</div>`;
+  $('banner').innerHTML = banner;
+
+  const tiles = [];
+  if (s.mode === 'paper') {
+    tiles.push(['Paper-saldo', eur(s.balanceEur)]);
+  }
+  tiles.push(
+    ['Resultaat totaal', `<span class="${cls(s.stats.realizedEur)}">${eur(s.stats.realizedEur)}</span>`],
+    ['Resultaat vandaag', `<span class="${cls(s.stats.realizedTodayEur)}">${eur(s.stats.realizedTodayEur)}</span>`],
+    ['Trades', s.stats.totalTrades],
+    ['Winrate', s.stats.winRate == null ? '–' : `${s.stats.winRate.toFixed(0)}%`],
+    ['AI goedgekeurd / afgewezen', `${s.stats.approved} / ${s.stats.vetoed}`],
+  );
+  $('tiles').innerHTML = tiles.map(([k, v]) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+
+  $('positions').innerHTML = table(s.positions, [
+    ['Pair', p => esc(p.pair)],
+    ['Geopend', p => time(p.openedAt)],
+    ['Instapkoers', p => p.entryPrice],
+    ['Hoeveelheid', p => p.amount.toFixed(8)],
+    ['Inzet', p => eur(p.costEur)],
+  ], 'Geen open posities.');
+
+  const outcome = { approved: ['Goedgekeurd', 'up'], vetoed: ['Afgewezen', 'down'], blocked: ['Geblokkeerd', 'warnc'] };
+  $('decisions').innerHTML = table(s.decisions, [
+    ['Tijd', d => time(d.at)],
+    ['Pair', d => esc(d.pair)],
+    ['Uitkomst', d => { const [t, c] = outcome[d.outcome] || [d.outcome, '']; return `<span class="${c}">${t}</span>`; }],
+    ['RSI', d => d.indicators?.rsi?.toFixed(1) ?? '–'],
+    ['Reden', d => `<div class="reason">${esc(d.reason)}${d.aiError ? ' <span class="warnc">(AI-fout)</span>' : ''}</div>`],
+  ], 'Nog geen koopsignalen. Bij 1h-candles kan dat even duren.');
+
+  $('trades').innerHTML = table(s.trades, [
+    ['Gesloten', t => time(t.closedAt)],
+    ['Pair', t => esc(t.pair)],
+    ['In', t => t.entryPrice],
+    ['Uit', t => t.exitPrice],
+    ['Resultaat', t => `<span class="${cls(t.pnlEur)}">${eur(t.pnlEur)} (${pct(t.pnlPct)})</span>`],
+    ['Exit', t => esc(t.exitReason)],
+  ], 'Nog geen afgesloten trades.');
+}
+
+$('tick').onclick = async () => { $('tick').disabled = true; await fetch('api/tick', { method: 'POST' }); await load(); $('tick').disabled = false; };
+$('pause').onclick = async () => { await fetch(state?.halted?.manual ? 'api/resume' : 'api/pause', { method: 'POST' }); load(); };
+
+load().catch(e => $('banner').innerHTML = `<div class="banner">Kan status niet laden: ${esc(e.message)}</div>`);
+setInterval(() => load().catch(() => {}), 30000);
+</script>
+</body>
+</html>
