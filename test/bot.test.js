@@ -129,9 +129,14 @@ test('planning aanpassen valideert en roept de herplanning aan', async () => {
   assert.equal(bot.settings.checkIntervalMinutes, 2);
   assert.equal(rescheduled, 1);
   await assert.rejects(bot.setSchedule({ timeframe: '3m', checkIntervalMinutes: 5 }), /candle-tijd/);
-  await assert.rejects(bot.setSchedule({ timeframe: '5m', checkIntervalMinutes: 0 }), /tussen 1 en 240/);
-  await assert.rejects(bot.setSchedule({ timeframe: '5m', checkIntervalMinutes: 2.5 }), /tussen 1 en 240/);
+  await assert.rejects(bot.setSchedule({ timeframe: '5m', checkIntervalMinutes: 0 }), /10 seconden/);
+  await assert.rejects(bot.setSchedule({ timeframe: '5m', checkIntervalMinutes: 5 / 60 }), /10 seconden/);
   assert.equal(rescheduled, 1);
+  // Onder de minuut mag, afgerond op hele seconden
+  await bot.setSchedule({ timeframe: '1m', checkIntervalMinutes: 10 / 60 });
+  assert.equal(bot.settings.checkIntervalMinutes * 60, 10);
+  await bot.setSchedule({ timeframe: '1m', checkIntervalMinutes: 2.5 });
+  assert.equal(bot.settings.checkIntervalMinutes, 2.5);
 });
 
 test('risico-instellingen worden gevalideerd en gelden direct voor de inzet', async () => {
@@ -349,4 +354,14 @@ test('een herstart koopt niet opnieuw op dezelfde kruising', async () => {
   await bot2.tick();
   assert.deepEqual(bot2.store.state.positions, {}, 'geen dubbele aankoop');
   void stores;
+});
+
+test('bij checks onder de minuut worden rustige checks maar eens per minuut gelogd', async () => {
+  const { bot, ex } = setup({});
+  ex.prices = [...Array(40)].map((_, i) => 100 - i);
+  await bot.setSchedule({ timeframe: '1m', checkIntervalMinutes: 10 / 60 });
+  const before = bot.activity.length;
+  await bot.tick(); await bot.tick(); await bot.tick();
+  assert.equal(bot.activity.filter((a) => a.message.startsWith('Check klaar')).length, 1);
+  assert.ok(bot.activity.length - before <= 1);
 });

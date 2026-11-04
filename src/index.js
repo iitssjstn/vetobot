@@ -33,7 +33,7 @@ const bot = new Bot({ config, exchange, brokers, stores, settings, secrets, noti
 
 console.info(
   `vetobot start in ${settings.mode.toUpperCase()}-modus | pairs: ${settings.pairs.join(', ')} | ` +
-    `elke ${settings.checkIntervalMinutes} min, ${settings.timeframe}-candles | AI: ${settings.ai.provider}`,
+    `elke ${settings.checkIntervalMinutes * 60} sec, ${settings.timeframe}-candles | AI: ${settings.ai.provider}`,
 );
 if (settings.mode === 'live') console.warn('LET OP: live trading staat aan. Er worden echte orders geplaatst.');
 

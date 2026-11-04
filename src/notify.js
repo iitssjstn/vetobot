@@ -99,9 +99,12 @@ export class Notifier {
   }
 
   // ok=false stuurt naar <url>/fail, zodat de monitor ook bij fouten kan waarschuwen.
-  async heartbeat(ok = true) {
+  async heartbeat(ok = true, { force = false } = {}) {
     const url = this.secrets.get('heartbeatUrl');
     if (!url) return null;
+    // Bij snelle checks niet vaker dan eens per minuut pingen; een fout gaat altijd direct.
+    if (ok && !force && this.lastHeartbeat?.ok && !this.lastHeartbeat.error &&
+        Date.now() - new Date(this.lastHeartbeat.at).getTime() < 55000) return this.lastHeartbeat;
     const target = ok ? url : `${url.replace(/\/$/, '')}/fail`;
     try {
       const res = await this.fetch(target, { method: 'GET', signal: AbortSignal.timeout(10000) });

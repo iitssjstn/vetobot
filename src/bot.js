@@ -1,6 +1,6 @@
 import { evaluate } from './strategy.js';
 import { askVetoChain, testChain, listModels, writeSummaryChain, aiLabel } from './ai.js';
-import { TIMEFRAME_MINUTES } from './settings.js';
+import { TIMEFRAME_MINUTES, fmtInterval } from './settings.js';
 import { cleanSuggestions, currentValues, applySuggestions } from './suggest.js';
 import { fetchClosedCandles, fetchPrice, hasTradingKeys } from './exchange.js';
 import { checkEntry } from './risk.js';
@@ -339,7 +339,7 @@ export class Bot {
   setSchedule(schedule) {
     return this.#exclusive(async () => {
       this.settings.setSchedule(schedule);
-      this.#event('info', null, `Planning: elke ${this.settings.checkIntervalMinutes} min checken, ${this.settings.timeframe}-candles`);
+      this.#event('info', null, `Planning: elke ${fmtInterval(this.settings.checkIntervalMinutes)} checken, ${this.settings.timeframe}-candles`);
       this.onScheduleChange?.();
     });
   }
@@ -511,8 +511,14 @@ export class Bot {
       this.lastTickAt = new Date().toISOString();
       if (!errors) this.lastError = null;
       this.store.save();
-      this.#event(errors ? 'warn' : 'info', null, `Check klaar in ${((Date.now() - started) / 1000).toFixed(1)}s: ` +
-        this.#summary(errors));
+      // Bij checks sneller dan elke minuut: rustige checks hooguit één keer per minuut loggen.
+      const t = this.tickStats;
+      const quiet = !errors && !t.buySignals && !t.opened && !t.closed;
+      if (!quiet || this.settings.checkIntervalMinutes >= 1 || Date.now() - (this.lastQuietLog ?? 0) >= 60000) {
+        this.#event(errors ? 'warn' : 'info', null, `Check klaar in ${((Date.now() - started) / 1000).toFixed(1)}s: ` +
+          this.#summary(errors));
+        if (quiet) this.lastQuietLog = Date.now();
+      }
       this.notifier?.heartbeat(errors === 0).catch(() => {});
     } finally {
       this.running = false;

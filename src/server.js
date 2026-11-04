@@ -231,7 +231,7 @@ export function startServer({ config, bot, settings, secrets, auth, notifier, lo
 
   app.post('/api/settings/schedule', wrap(async (req) => {
     await bot.setSchedule({ timeframe: req.body?.timeframe, checkIntervalMinutes: req.body?.checkIntervalMinutes });
-    log.info(`Planning gewijzigd door ${req.user}: ${settings.checkIntervalMinutes} min, ${settings.timeframe}`);
+    log.info(`Planning gewijzigd door ${req.user}: elke ${settings.checkIntervalMinutes * 60} sec, ${settings.timeframe}`);
     return { ok: true, timeframe: settings.timeframe, checkIntervalMinutes: settings.checkIntervalMinutes, nextTickAt: bot.nextTickAt };
   }));
 
@@ -255,7 +255,7 @@ export function startServer({ config, bot, settings, secrets, auth, notifier, lo
   }));
 
   app.post('/api/settings/heartbeat/test', wrap(async () => {
-    const r = await notifier.heartbeat(true);
+    const r = await notifier.heartbeat(true, { force: true });
     if (!r) throw new Error('Er is nog geen heartbeat-URL ingesteld');
     if (r.error) throw new Error(`Heartbeat mislukt: ${r.error}`);
     return { ok: true, lastHeartbeat: r };

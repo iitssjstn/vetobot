@@ -60,6 +60,13 @@ function validated(values, limits, integers) {
 export const TIMEFRAMES = ['1m', '5m', '15m', '30m', '1h', '2h', '4h', '1d'];
 export const TIMEFRAME_MINUTES = { '1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120, '4h': 240, '1d': 1440 };
 
+// "10 sec", "1,5 min", "15 min"
+export const fmtInterval = (min) => {
+  const sec = Math.round(min * 60);
+  if (sec < 60) return `${sec} sec`;
+  return `${String(Math.round((sec / 60) * 100) / 100).replace('.', ',')} min`;
+};
+
 export class Settings {
   constructor(dataDir, defaults) {
     this.file = path.join(dataDir, 'settings.json');
@@ -159,10 +166,11 @@ export class Settings {
 
   setSchedule({ timeframe, checkIntervalMinutes }) {
     if (!TIMEFRAMES.includes(timeframe)) throw new Error(`Ongeldige candle-tijd "${timeframe}"`);
-    const n = Number(checkIntervalMinutes);
-    if (!Number.isInteger(n) || n < 1 || n > 240) throw new Error('Check-interval moet tussen 1 en 240 minuten liggen');
+    // In minuten, maar ook delen van een minuut (minimaal 10 seconden), afgerond op hele seconden.
+    const sec = Math.round(Number(checkIntervalMinutes) * 60);
+    if (!Number.isFinite(sec) || sec < 10 || sec > 240 * 60) throw new Error('Check-interval moet tussen 10 seconden en 240 minuten liggen');
     this.data.timeframe = timeframe;
-    this.data.checkIntervalMinutes = n;
+    this.data.checkIntervalMinutes = sec / 60;
     this.#save();
   }
 

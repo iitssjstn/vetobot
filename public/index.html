@@ -441,11 +441,7 @@
         <form class="panel-b" id="sched-form">
           <div class="fields">
             <div><label for="sch-interval">Check elke</label>
-              <select id="sch-interval">
-                <option value="1">1 minuut</option><option value="2">2 minuten</option><option value="5">5 minuten</option>
-                <option value="10">10 minuten</option><option value="15">15 minuten</option><option value="30">30 minuten</option>
-                <option value="60">60 minuten</option>
-              </select></div>
+              <select id="sch-interval"></select></div>
             <div><label for="sch-tf">Candle-tijd (timeframe)</label>
               <select id="sch-tf">
                 <option value="1m">1 minuut</option><option value="5m">5 minuten</option><option value="15m">15 minuten</option>
@@ -679,6 +675,8 @@ const eur = (n, d) => n == null ? '–' : new Intl.NumberFormat('nl-NL', { style
 const eur2 = (n) => eur(n, 2);
 // Bedrag met teken ervoor (+€ 1,20 / −€ 0,50), gekleurd.
 const signEur = (n) => n == null ? '–' : `<span class="${n > 0 ? 'up' : n < 0 ? 'down' : ''}">${n > 0 ? '+' : n < 0 ? '−' : ''}${eur(Math.abs(n), 2)}</span>`;
+// Check-interval in minuten (ook delen van een minuut) als "10 sec" / "15 min".
+const fmtIv = (min) => { const sec = Math.round(min * 60); return sec < 60 ? `${sec} sec` : `${String(Math.round(sec / 60 * 100) / 100).replace('.', ',')} min`; };
 const pct = (n) => n == null ? '–' : `${n > 0 ? '+' : n < 0 ? '−' : ''}${Math.abs(n).toFixed(2)}%`;
 const cls = (n) => n > 0 ? 'up' : n < 0 ? 'down' : '';
 const time = (s) => s ? new Date(s).toLocaleString('nl-NL', { dateStyle: 'short', timeStyle: 'short' }) : '–';
@@ -806,7 +804,7 @@ async function load() {
   $('mode-badge').textContent = live ? 'LIVE' : 'PAPER';
   $('mode-badge').className = `badge ${s.mode}`;
   $('view-app').classList.toggle('is-live', live);
-  $('meta').textContent = `${s.pairs.length} coins · check elke ${s.checkIntervalMinutes} min · ${s.timeframe}-candles · AI: ${s.ai.provider === 'none' ? 'uit' : s.ai.provider}${s.ai.model ? ` (${s.ai.model})` : ''}`;
+  $('meta').textContent = `${s.pairs.length} coins · check elke ${fmtIv(s.checkIntervalMinutes)} · ${s.timeframe}-candles · AI: ${s.ai.provider === 'none' ? 'uit' : s.ai.provider}${s.ai.model ? ` (${s.ai.model})` : ''}`;
   $('side-mode').innerHTML = `Modus: <b class="${live ? 'down' : ''}">${live ? 'Live' : 'Paper'}</b>`;
   $('side-user').textContent = me ?? '';
   $('pause').innerHTML = s.halted?.manual ? `${icon('play')}<span>Hervatten</span>` : `${icon('pause')}<span>Pauzeren</span>`;
@@ -1071,7 +1069,7 @@ function renderSettings() {
     riskHelp();
   }
   if (!document.activeElement?.closest('#sched-form') && !schedDirty) {
-    setSelect($('sch-interval'), s.checkIntervalMinutes, `${s.checkIntervalMinutes} minuten`);
+    setSelect($('sch-interval'), s.checkIntervalMinutes, fmtIv(s.checkIntervalMinutes));
     $('sch-tf').value = s.timeframe;
     schedHelp();
   }
@@ -1217,7 +1215,7 @@ $('risk-form').onsubmit = async (e) => {
 let notifyDirty = false;
 function renderNotify() {
   const s = state; if (!s?.notify) return;
-  $('hb-period').textContent = `${s.checkIntervalMinutes} minuten`;
+  $('hb-period').textContent = s.checkIntervalMinutes < 1 ? '1 minuut (de bot pingt bij snelle checks maximaal eens per minuut)' : fmtIv(s.checkIntervalMinutes);
   const id = (notifyDirty ? $('n-user').value : s.notify.discordUserId) || 'JOUW_ID';
   $('hb-body').textContent = `{"content": "<@${id}> vetobot is offline ($NAME)"}`;
   const hb = s.lastHeartbeat;
@@ -1288,7 +1286,7 @@ $('hb-test').onclick = async () => {
 
 // ---------- Uitleg per veld ----------
 const HELP = {
-  'sch-interval': 'Hoe vaak de bot alle coins nakijkt. Bij elke check bekijkt hij nieuwe candles en controleert hij de stop-loss en take-profit van open posities. <b>Vuistregel:</b> even vaak of vaker dan je candle-tijd, bijv. elke 5 min bij 5m- of 15m-candles.',
+  'sch-interval': 'Hoe vaak de bot alle coins nakijkt. Bij elke check bekijkt hij nieuwe candles en controleert hij de stop-loss en take-profit van open posities. <b>Vuistregel:</b> even vaak of vaker dan je candle-tijd, bijv. elke 5 min bij 5m- of 15m-candles. Sneller dan elke minuut kan ook (vanaf 10 seconden): dat geeft geen extra signalen, maar je stop-loss reageert sneller. Let met veel coins op de rate limit van Bitvavo.',
   'sch-tf': 'De lengte van één candle. <b>Korter</b> (1m, 5m) = meer signalen en sneller reageren, maar ook meer ruis, valse signalen en fees. <b>Langer</b> (1h, 4h) = minder en betrouwbaardere signalen, maar je zit langer in een positie. Veel bots beginnen rond 15m tot 1h.',
   'r-stake': 'Het vaste bedrag per aankoop. De AI kan dit nooit veranderen. Bitvavo heeft een minimum van € 5 per order. <b>Tip:</b> houd het klein, zeker in het begin, zodat één slechte trade weinig kost.',
   'r-max': 'Hoeveel posities er maximaal tegelijk open mogen staan, elk in een andere coin. Inzet × dit getal = het bedrag dat maximaal tegelijk in de markt zit.',
@@ -1397,6 +1395,9 @@ $('paper-reset-btn').onclick = async () => {
 };
 
 // ---------- Instellingen: planning ----------
+// Opties voor het check-interval, in seconden; de waarde wordt in minuten verstuurd.
+$('sch-interval').innerHTML = [10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
+  .map(sec => `<option value="${sec / 60}">${sec < 60 ? `${sec} seconden` : sec === 60 ? '1 minuut' : `${sec / 60} minuten`}</option>`).join('');
 const TF_MIN = { '1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120, '4h': 240, '1d': 1440 };
 let schedDirty = false;
 function setSelect(sel, value, label) {
@@ -1408,8 +1409,12 @@ function schedHelp() {
   const pairs = state?.pairs.length ?? 0;
   const parts = [`Signalen komen op gesloten candles, dus maximaal één nieuw signaal per coin per ${$('sch-tf').selectedOptions[0].text}.`];
   if (iv > tf) parts.push(`<span class="warnc">De check is langzamer dan de candle-tijd; je slaat dan candles over. Kies een check van hooguit ${tf} min.</span>`);
-  else parts.push(`Stop-loss en take-profit worden elke ${iv} min gecontroleerd.`);
+  else if (iv >= 1) parts.push(`Stop-loss en take-profit worden elke ${fmtIv(iv)} gecontroleerd.`);
   if (tf <= 5) parts.push('<span class="warnc">Korte candles geven veel meer signalen, en dus meer ruis, meer fees en meer AI-calls.</span>');
+  if (iv < 1) parts.push(`Checks onder de minuut geven geen extra koopsignalen (de kortste candle is 1 minuut), maar de stop-loss en take-profit worden wel elke ${Math.round(iv * 60)} sec gecontroleerd.`);
+  const perMin = pairs * (60 / (iv * 60));
+  if (perMin > 600) parts.push(`<span class="down">Met ${pairs} coins elke ${fmtIv(iv)} zijn dat zo'n ${Math.round(perMin)} verzoeken per minuut aan Bitvavo. Daarmee loop je tegen de rate limit aan; kies minder coins of een langer interval.</span>`);
+  else if (perMin > 300) parts.push(`<span class="warnc">Zo'n ${Math.round(perMin)} verzoeken per minuut aan Bitvavo. Dat gaat, maar je zit in de buurt van de rate limit.</span>`);
   if (iv <= 2 && pairs > 15) parts.push(`<span class="warnc">Met ${pairs} coins en elke ${iv} min kan een check langer duren dan het interval.</span>`);
   $('sch-help').innerHTML = parts.join(' ');
 }

@@ -86,3 +86,14 @@ test('een kapotte webhook laat de bot niet crashen', async () => {
   assert.equal(await n.send('trades', { title: 'x', message: 'y' }), false);
   await assert.rejects(n.test(), /offline/);
 });
+
+test('heartbeat bij snelle checks hooguit eens per minuut, fouten altijd', async () => {
+  const { n, calls, secrets } = setup();
+  secrets.update({ heartbeatUrl: 'https://hc-ping.com/x' });
+  await n.heartbeat(true); await n.heartbeat(true); await n.heartbeat(true);
+  assert.equal(calls.length, 1);
+  await n.heartbeat(false);
+  assert.equal(calls.length, 2, 'fout gaat direct');
+  await n.heartbeat(true, { force: true });
+  assert.equal(calls.length, 3, 'testknop gaat altijd');
+});

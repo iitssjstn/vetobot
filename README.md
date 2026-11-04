@@ -103,7 +103,7 @@ Naast elk veld bij Planning, Risico & inzet en Strategie staat een **?** met uit
 In het dashboard onder **Instellingen** regel je:
 
 - **Handelsmodus**: paper of live (zie hieronder)
-- **Planning**: hoe vaak de bot checkt (1 tot 60 minuten) en de candle-tijd (1 minuut tot 1 dag)
+- **Planning**: hoe vaak de bot checkt (10 seconden tot 60 minuten) en de candle-tijd (1 minuut tot 1 dag). Checks onder de minuut geven geen extra koopsignalen, maar de stop-loss en take-profit reageren sneller. Het dashboard waarschuwt als je met veel coins tegen de rate limit van Bitvavo aanloopt.
 - **Risico & inzet**: inzet per trade, maximaal aantal open trades, stop-loss, take-profit, dagelijkse verlieslimiet (telt ook open verliezen mee), fee, afkoelperiode na een verkoop en slippage in paper. Stop-loss, take-profit en daglimiet kun je met 0 uitzetten
 - **Strategie**: EMA fast, EMA slow, RSI-periode en de maximale RSI bij instap
 - **Paper-account**: opnieuw beginnen met een zelfgekozen startsaldo
