@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { COOKIE, readCookie } from './auth.js';
 import { SECRET_NAMES } from './secrets.js';
-import { AI_PROVIDERS, MAX_PAIRS } from './settings.js';
+import { AI_PROVIDERS, MAX_PAIRS, TIMEFRAMES } from './settings.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -125,7 +125,8 @@ export function startServer({ config, bot, settings, secrets, auth, log = consol
       modeChangedAt: settings.data.modeChangedAt,
       pairs: settings.pairs,
       maxPairs: MAX_PAIRS,
-      timeframe: config.timeframe,
+      timeframe: settings.timeframe,
+      timeframes: TIMEFRAMES,
       ai: settings.ai,
       aiProviders: AI_PROVIDERS,
       aiKeySet: keys.aiApiKey.set,
@@ -156,7 +157,7 @@ export function startServer({ config, bot, settings, secrets, auth, log = consol
       running: bot.running,
       currentStep: bot.currentStep,
       nextTickAt: bot.nextTickAt,
-      checkIntervalMinutes: config.checkIntervalMinutes,
+      checkIntervalMinutes: settings.checkIntervalMinutes,
       pairStatus: settings.pairs.map((pair) => ({ pair, ...bot.pairStatus[pair] })),
       activity: bot.activity.slice(0, 100),
       serverTime: new Date().toISOString(),
@@ -194,6 +195,12 @@ export function startServer({ config, bot, settings, secrets, auth, log = consol
     await bot.switchMode(mode);
     log.warn(`Modus gewijzigd naar ${mode} door ${req.user}`);
     return { ok: true, mode: bot.mode, liveBalance: bot.liveBalance };
+  }));
+
+  app.post('/api/settings/schedule', wrap(async (req) => {
+    await bot.setSchedule({ timeframe: req.body?.timeframe, checkIntervalMinutes: req.body?.checkIntervalMinutes });
+    log.info(`Planning gewijzigd door ${req.user}: ${settings.checkIntervalMinutes} min, ${settings.timeframe}`);
+    return { ok: true, timeframe: settings.timeframe, checkIntervalMinutes: settings.checkIntervalMinutes, nextTickAt: bot.nextTickAt };
   }));
 
   app.get('/api/markets', wrap(async () => ({ markets: await bot.listMarkets() })));

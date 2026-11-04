@@ -28,7 +28,7 @@ const bot = new Bot({ config, exchange, brokers, stores, settings, secrets });
 
 console.info(
   `vetobot start in ${settings.mode.toUpperCase()}-modus | pairs: ${settings.pairs.join(', ')} | ` +
-    `timeframe: ${config.timeframe} | AI: ${settings.ai.provider}`,
+    `elke ${settings.checkIntervalMinutes} min, ${settings.timeframe}-candles | AI: ${settings.ai.provider}`,
 );
 if (settings.mode === 'live') console.warn('LET OP: live trading staat aan. Er worden echte orders geplaatst.');
 
@@ -42,17 +42,25 @@ if (!auth.isSetUp()) {
 
 const server = startServer({ config, bot, settings, secrets, auth });
 
-const intervalMs = config.checkIntervalMinutes * 60 * 1000;
+// Timer met instelbaar interval. Na een wijziging in het dashboard wordt de
+// volgende check opnieuw ingepland vanaf nu.
+let timer;
+const schedule = () => {
+  clearTimeout(timer);
+  const ms = settings.checkIntervalMinutes * 60 * 1000;
+  bot.nextTickAt = new Date(Date.now() + ms).toISOString();
+  timer = setTimeout(run, ms);
+};
 const run = () => {
-  bot.nextTickAt = new Date(Date.now() + intervalMs).toISOString();
+  schedule();
   return bot.tick().catch((err) => console.error('Tick mislukt:', err));
 };
+bot.onScheduleChange = schedule;
 run();
-const timer = setInterval(run, intervalMs);
 
 function shutdown(sig) {
   console.info(`${sig} ontvangen, afsluiten...`);
-  clearInterval(timer);
+  clearTimeout(timer);
   stores.paper.save();
   stores.live.save();
   server.close(() => process.exit(0));

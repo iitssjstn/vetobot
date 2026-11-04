@@ -89,6 +89,17 @@ export class Bot {
     return list;
   }
 
+  // Past candle-tijd en check-interval aan. De timer in index.js luistert via onScheduleChange.
+  setSchedule(schedule) {
+    return this.#exclusive(async () => {
+      const oldTf = this.settings.timeframe;
+      this.settings.setSchedule(schedule);
+      if (this.settings.timeframe !== oldTf) this.lastSignalCandle = {};
+      this.#event('info', null, `Planning: elke ${this.settings.checkIntervalMinutes} min checken, ${this.settings.timeframe}-candles`);
+      this.onScheduleChange?.();
+    });
+  }
+
   async setPairs(pairs) {
     const markets = await this.listMarkets();
     await this.#exclusive(async () => {
@@ -207,7 +218,8 @@ export class Bot {
   }
 
   async #handlePair(pair) {
-    const { strategy, risk, timeframe } = this.config;
+    const { strategy, risk } = this.config;
+    const timeframe = this.settings.timeframe;
     const position = this.store.state.positions[pair];
 
     // 1. Open positie beheren

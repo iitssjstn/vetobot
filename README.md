@@ -6,7 +6,7 @@ Puur Node.js, zonder NumPy of native code, dus hij draait ook op oudere CPU's.
 
 ## Hoe het werkt
 
-Elke `CHECK_INTERVAL_MINUTES` loopt de bot alle pairs langs:
+Elke check (standaard elke 15 minuten, instelbaar in het dashboard) loopt de bot alle pairs langs:
 
 1. **Open positie?** Dan eerst stop-loss en take-profit checken, daarna het verkoopsignaal. Verkopen gaat **nooit** langs de AI, zodat een AI-fout een stop-loss niet kan blokkeren.
 2. **Koopsignaal** (EMA fast kruist boven EMA slow, RSI onder `RSI_MAX_ENTRY`)? Dan eerst de harde regels: maximaal aantal open trades, dagelijkse verlieslimiet en saldo.
@@ -91,20 +91,21 @@ De image is publiek, dus inloggen bij ghcr.io is niet nodig. Krijg je bij `docke
 In het dashboard onder **Instellingen** regel je:
 
 - **Handelsmodus**: paper of live (zie hieronder)
+- **Planning**: hoe vaak de bot checkt (1 tot 60 minuten) en de candle-tijd (1 minuut tot 1 dag)
 - **Coins**: kies uit alle EUR-markten op Bitvavo, gesorteerd op volume, maximaal 30
 - **AI-veto**: provider, model en base-URL
 - **API-keys** en je **wachtwoord**
 
 Deze keuzes worden opgeslagen in `data/settings.json` en blijven bewaard na een herstart.
 
-De risicolimieten en de strategie stel je in met environment variables in je compose. Geen ervan is geheim. `LIVE_TRADING`, `PAIRS` en `AI_*` gelden alleen als beginwaarde bij de allereerste start; daarna gaat het dashboard voor.
+De risicolimieten en de strategie stel je in met environment variables in je compose. Geen ervan is geheim. `LIVE_TRADING`, `PAIRS`, `TIMEFRAME`, `CHECK_INTERVAL_MINUTES` en `AI_*` gelden alleen als beginwaarde bij de allereerste start; daarna gaat het dashboard voor.
 
 | Variabele | Standaard | Betekenis |
 |---|---|---|
 | `LIVE_TRADING` | `false` | Beginwaarde voor de modus; daarna via het dashboard |
 | `PAIRS` | `BTC/EUR,ETH/EUR` | Beginwaarde voor de coins; daarna via het dashboard |
-| `TIMEFRAME` | `1h` | Candle-timeframe |
-| `CHECK_INTERVAL_MINUTES` | `15` | Hoe vaak de bot checkt |
+| `TIMEFRAME` | `1h` | Beginwaarde voor de candle-tijd; daarna via het dashboard |
+| `CHECK_INTERVAL_MINUTES` | `15` | Beginwaarde voor het check-interval; daarna via het dashboard |
 | `EMA_FAST` / `EMA_SLOW` | `12` / `26` | EMA-periodes |
 | `RSI_PERIOD` / `RSI_MAX_ENTRY` | `14` / `70` | Geen aankoop boven deze RSI |
 | `STAKE_EUR` | `25` | Inzet per trade |

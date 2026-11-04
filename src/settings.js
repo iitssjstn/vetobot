@@ -7,6 +7,8 @@ import path from 'node:path';
 
 export const AI_PROVIDERS = ['none', 'gemini', 'openai'];
 export const MAX_PAIRS = 30;
+export const TIMEFRAMES = ['1m', '5m', '15m', '30m', '1h', '2h', '4h', '1d'];
+export const TIMEFRAME_MINUTES = { '1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120, '4h': 240, '1d': 1440 };
 
 export class Settings {
   constructor(dataDir, defaults) {
@@ -21,6 +23,8 @@ export class Settings {
         baseUrl: saved.ai?.baseUrl ?? defaults.ai.baseUrl,
       },
       pairs: saved.pairs ?? defaults.pairs,
+      timeframe: saved.timeframe ?? defaults.timeframe,
+      checkIntervalMinutes: saved.checkIntervalMinutes ?? defaults.checkIntervalMinutes,
       modeChangedAt: saved.modeChangedAt ?? null,
     };
   }
@@ -35,6 +39,23 @@ export class Settings {
 
   get pairs() {
     return this.data.pairs;
+  }
+
+  get timeframe() {
+    return this.data.timeframe;
+  }
+
+  get checkIntervalMinutes() {
+    return this.data.checkIntervalMinutes;
+  }
+
+  setSchedule({ timeframe, checkIntervalMinutes }) {
+    if (!TIMEFRAMES.includes(timeframe)) throw new Error(`Ongeldige candle-tijd "${timeframe}"`);
+    const n = Number(checkIntervalMinutes);
+    if (!Number.isInteger(n) || n < 1 || n > 240) throw new Error('Check-interval moet tussen 1 en 240 minuten liggen');
+    this.data.timeframe = timeframe;
+    this.data.checkIntervalMinutes = n;
+    this.#save();
   }
 
   #save() {

@@ -381,6 +381,28 @@
         </div>
       </div>
 
+      <div class="panel gap" id="schedule">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-history"/></svg>Planning</h2></div>
+        <form class="panel-b" id="sched-form">
+          <div class="fields">
+            <div><label for="sch-interval">Check elke</label>
+              <select id="sch-interval">
+                <option value="1">1 minuut</option><option value="2">2 minuten</option><option value="5">5 minuten</option>
+                <option value="10">10 minuten</option><option value="15">15 minuten</option><option value="30">30 minuten</option>
+                <option value="60">60 minuten</option>
+              </select></div>
+            <div><label for="sch-tf">Candle-tijd (timeframe)</label>
+              <select id="sch-tf">
+                <option value="1m">1 minuut</option><option value="5m">5 minuten</option><option value="15m">15 minuten</option>
+                <option value="30m">30 minuten</option><option value="1h">1 uur</option><option value="2h">2 uur</option>
+                <option value="4h">4 uur</option><option value="1d">1 dag</option>
+              </select></div>
+          </div>
+          <div class="help" id="sch-help"></div>
+          <div class="row-actions"><button class="btn primary" type="submit">Opslaan</button><span class="msg" id="sch-msg"></span></div>
+        </form>
+      </div>
+
       <div class="panel gap" id="coins">
         <div class="panel-h"><h2><svg class="i"><use href="#i-coins"/></svg>Coins</h2><span class="hint" id="coin-count"></span></div>
         <div class="panel-b">
@@ -585,7 +607,7 @@ async function load() {
   $('mode-badge').textContent = live ? 'LIVE' : 'PAPER';
   $('mode-badge').className = `badge ${s.mode}`;
   $('view-app').classList.toggle('is-live', live);
-  $('meta').textContent = `${s.pairs.length} coins · ${s.timeframe}-candles · AI: ${s.ai.provider === 'none' ? 'uit' : s.ai.provider}${s.ai.model ? ` (${s.ai.model})` : ''}`;
+  $('meta').textContent = `${s.pairs.length} coins · check elke ${s.checkIntervalMinutes} min · ${s.timeframe}-candles · AI: ${s.ai.provider === 'none' ? 'uit' : s.ai.provider}${s.ai.model ? ` (${s.ai.model})` : ''}`;
   $('side-mode').innerHTML = `Modus: <b class="${live ? 'down' : ''}">${live ? 'Live' : 'Paper'}</b>`;
   $('side-user').textContent = me ?? '';
   $('pause').innerHTML = s.halted?.manual ? `${icon('play')}<span>Hervatten</span>` : `${icon('pause')}<span>Pauzeren</span>`;
@@ -744,6 +766,11 @@ function renderSettings() {
     : `De bot gebruikt echte koersen, maar handelt met een nep-saldo van ${eur2(s.startBalanceEur)}. Er gaat geen echt geld om.`;
   $('mc-switch').className = live ? 'btn' : 'btn live';
   $('mc-switch').innerHTML = live ? `${icon('shield')}Terug naar paper` : `${icon('bolt')}Overschakelen naar live`;
+  if (!document.activeElement?.closest('#sched-form') && !schedDirty) {
+    setSelect($('sch-interval'), s.checkIntervalMinutes, `${s.checkIntervalMinutes} minuten`);
+    $('sch-tf').value = s.timeframe;
+    schedHelp();
+  }
   if (document.activeElement?.closest('#ai-form')) return;
   $('ai-provider').value = s.ai.provider;
   $('ai-model').value = s.ai.model ?? '';
@@ -840,6 +867,34 @@ $('coin-save').onclick = async () => {
     $('coin-msg').className = 'msg ok'; $('coin-msg').textContent = 'Opgeslagen. Ze worden meegenomen in de volgende check.';
     await load();
   } catch (err) { $('coin-msg').className = 'msg err'; $('coin-msg').textContent = err.message; }
+};
+
+// ---------- Instellingen: planning ----------
+const TF_MIN = { '1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120, '4h': 240, '1d': 1440 };
+let schedDirty = false;
+function setSelect(sel, value, label) {
+  if (![...sel.options].some(o => o.value === String(value))) sel.add(new Option(label, value));
+  sel.value = String(value);
+}
+function schedHelp() {
+  const iv = Number($('sch-interval').value), tf = TF_MIN[$('sch-tf').value];
+  const pairs = state?.pairs.length ?? 0;
+  const parts = [`Signalen komen op gesloten candles, dus maximaal één nieuw signaal per coin per ${$('sch-tf').selectedOptions[0].text}.`];
+  if (iv > tf) parts.push(`<span class="warnc">De check is langzamer dan de candle-tijd; je slaat dan candles over. Kies een check van hooguit ${tf} min.</span>`);
+  else parts.push(`Stop-loss en take-profit worden elke ${iv} min gecontroleerd.`);
+  if (tf <= 5) parts.push('<span class="warnc">Korte candles geven veel meer signalen, en dus meer ruis, meer fees en meer AI-calls.</span>');
+  if (iv <= 2 && pairs > 15) parts.push(`<span class="warnc">Met ${pairs} coins en elke ${iv} min kan een check langer duren dan het interval.</span>`);
+  $('sch-help').innerHTML = parts.join(' ');
+}
+$('sch-interval').onchange = $('sch-tf').onchange = () => { schedDirty = true; schedHelp(); };
+$('sched-form').onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    await api('api/settings/schedule', { timeframe: $('sch-tf').value, checkIntervalMinutes: Number($('sch-interval').value) });
+    schedDirty = false;
+    $('sch-msg').className = 'msg ok'; $('sch-msg').textContent = 'Opgeslagen. De volgende check is opnieuw ingepland.';
+    document.activeElement?.blur(); await load();
+  } catch (err) { $('sch-msg').className = 'msg err'; $('sch-msg').textContent = err.message; }
 };
 
 // ---------- Instellingen: AI ----------

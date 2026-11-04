@@ -40,7 +40,7 @@ function setup(exOpts) {
     risk: { stakeEur: 25, maxOpenTrades: 2, stopLossPct: 50, takeProfitPct: 50, maxDailyLossEur: 100, feePct: 0.25 },
     ai: { provider: 'none', failMode: 'reject' },
   };
-  const settings = new Settings(dir, { liveTrading: false, pairs: ['BTC/EUR'], ai: { provider: 'none', model: '', baseUrl: '' } });
+  const settings = new Settings(dir, { liveTrading: false, pairs: ['BTC/EUR'], timeframe: '1h', checkIntervalMinutes: 15, ai: { provider: 'none', model: '', baseUrl: '' } });
   const stores = { paper: new Store(dir, 'paper', 500), live: new Store(dir, 'live', 500) };
   const live = { mode: 'live', buy: async () => { throw new Error('geen echte orders in tests'); } };
   const bot = new Bot({
@@ -118,4 +118,18 @@ test('coins wijzigen valideert tegen Bitvavo en beschermt open posities', async 
 
   await openPaperPosition(bot, ex);
   await assert.rejects(bot.setPairs(['SOL/EUR']), /positie open/);
+});
+
+test('planning aanpassen valideert en roept de herplanning aan', async () => {
+  const { bot } = setup({});
+  let rescheduled = 0;
+  bot.onScheduleChange = () => rescheduled++;
+  await bot.setSchedule({ timeframe: '5m', checkIntervalMinutes: 2 });
+  assert.equal(bot.settings.timeframe, '5m');
+  assert.equal(bot.settings.checkIntervalMinutes, 2);
+  assert.equal(rescheduled, 1);
+  await assert.rejects(bot.setSchedule({ timeframe: '3m', checkIntervalMinutes: 5 }), /candle-tijd/);
+  await assert.rejects(bot.setSchedule({ timeframe: '5m', checkIntervalMinutes: 0 }), /tussen 1 en 240/);
+  await assert.rejects(bot.setSchedule({ timeframe: '5m', checkIntervalMinutes: 2.5 }), /tussen 1 en 240/);
+  assert.equal(rescheduled, 1);
 });
