@@ -13,9 +13,31 @@ Elke `CHECK_INTERVAL_MINUTES` loopt de bot alle pairs langs:
 3. Komt het signaal daardoor, dan krijgt de **AI** de indicatoren en de laatste candles, en antwoordt met `approve` of `reject` plus een reden.
 4. Alles wordt gelogd en is te zien in het dashboard.
 
-De AI bepaalt nooit bedragen, stop-losses of verkopen. Reageert de AI niet of geeft hij onzin terug, dan wordt de trade afgewezen (`AI_FAIL_MODE=reject`).
+De AI bepaalt nooit bedragen, stop-losses of verkopen. Reageert de AI niet, geeft hij onzin terug of is er geen AI-key, dan wordt de trade afgewezen (`AI_FAIL_MODE=reject`).
 
 De strategie kijkt alleen naar **gesloten** candles, en elke candle wordt maar één keer beoordeeld.
+
+## API-keys en account
+
+API-keys komen **nooit** in env-variabelen of `.env`-bestanden. Je vult ze in via het dashboard:
+
+- Ze worden versleuteld (AES-256-GCM) opgeslagen in `data/secrets.enc`.
+- De sleutel daarvoor wordt bij de eerste start willekeurig gemaakt in `data/master.key`.
+- Na het opslaan zie je alleen nog of een key is ingesteld en de laatste 4 tekens.
+
+Dit beschermt tegen uitlekken via git, losse backups of het dashboard. Iemand met root op de server kan bij beide bestanden; dat geldt voor elke manier van opslaan op disk. Maak je een backup, neem `master.key` en `secrets.enc` dan samen mee, anders zijn de keys niet meer te ontsleutelen.
+
+### First-run setup
+
+Bij de eerste start bestaat er nog geen account. De bot print dan een eenmalige **setup-code** in de logs:
+
+```bash
+docker compose logs vetobot
+```
+
+Open het dashboard, vul de setup-code in en kies een gebruikersnaam en wachtwoord (minimaal 10 tekens) voor het admin-account. Daarna verdwijnt de setup en kun je alleen nog inloggen. De code zorgt ervoor dat alleen iemand met toegang tot je server het account kan aanmaken.
+
+Het wachtwoord wordt alleen als scrypt-hash opgeslagen in `data/auth.json`. Na 5 mislukte inlogpogingen wordt dat IP 5 minuten geblokkeerd. Wachtwoord vergeten? Stop de container, verwijder `data/auth.json` en start opnieuw voor een nieuwe setup. Je keys blijven bewaard.
 
 ## AI-providers
 
@@ -25,7 +47,7 @@ De strategie kijkt alleen naar **gesloten** candles, en elke candle wordt maar �
 | `gemini` | Google Gemini, gratis key via [aistudio.google.com](https://aistudio.google.com) | `gemini-2.5-flash` |
 | `openai` | Elke OpenAI-compatibele API: Groq (standaard), OpenRouter, Ollama, ... | `llama-3.3-70b-versatile` |
 
-Voor een andere OpenAI-compatibele provider zet je `AI_BASE_URL`, bijvoorbeeld `https://openrouter.ai/api/v1`.
+De AI-key vul je in via het dashboard. Voor een andere OpenAI-compatibele provider zet je `AI_BASE_URL`, bijvoorbeeld `https://openrouter.ai/api/v1`.
 
 Tip: draai een tijd met `none` en daarna met een AI, en vergelijk de resultaten in het dashboard. Zo zie je of de veto echt helpt.
 
@@ -33,15 +55,7 @@ Tip: draai een tijd met `none` en daarna met een AI, en vergelijk de resultaten 
 
 De GitHub Action bouwt bij elke push naar `main` de image `ghcr.io/iitssjstn/vetobot:latest`.
 
-Maak een map met een eigen `.env`:
-
-```bash
-mkdir -p /opt/media-stack/vetobot
-cp .env.example /opt/media-stack/vetobot/.env   # of kopieer de inhoud handmatig
-nano /opt/media-stack/vetobot/.env
-```
-
-Voeg de service toe aan je `docker-compose.yml`:
+Voeg de service toe aan je `docker-compose.yml`. Hier staan alleen instellingen in, geen keys:
 
 ```yaml
   vetobot:
@@ -54,8 +68,11 @@ Voeg de service toe aan je `docker-compose.yml`:
     dns:
       - 1.1.1.1
       - 1.0.0.1
-    env_file:
-      - ./vetobot/.env
+    environment:
+      - TZ=Europe/Amsterdam
+      - LIVE_TRADING=false
+      - PAIRS=BTC/EUR,ETH/EUR
+      - AI_PROVIDER=none
     ports:
       - "127.0.0.1:3020:3000"
     volumes:
@@ -63,25 +80,53 @@ Voeg de service toe aan je `docker-compose.yml`:
 ```
 
 ```bash
+mkdir -p vetobot/data && sudo chown 1000:1000 vetobot/data
 docker compose up -d vetobot
-docker compose logs -f vetobot
+docker compose logs vetobot     # hier staat de setup-code
 ```
 
-Het dashboard staat dan op `http://127.0.0.1:3020` (via een SSH-tunnel). Via Nginx Proxy Manager forward je naar `vetobot` op poort `3000`. Zet in dat geval altijd `DASHBOARD_PASSWORD`.
+Het dashboard staat dan op `http://127.0.0.1:3020` (via een SSH-tunnel). Via Nginx Proxy Manager forward je naar `vetobot` op poort `3000`. Doe de first-run setup dan meteen, en zet bij voorkeur HTTPS aan.
 
 Omdat de repo privé is, moet je server eenmalig inloggen bij ghcr.io:
 
 ```bash
-echo <github-token-met-read:packages> | docker login ghcr.io -u iitssjstn --password-stdin
+docker login ghcr.io -u iitssjstn
 ```
+
+Gebruik als wachtwoord een GitHub-token met alleen `read:packages`.
+
+## Instellingen
+
+Alle instellingen zijn environment variables in je compose. Geen ervan is geheim.
+
+| Variabele | Standaard | Betekenis |
+|---|---|---|
+| `LIVE_TRADING` | `false` | `true` plaatst echte orders (vereist Bitvavo-keys in het dashboard) |
+| `PAIRS` | `BTC/EUR,ETH/EUR` | Komma-gescheiden pairs |
+| `TIMEFRAME` | `1h` | Candle-timeframe |
+| `CHECK_INTERVAL_MINUTES` | `15` | Hoe vaak de bot checkt |
+| `EMA_FAST` / `EMA_SLOW` | `12` / `26` | EMA-periodes |
+| `RSI_PERIOD` / `RSI_MAX_ENTRY` | `14` / `70` | Geen aankoop boven deze RSI |
+| `STAKE_EUR` | `25` | Inzet per trade |
+| `MAX_OPEN_TRADES` | `2` | Maximaal gelijktijdige posities |
+| `STOP_LOSS_PCT` / `TAKE_PROFIT_PCT` | `3` / `6` | Exit-percentages |
+| `MAX_DAILY_LOSS_EUR` | `20` | Daarna geen nieuwe trades tot morgen |
+| `FEE_PCT` | `0.25` | Fee voor paper trading |
+| `PAPER_START_BALANCE_EUR` | `500` | Startsaldo paper trading |
+| `AI_PROVIDER` | `none` | `none`, `gemini` of `openai` |
+| `AI_MODEL` | leeg | Leeg = standaardmodel van de provider |
+| `AI_BASE_URL` | Groq | Alleen voor `openai` |
+| `AI_FAIL_MODE` | `reject` | Wat te doen bij een AI-fout |
+| `PORT` | `3000` | Poort in de container |
 
 ## Live trading
 
 Doe dit pas na weken paper trading met resultaten waar je tevreden over bent.
 
 1. Maak bij Bitvavo een API-key aan met **alleen handelsrechten, zonder opnamerechten**, en koppel hem aan het IP-adres van je server.
-2. Zet `BITVAVO_API_KEY`, `BITVAVO_API_SECRET` en `LIVE_TRADING=true` in je `.env`.
-3. Begin met een kleine `STAKE_EUR` en een lage `MAX_DAILY_LOSS_EUR`.
+2. Vul de key en het secret in via het dashboard.
+3. Zet `LIVE_TRADING=true` in je compose en herstart de container.
+4. Begin met een kleine `STAKE_EUR` en een lage `MAX_DAILY_LOSS_EUR`.
 
 Paper en live hebben elk een eigen state-bestand (`data/state-paper.json` en `data/state-live.json`), dus ze lopen nooit door elkaar.
 
@@ -92,6 +137,8 @@ Let op: stop-loss en take-profit worden per check bekeken, niet direct op de exc
 - Saldo (paper), resultaat totaal en vandaag, winrate
 - Open posities en afgesloten trades
 - Elke AI-beslissing met de reden
+- API-keys invullen, vervangen of verwijderen
+- Wachtwoord wijzigen
 - **Nu checken** voert direct een check uit
 - **Pauzeren** stopt nieuwe trades; open posities worden nog wel bewaakt
 
@@ -99,8 +146,7 @@ Let op: stop-loss en take-profit worden per check bekeken, niet direct op de exc
 
 ```bash
 npm install
-cp .env.example .env
-npm start
+npm start      # open http://localhost:3000, setup-code staat in de terminal
 npm test
 ```
 

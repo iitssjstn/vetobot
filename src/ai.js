@@ -93,6 +93,10 @@ export async function askVeto(cfg, context) {
   if (cfg.provider === 'none') {
     return { decision: 'approve', reason: 'Geen AI ingesteld, signaal automatisch goedgekeurd', provider: 'none' };
   }
+  if (!cfg.apiKey) {
+    const decision = cfg.failMode === 'approve' ? 'approve' : 'reject';
+    return { decision, reason: `Geen AI-key ingesteld in het dashboard, fail-mode "${decision}"`, provider: cfg.provider, error: true };
+  }
   const prompt = buildPrompt(context);
   try {
     const text = cfg.provider === 'gemini' ? await askGemini(cfg, prompt) : await askOpenAICompatible(cfg, prompt);

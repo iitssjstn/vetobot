@@ -11,11 +11,12 @@ import { checkEntry } from './risk.js';
 //   2. Geen positie en een koopsignaal? Dan eerst de harde risicoregels, daarna de AI-veto.
 
 export class Bot {
-  constructor({ config, exchange, broker, store, log = console }) {
+  constructor({ config, exchange, broker, store, secrets, log = console }) {
     this.config = config;
     this.ex = exchange;
     this.broker = broker;
     this.store = store;
+    this.secrets = secrets;
     this.log = log;
     this.lastSignalCandle = {};
     this.lastTickAt = null;
@@ -77,14 +78,14 @@ export class Bot {
     if (this.lastSignalCandle[pair] === lastCandleTs) return;
     this.lastSignalCandle[pair] = lastCandleTs;
 
-    const blocked = checkEntry(this.store, this.config, this.broker.mode);
+    const blocked = checkEntry(this.store, this.config, this.broker.mode, this.ex);
     if (blocked) {
       this.store.addDecision({ pair, signal: 'buy', outcome: 'blocked', reason: blocked, indicators: result.indicators });
       this.log.info(`[${pair}] Koopsignaal geblokkeerd door risicoregels: ${blocked}`);
       return;
     }
 
-    const veto = await askVeto(this.config.ai, {
+    const veto = await askVeto({ ...this.config.ai, apiKey: this.secrets?.get('aiApiKey') }, {
       pair,
       timeframe,
       indicators: result.indicators,

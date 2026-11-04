@@ -1,15 +1,21 @@
 import ccxt from 'ccxt';
 
 // Wrapper rond ccxt voor Bitvavo. Marktdata is publiek en werkt zonder keys.
+// De keys komen uit de versleutelde SecretStore en worden bijgewerkt zodra je ze
+// in het dashboard wijzigt.
 
-export function createExchange(cfg) {
-  const ex = new ccxt.bitvavo({
-    apiKey: cfg.apiKey || undefined,
-    secret: cfg.secret || undefined,
-    enableRateLimit: true,
-  });
+export function createExchange(secrets) {
+  const ex = new ccxt.bitvavo({ enableRateLimit: true });
+  const apply = () => {
+    ex.apiKey = secrets.get('bitvavoApiKey') || undefined;
+    ex.secret = secrets.get('bitvavoApiSecret') || undefined;
+  };
+  apply();
+  secrets.onChange(apply);
   return ex;
 }
+
+export const hasTradingKeys = (ex) => Boolean(ex.apiKey && ex.secret);
 
 // Haalt candles op en laat de laatste (nog niet gesloten) candle weg.
 export async function fetchClosedCandles(ex, pair, timeframe, limit = 200) {
@@ -55,6 +61,10 @@ export class LiveBroker {
     this.mode = 'live';
   }
 
+  #requireKeys() {
+    if (!hasTradingKeys(this.ex)) throw new Error('Bitvavo-keys ontbreken, vul ze in via het dashboard');
+  }
+
   async #settle(order, pair) {
     // Market orders zijn meestal direct gevuld; zo niet, haal de order opnieuw op.
     let o = order;
@@ -68,6 +78,7 @@ export class LiveBroker {
   }
 
   async buy(pair, stakeEur) {
+    this.#requireKeys();
     await this.ex.loadMarkets();
     let order;
     if (this.ex.has.createMarketBuyOrderWithCost) {
@@ -81,6 +92,7 @@ export class LiveBroker {
   }
 
   async sell(pair, amount) {
+    this.#requireKeys();
     await this.ex.loadMarkets();
     const amt = Number(this.ex.amountToPrecision(pair, amount));
     const order = await this.ex.createMarketOrder(pair, 'sell', amt);

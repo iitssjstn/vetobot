@@ -1,4 +1,5 @@
-// Alle instellingen komen uit environment variables (zie .env.example).
+// Instellingen komen uit environment variables (zie README).
+// API-keys staan hier bewust NIET in: die vul je in via het dashboard (zie secrets.js).
 
 const num = (name, def) => {
   const v = process.env[name];
@@ -15,14 +16,8 @@ const bool = (name, def) => {
 };
 
 export const config = {
-  // Handelsmodus: paper is de standaard. Live vereist LIVE_TRADING=true én API-keys.
+  // Handelsmodus: paper is de standaard. Live vereist LIVE_TRADING=true én Bitvavo-keys in het dashboard.
   liveTrading: bool('LIVE_TRADING', false),
-
-  exchange: {
-    id: 'bitvavo',
-    apiKey: str('BITVAVO_API_KEY', ''),
-    secret: str('BITVAVO_API_SECRET', ''),
-  },
 
   pairs: str('PAIRS', 'BTC/EUR,ETH/EUR')
     .split(',')
@@ -56,7 +51,6 @@ export const config = {
     // none | gemini | openai (OpenAI-compatibel: Groq, OpenRouter, Ollama, ...)
     provider: str('AI_PROVIDER', 'none'),
     model: str('AI_MODEL', ''),
-    apiKey: str('AI_API_KEY', ''),
     baseUrl: str('AI_BASE_URL', 'https://api.groq.com/openai/v1'),
     // Wat te doen als de AI niet reageert of onzin terugstuurt: reject (veilig) of approve.
     failMode: str('AI_FAIL_MODE', 'reject'),
@@ -65,7 +59,6 @@ export const config = {
 
   server: {
     port: num('PORT', 3000),
-    password: str('DASHBOARD_PASSWORD', ''),
   },
 
   dataDir: str('DATA_DIR', './data'),
@@ -73,14 +66,8 @@ export const config = {
 
 export function validateConfig() {
   const errors = [];
-  if (config.liveTrading && (!config.exchange.apiKey || !config.exchange.secret)) {
-    errors.push('LIVE_TRADING=true maar BITVAVO_API_KEY of BITVAVO_API_SECRET ontbreekt.');
-  }
   if (!['none', 'gemini', 'openai'].includes(config.ai.provider)) {
     errors.push(`Onbekende AI_PROVIDER "${config.ai.provider}" (kies none, gemini of openai).`);
-  }
-  if (config.ai.provider !== 'none' && !config.ai.apiKey) {
-    errors.push('AI_PROVIDER is ingesteld maar AI_API_KEY ontbreekt.');
   }
   if (config.strategy.emaFast >= config.strategy.emaSlow) {
     errors.push('EMA_FAST moet kleiner zijn dan EMA_SLOW.');

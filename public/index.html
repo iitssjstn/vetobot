@@ -31,6 +31,7 @@
   .tile .k { color: var(--muted); font-size: 12px; }
   .tile .v { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow-x: auto; }
+  .pad { padding: 16px; }
   table { width: 100%; border-collapse: collapse; font-size: 13.5px; font-variant-numeric: tabular-nums; }
   th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { color: var(--muted); font-weight: 500; font-size: 12px; }
@@ -38,22 +39,80 @@
   .up { color: var(--up); } .down { color: var(--down); } .warnc { color: var(--warn); }
   .empty { padding: 14px; color: var(--muted); }
   .banner { margin-top: 16px; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--warn); color: var(--warn); }
-  button { font: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line);
+  button { font: inherit; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line);
     background: var(--card); color: var(--text); cursor: pointer; }
   button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .6; cursor: default; }
   .reason { max-width: 420px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+  /* Formulieren */
+  .auth { max-width: 380px; margin: 10vh auto 0; }
+  .auth h1 { margin-bottom: 4px; }
+  .auth p { color: var(--muted); margin: 0 0 18px; font-size: 14px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
+  input { width: 100%; font: inherit; padding: 9px 11px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--text); }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .form-actions { margin-top: 16px; display: flex; gap: 8px; align-items: center; }
+  .error { color: var(--down); font-size: 13px; margin-top: 10px; min-height: 1em; }
+  .ok { color: var(--up); font-size: 13px; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .keys { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 4px 16px; }
+  .status { font-size: 12px; margin-left: 6px; }
+  code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px;
+    background: var(--bg); padding: 1px 5px; border-radius: 5px; border: 1px solid var(--line); }
+  [hidden] { display: none !important; }
 </style>
 </head>
 <body>
-<main>
+
+<!-- First-run setup -->
+<main id="view-setup" hidden>
+  <form class="auth card pad" id="setup-form">
+    <h1>vetobot instellen</h1>
+    <p>Maak het admin-account aan. De setup-code vind je in de logs van de container:
+      <code>docker compose logs vetobot</code></p>
+    <label for="s-code">Setup-code</label>
+    <input id="s-code" autocomplete="off" required>
+    <label for="s-user">Gebruikersnaam</label>
+    <input id="s-user" autocomplete="username" required minlength="3" maxlength="32">
+    <label for="s-pass">Wachtwoord</label>
+    <input id="s-pass" type="password" autocomplete="new-password" required minlength="10">
+    <div class="hint">Minimaal 10 tekens.</div>
+    <label for="s-pass2">Wachtwoord herhalen</label>
+    <input id="s-pass2" type="password" autocomplete="new-password" required minlength="10">
+    <div class="form-actions"><button class="primary" type="submit">Account aanmaken</button></div>
+    <div class="error" id="setup-error"></div>
+  </form>
+</main>
+
+<!-- Login -->
+<main id="view-login" hidden>
+  <form class="auth card pad" id="login-form">
+    <h1>vetobot</h1>
+    <p>Log in om verder te gaan.</p>
+    <label for="l-user">Gebruikersnaam</label>
+    <input id="l-user" autocomplete="username" required>
+    <label for="l-pass">Wachtwoord</label>
+    <input id="l-pass" type="password" autocomplete="current-password" required>
+    <div class="form-actions"><button class="primary" type="submit">Inloggen</button></div>
+    <div class="error" id="login-error"></div>
+  </form>
+</main>
+
+<!-- Dashboard -->
+<main id="view-app" hidden>
   <header>
     <div>
       <h1>vetobot <span id="mode" class="badge"></span></h1>
       <div class="meta" id="meta"></div>
     </div>
-    <div>
+    <div class="actions">
       <button id="tick">Nu checken</button>
       <button id="pause">Pauzeren</button>
+      <button id="logout">Uitloggen</button>
     </div>
   </header>
 
@@ -68,7 +127,44 @@
 
   <h2>Afgesloten trades</h2>
   <div class="card" id="trades"></div>
+
+  <h2>API-keys</h2>
+  <form class="card pad" id="keys-form">
+    <div class="meta" style="margin-bottom:6px">Keys worden versleuteld opgeslagen op de server en zijn hierna nooit meer volledig zichtbaar.
+      Laat een veld leeg om de huidige key te houden.</div>
+    <div class="keys">
+      <div>
+        <label for="k-bv">Bitvavo API-key <span class="status" id="st-bitvavoApiKey"></span></label>
+        <input id="k-bv" data-name="bitvavoApiKey" type="password" autocomplete="off">
+      </div>
+      <div>
+        <label for="k-bvs">Bitvavo API-secret <span class="status" id="st-bitvavoApiSecret"></span></label>
+        <input id="k-bvs" data-name="bitvavoApiSecret" type="password" autocomplete="off">
+      </div>
+      <div>
+        <label for="k-ai">AI API-key <span class="status" id="st-aiApiKey"></span></label>
+        <input id="k-ai" data-name="aiApiKey" type="password" autocomplete="off">
+      </div>
+    </div>
+    <div class="hint">Bitvavo: maak een key met alleen handelsrechten, zonder opnamerechten, gekoppeld aan het IP van je server.</div>
+    <div class="form-actions">
+      <button class="primary" type="submit">Opslaan</button>
+      <button type="button" id="keys-clear">Alle keys verwijderen</button>
+      <span id="keys-msg"></span>
+    </div>
+  </form>
+
+  <h2>Wachtwoord wijzigen</h2>
+  <form class="card pad" id="pw-form" style="max-width:420px">
+    <label for="p-cur">Huidig wachtwoord</label>
+    <input id="p-cur" type="password" autocomplete="current-password" required>
+    <label for="p-new">Nieuw wachtwoord</label>
+    <input id="p-new" type="password" autocomplete="new-password" required minlength="10">
+    <div class="form-actions"><button type="submit">Wijzigen</button></div>
+    <div class="error" id="pw-error"></div>
+  </form>
 </main>
+
 <script>
 const $ = (id) => document.getElementById(id);
 const eur = (n) => n == null ? '–' : new Intl.NumberFormat('nl-NL', { style: 'currency', currency: 'EUR' }).format(n);
@@ -77,6 +173,97 @@ const cls = (n) => n > 0 ? 'up' : n < 0 ? 'down' : '';
 const time = (s) => s ? new Date(s).toLocaleString('nl-NL', { dateStyle: 'short', timeStyle: 'short' }) : '–';
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+async function api(url, body) {
+  const opts = body === undefined ? {} : {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  };
+  const res = await fetch(url, opts);
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && !url.includes('/auth/')) { show('login'); throw new Error('Niet ingelogd'); }
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+let pollTimer;
+function show(view) {
+  for (const v of ['setup', 'login', 'app']) $(`view-${v}`).hidden = v !== view;
+  clearInterval(pollTimer);
+  if (view === 'app') {
+    load(); loadKeys();
+    pollTimer = setInterval(() => load().catch(() => {}), 30000);
+  }
+}
+
+async function init() {
+  const s = await api('api/auth/status');
+  show(s.setupRequired ? 'setup' : s.loggedIn ? 'app' : 'login');
+}
+
+// --- Setup & login ----------------------------------------------------------
+$('setup-form').onsubmit = async (e) => {
+  e.preventDefault();
+  $('setup-error').textContent = '';
+  if ($('s-pass').value !== $('s-pass2').value) { $('setup-error').textContent = 'Wachtwoorden komen niet overeen'; return; }
+  try {
+    await api('api/auth/setup', { code: $('s-code').value, username: $('s-user').value, password: $('s-pass').value });
+    show('app');
+  } catch (err) { $('setup-error').textContent = err.message; }
+};
+
+$('login-form').onsubmit = async (e) => {
+  e.preventDefault();
+  $('login-error').textContent = '';
+  try {
+    await api('api/auth/login', { username: $('l-user').value, password: $('l-pass').value });
+    $('l-pass').value = '';
+    show('app');
+  } catch (err) { $('login-error').textContent = err.message; }
+};
+
+$('logout').onclick = async () => { await api('api/auth/logout', {}).catch(() => {}); show('login'); };
+
+$('pw-form').onsubmit = async (e) => {
+  e.preventDefault();
+  $('pw-error').textContent = '';
+  try {
+    await api('api/auth/password', { current: $('p-cur').value, next: $('p-new').value });
+    $('p-cur').value = $('p-new').value = '';
+    show('login');
+    $('login-error').textContent = 'Wachtwoord gewijzigd, log opnieuw in.';
+  } catch (err) { $('pw-error').textContent = err.message; }
+};
+
+// --- API-keys ----------------------------------------------------------------
+function renderKeyStatus(status) {
+  for (const [name, s] of Object.entries(status)) {
+    $(`st-${name}`).innerHTML = s.set ? `<span class="ok">ingesteld ${esc(s.hint)}</span>` : '<span class="warnc">niet ingesteld</span>';
+  }
+}
+async function loadKeys() { renderKeyStatus(await api('api/settings/keys')); }
+
+$('keys-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const updates = {};
+  for (const input of e.target.querySelectorAll('input[data-name]')) {
+    if (input.value.trim()) updates[input.dataset.name] = input.value.trim();
+  }
+  if (!Object.keys(updates).length) { $('keys-msg').textContent = 'Niets ingevuld.'; return; }
+  try {
+    renderKeyStatus(await api('api/settings/keys', updates));
+    e.target.reset();
+    $('keys-msg').innerHTML = '<span class="ok">Opgeslagen.</span>';
+    load();
+  } catch (err) { $('keys-msg').innerHTML = `<span class="down">${esc(err.message)}</span>`; }
+};
+
+$('keys-clear').onclick = async () => {
+  if (!confirm('Alle API-keys verwijderen?')) return;
+  renderKeyStatus(await api('api/settings/keys', { bitvavoApiKey: null, bitvavoApiSecret: null, aiApiKey: null }));
+  $('keys-msg').innerHTML = '<span class="ok">Verwijderd.</span>';
+  load();
+};
+
+// --- Dashboard ---------------------------------------------------------------
 function table(rows, cols, emptyText) {
   if (!rows.length) return `<div class="empty">${emptyText}</div>`;
   return `<table><thead><tr>${cols.map(c => `<th>${c[0]}</th>`).join('')}</tr></thead><tbody>` +
@@ -85,8 +272,7 @@ function table(rows, cols, emptyText) {
 
 let state;
 async function load() {
-  const res = await fetch('api/state');
-  state = await res.json();
+  state = await api('api/state');
   const s = state;
 
   $('mode').textContent = s.mode.toUpperCase();
@@ -96,13 +282,13 @@ async function load() {
 
   let banner = '';
   if (s.halted) banner += `<div class="banner">Nieuwe trades gepauzeerd: ${esc(s.halted.reason)}</div>`;
+  if (s.mode === 'live' && !s.bitvavoKeysSet) banner += '<div class="banner">Live-modus, maar de Bitvavo-keys zijn niet ingesteld. Vul ze hieronder in.</div>';
+  if (s.aiProvider !== 'none' && !s.aiKeySet) banner += `<div class="banner">AI-provider "${esc(s.aiProvider)}" is gekozen, maar er is geen AI-key ingesteld. Koopsignalen worden afgewezen.</div>`;
   if (s.lastError) banner += `<div class="banner">Laatste fout (${time(s.lastError.at)}, ${esc(s.lastError.pair)}): ${esc(s.lastError.message)}</div>`;
   $('banner').innerHTML = banner;
 
   const tiles = [];
-  if (s.mode === 'paper') {
-    tiles.push(['Paper-saldo', eur(s.balanceEur)]);
-  }
+  if (s.mode === 'paper') tiles.push(['Paper-saldo', eur(s.balanceEur)]);
   tiles.push(
     ['Resultaat totaal', `<span class="${cls(s.stats.realizedEur)}">${eur(s.stats.realizedEur)}</span>`],
     ['Resultaat vandaag', `<span class="${cls(s.stats.realizedTodayEur)}">${eur(s.stats.realizedTodayEur)}</span>`],
@@ -139,11 +325,13 @@ async function load() {
   ], 'Nog geen afgesloten trades.');
 }
 
-$('tick').onclick = async () => { $('tick').disabled = true; await fetch('api/tick', { method: 'POST' }); await load(); $('tick').disabled = false; };
-$('pause').onclick = async () => { await fetch(state?.halted?.manual ? 'api/resume' : 'api/pause', { method: 'POST' }); load(); };
+$('tick').onclick = async () => {
+  $('tick').disabled = true;
+  try { await api('api/tick', {}); await load(); } finally { $('tick').disabled = false; }
+};
+$('pause').onclick = async () => { await api(state?.halted?.manual ? 'api/resume' : 'api/pause', {}); load(); };
 
-load().catch(e => $('banner').innerHTML = `<div class="banner">Kan status niet laden: ${esc(e.message)}</div>`);
-setInterval(() => load().catch(() => {}), 30000);
+init().catch((e) => { document.body.innerHTML = `<main><div class="banner">Kan vetobot niet bereiken: ${esc(e.message)}</div></main>`; });
 </script>
 </body>
 </html>

@@ -1,45 +1,117 @@
 import express from 'express';
-import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { COOKIE, readCookie } from './auth.js';
+import { SECRET_NAMES } from './secrets.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
-function basicAuth(password) {
-  const expected = Buffer.from(password);
-  return (req, res, next) => {
-    const header = req.headers.authorization || '';
-    const [scheme, encoded] = header.split(' ');
-    if (scheme === 'Basic' && encoded) {
-      const pass = Buffer.from(encoded, 'base64').toString().split(':').slice(1).join(':');
-      const given = Buffer.from(pass);
-      if (given.length === expected.length && crypto.timingSafeEqual(given, expected)) return next();
-    }
-    res.set('WWW-Authenticate', 'Basic realm="vetobot"').status(401).send('Inloggen vereist');
-  };
-}
-
-export function startServer({ config, bot, store, log = console }) {
+export function startServer({ config, bot, store, secrets, auth, log = console }) {
   const app = express();
   app.disable('x-powered-by');
-  app.use(express.json());
+  // Achter Nginx Proxy Manager: echte client-IP voor de login-blokkade.
+  app.set('trust proxy', 'loopback, linklocal, uniquelocal');
+  app.use(express.json({ limit: '20kb' }));
+  app.use((_req, res, next) => {
+    res.set({
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY',
+      'Referrer-Policy': 'no-referrer',
+      'Cache-Control': 'no-store',
+    });
+    next();
+  });
 
+  const setCookie = (req, res, token) => {
+    const secure = req.secure ? '; Secure' : '';
+    res.set('Set-Cookie', `${COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}${secure}`);
+  };
+  const clearCookie = (res) => res.set('Set-Cookie', `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
+  const fail = (res, err, status = 400) => res.status(status).json({ error: err.message });
+
+  // --- Openbaar -------------------------------------------------------------
   app.get('/healthz', (_req, res) => res.json({ ok: true, lastTickAt: bot.lastTickAt }));
-
-  if (config.server.password) app.use(basicAuth(config.server.password));
-  else log.warn('DASHBOARD_PASSWORD is niet ingesteld: het dashboard is zonder wachtwoord bereikbaar.');
-
   app.use(express.static(publicDir));
+
+  app.get('/api/auth/status', (req, res) => {
+    const user = auth.verify(readCookie(req, COOKIE));
+    res.json({ setupRequired: !auth.isSetUp(), loggedIn: Boolean(user), username: user });
+  });
+
+  app.post('/api/auth/setup', (req, res) => {
+    try {
+      const token = auth.setup(req.body ?? {}, req.ip);
+      log.info(`Admin-account "${auth.data.username}" aangemaakt.`);
+      setCookie(req, res, token);
+      res.json({ ok: true });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  app.post('/api/auth/login', (req, res) => {
+    try {
+      setCookie(req, res, auth.login(req.body ?? {}, req.ip));
+      res.json({ ok: true });
+    } catch (err) {
+      fail(res, err, 401);
+    }
+  });
+
+  // --- Alles hieronder vereist een ingelogde sessie ------------------------
+  app.use('/api', (req, res, next) => {
+    const user = auth.verify(readCookie(req, COOKIE));
+    if (!user) return res.status(401).json({ error: 'Niet ingelogd' });
+    // Extra CSRF-bescherming naast SameSite=Strict.
+    if (req.method !== 'GET' && !req.is('application/json')) {
+      return res.status(415).json({ error: 'Content-Type moet application/json zijn' });
+    }
+    req.user = user;
+    next();
+  });
+
+  app.post('/api/auth/logout', (req, res) => {
+    auth.logout(readCookie(req, COOKIE));
+    clearCookie(res);
+    res.json({ ok: true });
+  });
+
+  app.post('/api/auth/password', (req, res) => {
+    try {
+      auth.changePassword(req.body ?? {}, req.ip);
+      clearCookie(res);
+      res.json({ ok: true });
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  app.get('/api/settings/keys', (_req, res) => res.json(secrets.status()));
+
+  app.post('/api/settings/keys', (req, res) => {
+    try {
+      const updates = {};
+      for (const name of SECRET_NAMES) if (name in (req.body ?? {})) updates[name] = req.body[name];
+      secrets.update(updates);
+      log.info(`API-keys bijgewerkt door ${req.user}: ${Object.keys(updates).join(', ') || 'geen'}`);
+      res.json(secrets.status());
+    } catch (err) {
+      fail(res, err);
+    }
+  });
 
   app.get('/api/state', (_req, res) => {
     const s = store.state;
     const closed = s.trades;
     const wins = closed.filter((t) => t.pnlEur > 0).length;
+    const keys = secrets.status();
     res.json({
       mode: bot.broker.mode,
       pairs: config.pairs,
       timeframe: config.timeframe,
       aiProvider: config.ai.provider,
+      aiKeySet: keys.aiApiKey.set,
+      bitvavoKeysSet: keys.bitvavoApiKey.set && keys.bitvavoApiSecret.set,
       risk: config.risk,
       balanceEur: s.balanceEur,
       startBalanceEur: s.startBalanceEur,
