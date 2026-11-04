@@ -65,6 +65,10 @@ export const config = {
     // AI laten beslissen over winst nemen vanaf zoveel % winst (0 = uit), hooguit eens per zoveel minuten per positie.
     aiExitMinPct: num('AI_EXIT_MIN_PCT', 1),
     aiExitEveryMin: num('AI_EXIT_EVERY_MIN', 3),
+    // Winst herinvesteren: zoveel % van de gerealiseerde winst gaat naar de inzet per trade (0 = uit).
+    reinvestPct: num('REINVEST_PCT', 0),
+    // Maximale inzet per trade als de inzet meegroeit met de winst (0 = geen maximum).
+    maxStakeEur: num('MAX_STAKE_EUR', 0),
   },
 
   paper: {

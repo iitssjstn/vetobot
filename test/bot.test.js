@@ -609,3 +609,30 @@ test('AI-winstcheck staat uit zonder AI-key of met drempel 0', async () => {
   assert.equal(aiCalls, 0, 'drempel 0 = uit');
   assert.ok(bot.store.state.positions['BTC/EUR']);
 });
+
+test('winst herinvesteren: inzet groeit mee met de winst, nooit onder je eigen inzet', async () => {
+  const { bot } = setup({});
+  await bot.setRisk({ stakeEur: 25, maxOpenTrades: 2, reinvestPct: 50, maxStakeEur: 0 });
+  const trade = (pnlEur) => bot.store.addTrade({ pair: 'BTC/EUR', pnlEur, closedAt: new Date().toISOString() });
+  assert.equal(bot.stakeInfo().effective, 25);
+  trade(10); // € 10 winst × 50% ÷ 2 trades = € 2,50 extra
+  assert.equal(bot.stakeInfo().effective, 27.5);
+  assert.equal(bot.entryRisk().stakeEur, 27.5);
+  trade(-30); // netto € 20 verlies: terug naar de eigen inzet, niet eronder
+  assert.equal(bot.stakeInfo().effective, 25);
+  trade(100); // netto € 80 winst → € 20 extra, maar maximaal € 40
+  await bot.setRisk({ maxStakeEur: 40 });
+  assert.equal(bot.stakeInfo().effective, 40);
+  assert.equal(bot.stakeInfo().capped, true);
+  await bot.setRisk({ reinvestPct: 0 });
+  assert.equal(bot.stakeInfo().effective, 25, 'uit = vaste inzet');
+});
+
+test('winst herinvesteren: de grotere inzet wordt ook echt gebruikt bij kopen', async () => {
+  const { bot, ex } = setup({});
+  await bot.setRisk({ stakeEur: 25, maxOpenTrades: 2, reinvestPct: 100, cooldownMinutes: 0 });
+  bot.store.addTrade({ pair: 'ETH/EUR', pnlEur: 10, closedAt: new Date().toISOString() });
+  await openPaperPosition(bot, ex);
+  assert.equal(bot.store.state.positions['BTC/EUR'].costEur, 30);
+  assert.ok(bot.activity.some((a) => /waarvan € 5,00 herinvesteerde winst/.test(a.message)));
+});

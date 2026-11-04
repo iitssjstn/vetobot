@@ -25,7 +25,7 @@ const { user: piet } = users.register({ code: users.createInvite(admin.id, 'Piet
 users.createInvite(admin.id, 'Klaas');
 const quiet = { info() {}, warn() {}, error() {} };
 const manager = new BotManager({ config, users, log: quiet, shared: new SharedMarket(ex), makePrivateExchange: () => ({}) });
-manager.startAll();
+manager.startAll(); for (const c of manager.contexts.values()) { c.bot.store.addTrade({ pair: 'ETH/EUR', pnlEur: 18, pnlPct: 4, closedAt: new Date().toISOString() }); }
 manager.get(piet.id).settings.setFollow(true);
 await new Promise((r) => setTimeout(r, 300));
 await manager.get(admin.id).bot.tick();

@@ -583,6 +583,8 @@
             <div><label for="r-watch">Posities bewaken elke (sec, 0 = alleen bij check)</label><input id="r-watch" type="number" min="0" max="3600" step="1" required></div>
             <div><label for="r-aiexit">AI mag winst nemen vanaf (%, 0 = uit)</label><input id="r-aiexit" type="number" min="0" max="1000" step="any" required></div>
             <div><label for="r-aievery">AI-winstcheck hooguit elke (min)</label><input id="r-aievery" type="number" min="0.5" max="1440" step="any" required></div>
+            <div><label for="r-reinvest">Winst herinvesteren (%, 0 = uit)</label><input id="r-reinvest" type="number" min="0" max="100" step="any" required></div>
+            <div><label for="r-maxstake">Max. inzet per trade (€, 0 = geen)</label><input id="r-maxstake" type="number" min="0" step="any" required></div>
             <div id="r-pass-wrap"><label for="r-pass">Je wachtwoord (verplicht in live)</label><input id="r-pass" type="password" autocomplete="current-password"></div>
           </div>
           <div class="help" id="risk-help"></div>
@@ -1085,7 +1087,7 @@ async function load() {
       : (s.risk.maxDailyLossEur ? `daglimiet −${eur2(s.risk.maxDailyLossEur)}` : 'daglimiet uit'), 'var(--info)', 'target', 'today'],
     ['Open posities', `${s.positions.length} / ${s.risk.maxOpenTrades}`,
       hasOpen ? `${sign(o.pnlEur)} (${o.costEur ? pct((o.pnlEur / o.costEur) * 100) : '–'}) op ${eur2(o.costEur)}`
-        : `${eur2(s.risk.stakeEur)} per trade`, 'var(--warn)', 'brief', 'open'],
+        : `${eur2(s.stake?.effective ?? s.risk.stakeEur)} per trade${s.stake?.extra > 0 ? ` (+${eur2(s.stake.extra)} uit winst)` : ''}`, 'var(--warn)', 'brief', 'open'],
     ['Winrate', s.stats.winRate == null ? '–' : `${s.stats.winRate.toFixed(0)}%`, s.stats.totalTrades ? 'van afgesloten trades' : 'nog geen afgesloten trades', 'var(--up)', 'pulse'],
     ['AI goed / af', `${s.stats.approved} / ${s.stats.vetoed}`, `${s.stats.blocked} geblokkeerd door regels`, 'var(--accent)', 'cpu'],
   );
@@ -1335,6 +1337,8 @@ function renderSettings() {
     $('r-watch').value = s.risk.watchSeconds ?? 0;
     $('r-aiexit').value = s.risk.aiExitMinPct ?? 0;
     $('r-aievery').value = s.risk.aiExitEveryMin || 3;
+    $('r-reinvest').value = s.risk.reinvestPct ?? 0;
+    $('r-maxstake').value = s.risk.maxStakeEur ?? 0;
     riskHelp();
   }
   if (!document.activeElement?.closest('#sched-form') && !schedDirty) {
@@ -1607,20 +1611,34 @@ let riskDirty = false;
 function riskHelp() {
   const stake = Number($('r-stake').value), max = Number($('r-max').value), sl = Number($('r-sl').value);
   const tp = Number($('r-tp').value), daily = Number($('r-daily').value);
-  const total = stake * max;
+  // Winst herinvesteren: dezelfde berekening als de bot, met de waarden uit het formulier.
+  const reinvest = Number($('r-reinvest').value), maxStake = Number($('r-maxstake').value);
+  const profit = state?.stake?.profitEur ?? 0;
+  let eff = stake + (reinvest > 0 && profit > 0 ? profit * reinvest / 100 / Math.max(1, max) : 0);
+  if (maxStake > 0 && eff > maxStake) eff = Math.max(stake, maxStake);
+  eff = Math.floor(eff * 100) / 100;
+  const total = eff * max;
   const parts = [
-    `Elke trade is precies ${eur2(stake)}, en per coin staat er hooguit één positie open.`,
+    Number($('r-reinvest').value) > 0 ? `Je basisinzet is ${eur2(stake)} per trade, en per coin staat er hooguit één positie open.`
+      : `Elke trade is precies ${eur2(stake)}, en per coin staat er hooguit één positie open.`,
     (() => {
       const budget = state?.mode === 'live' ? Number($('r-budget').value) : 0;
       const capped = budget > 0 && budget < total;
-      return `Maximaal tegelijk ingezet: <b>${eur2(capped ? budget : total)}</b> (${max} × ${eur2(stake)}${capped ? `, begrensd door je live budgetplafond van ${eur2(budget)}` : ''}).` +
+      return `Maximaal tegelijk ingezet: <b>${eur2(capped ? budget : total)}</b> (${max} × ${eur2(eff)}${capped ? `, begrensd door je live budgetplafond van ${eur2(budget)}` : ''}).` +
         (state?.mode !== 'live' && Number($('r-budget').value) > 0 ? ` Live begrenst het budgetplafond dit op ${eur2(Math.min(total, Number($('r-budget').value)))}.` : '');
     })(),
     Number($('r-atr').value) > 0 ? `De ATR-stop vervangt de vaste stop-loss: hij ligt op instapkoers − ${$('r-atr').value} × ATR, dus ruimer bij beweeglijke coins en krapper bij rustige.`
-    : sl > 0 ? `Verlies per trade bij de stop-loss: ongeveer ${eur2(stake * sl / 100)}, plus fees.`
+    : sl > 0 ? `Verlies per trade bij de stop-loss: ongeveer ${eur2(eff * sl / 100)}, plus fees.`
       : '<span class="warnc">Stop-loss staat uit: een positie wordt alleen verkocht bij een verkoopsignaal of take-profit.</span>',
   ];
   if (tp === 0) parts.push('<span class="muted">Take-profit staat uit.</span>');
+  if (reinvest > 0) {
+    parts.push(`<b>Winst herinvesteren:</b> ${String(reinvest).replace('.', ',')}% van je gerealiseerde winst gaat naar de inzet. ` +
+      (profit > 0 ? `Met ${eur2(profit)} winst tot nu toe wordt de volgende trade <b>${eur2(eff)}</b> (${eur2(stake)} + ${eur2(eff - stake)}).`
+        : `Nog geen winst om te herinvesteren, dus de inzet blijft ${eur2(stake)}.`) +
+      ` Verlies haalt de extra inzet weer weg, maar de inzet komt nooit onder ${eur2(stake)}.` +
+      (maxStake > 0 ? ` Maximaal ${eur2(maxStake)} per trade.` : ''));
+  }
   const watch = Number($('r-watch').value);
   parts.push(watch > 0 ? `Open posities worden elke ${Math.max(5, watch)} sec bewaakt, los van de check.`
     : `<span class="muted">Stops en take-profit worden alleen bij de check bekeken (elke ${fmtIv(state?.checkIntervalMinutes ?? 15)}).</span>`);
@@ -1647,7 +1665,8 @@ $('risk-form').onsubmit = async (e) => {
     stopLossPct: $('r-sl').value, takeProfitPct: $('r-tp').value, feePct: $('r-fee').value,
     cooldownMinutes: $('r-cool').value, slippagePct: $('r-slip').value, liveBudgetEur: $('r-budget').value,
     trailingStopPct: $('r-trail').value, atrStopMult: $('r-atr').value,
-    watchSeconds: $('r-watch').value, aiExitMinPct: $('r-aiexit').value, aiExitEveryMin: $('r-aievery').value };
+    watchSeconds: $('r-watch').value, aiExitMinPct: $('r-aiexit').value, aiExitEveryMin: $('r-aievery').value,
+    reinvestPct: $('r-reinvest').value, maxStakeEur: $('r-maxstake').value };
   if (state.mode === 'live' && !$('r-pass').value) { $('risk-msg').className = 'msg err'; $('risk-msg').textContent = 'Vul je wachtwoord in'; return; }
   try {
     await api('api/settings/risk', { risk, password: $('r-pass').value });
@@ -1754,6 +1773,8 @@ const HELP = {
   'st-open': 'Normaal kijkt de bot alleen naar gesloten candles, zodat een signaal vaststaat. Met <b>Ja</b> telt ook de candle die nog loopt mee: je ziet een kruising tot een hele candle eerder, maar hij kan binnen die candle ook weer verdwijnen, waardoor je vaker te vroeg koopt. Vooral nuttig bij lange candles (1 uur of meer). Een kortere candle-tijd bij Planning is meestal de betere manier om sneller te zijn.',
   'st-btc': 'Bijna alle coins bewegen mee met Bitcoin. Met dit filter koopt de bot geen andere coins zolang BTC onder zijn gemiddelde van 50 candles ligt. BTC zelf wordt niet gefilterd.',
   'r-trail': 'De stop schuift mee omhoog met de koers. Bij 2% verkoopt de bot zodra de koers 2% onder het hoogste punt sinds aankoop zakt. Zo laat je winnaars doorlopen en zet je winst vast. Werkt naast de stop-loss en take-profit; zet de take-profit op 0 om winnaars echt te laten lopen. 0 = uit.',
+  'r-reinvest': 'Laat je winst voor je werken. Zoveel procent van je gerealiseerde winst (alle gesloten trades in deze modus) wordt verdeeld over je maximaal aantal open trades en bij de inzet per trade opgeteld. Voorbeeld: € 25 inzet, 3 trades, € 30 winst en 100% → de volgende trades zijn € 35. Verlies je weer, dan krimpt het extra deel mee, maar nooit onder je eigen inzet. Let op: na verlies koop je nog steeds met minimaal je eigen inzet. In live geldt ook je budgetplafond en saldo. 0 = uit.',
+  'r-maxstake': 'Een plafond voor de inzet per trade als die meegroeit met je winst, zodat één trade nooit te groot wordt. 0 = geen maximum.',
   'r-watch': 'Normaal kijkt de bot alleen bij elke check naar je open posities. Met deze instelling haalt hij daartussen elke zoveel seconden de koers op en past hij stop-loss, trailing stop, take-profit en de AI-winstcheck direct toe. Zo pak je een piek voordat hij weer weg is. Kost geen AI en weinig verkeer (koersen zijn gedeeld en gecachet). Minimaal 5 seconden. <b>Gebruikelijk:</b> 10 tot 30. 0 = alleen bij de check.',
   'r-aiexit': 'Staat een positie minstens zoveel procent in de winst, dan vraagt de bot de AI of hij de winst nu moet nemen of nog moet vasthouden. De AI kijkt naar momentum, RSI, volume en hoe ver de koers onder de top zit, en neemt bij twijfel de winst. De AI kan alleen <b>eerder</b> verkopen: stop-loss, trailing stop en take-profit blijven gewoon gelden. Kies minstens 2× de fee (± 0,5%), anders blijft er na fees niets over. <b>Gebruikelijk:</b> 1 tot 2. 0 = uit.',
   'r-aievery': 'Hoe vaak de AI per positie opnieuw gevraagd mag worden. Lager = sneller reageren, maar meer AI-calls (let op de limieten van gratis providers zoals Groq). <b>Gebruikelijk:</b> 2 tot 5 minuten.',

@@ -196,6 +196,7 @@ export function createApp({ users, manager, log = console }) {
       aiChain: bot.aiChain().map((c) => ({ slot: c.slot, label: aiLabel(c), keySet: Boolean(c.apiKey), keyFrom: c.keyFrom })),
       bitvavoKeysSet: keys.bitvavoApiKey.set && keys.bitvavoApiSecret.set,
       risk: bot.risk,
+      stake: bot.stakeInfo(),
       riskLimits: RISK_LIMITS,
       strategy: bot.strategy,
       strategyLimits: STRATEGY_LIMITS,

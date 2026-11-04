@@ -26,6 +26,8 @@ export const RISK_LIMITS = {
   watchSeconds: [0, 3600],
   aiExitMinPct: [0, 1000],
   aiExitEveryMin: [0, 1440],
+  reinvestPct: [0, 100],
+  maxStakeEur: [0, 1000000],
 };
 export const LIVE_MIN_STAKE_EUR = 5;
 export const STRATEGY_LIMITS = {
@@ -67,6 +69,8 @@ const RISK_LABELS = {
   watchSeconds: 'Posities bewaken elke',
   aiExitMinPct: 'AI winst nemen vanaf',
   aiExitEveryMin: 'AI winstcheck elke',
+  reinvestPct: 'Winst herinvesteren',
+  maxStakeEur: 'Maximale inzet per trade',
   feePct: 'Fee',
   emaFast: 'EMA fast',
   emaSlow: 'EMA slow',

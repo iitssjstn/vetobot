@@ -142,7 +142,7 @@ export class Bot {
       const pos = this.store.state.positions[pair];
       try {
         if (type === 'open' && !pos) {
-          const blocked = checkEntry(this.store, { risk: this.risk }, this.broker.mode, this.ex, this.liveBalance,
+          const blocked = checkEntry(this.store, { risk: this.entryRisk() }, this.broker.mode, this.ex, this.liveBalance,
             { pair, openPnlEur: this.openPositionsValue().pnlEur });
           if (blocked) {
             this.store.addDecision({ pair, signal: 'buy', outcome: 'blocked', reason: `Volgen: ${blocked}`, indicators });
@@ -722,7 +722,7 @@ export class Bot {
     if (this.tickStats) this.tickStats.buySignals++;
     this.#event('info', pair, `Koopsignaal: ${result.reason}`);
 
-    const blocked = checkEntry(this.store, { risk: this.risk }, this.broker.mode, this.ex, this.liveBalance,
+    const blocked = checkEntry(this.store, { risk: this.entryRisk() }, this.broker.mode, this.ex, this.liveBalance,
       { pair, openPnlEur: this.openPositionsValue().pnlEur });
     if (blocked) {
       if (this.tickStats) this.tickStats.blocked++;
@@ -779,10 +779,34 @@ export class Bot {
     if (veto.decision === 'approve') await this.#open(pair, result.reason, result.indicators);
   }
 
+  // ---------- Winst herinvesteren ----------
+  // De inzet per trade groeit mee met de gerealiseerde winst in de huidige modus:
+  // inzet = je ingestelde inzet + (winst × herinvesteer-% ÷ max. open trades).
+  // Verlies haalt de extra inzet weer weg, maar de inzet komt nooit onder je eigen ingestelde inzet.
+  stakeInfo(risk = this.risk) {
+    const base = Number(risk.stakeEur) || 0;
+    const pct = Number(risk.reinvestPct) || 0;
+    const profitEur = this.store.state.trades.reduce((a, t) => a + (t.pnlEur ?? 0), 0);
+    let extra = pct > 0 && profitEur > 0 ? (profitEur * pct) / 100 / Math.max(1, risk.maxOpenTrades) : 0;
+    let effective = base + extra;
+    const capped = risk.maxStakeEur > 0 && effective > risk.maxStakeEur;
+    if (capped) effective = Math.max(base, risk.maxStakeEur);
+    effective = Math.floor(effective * 100) / 100;
+    extra = Math.max(0, effective - base);
+    return { base, effective, extra, profitEur, pct, capped };
+  }
+
+  // Risico-instellingen voor een nieuwe aankoop, met de (eventueel gegroeide) inzet.
+  entryRisk() {
+    const risk = this.risk;
+    return { ...risk, stakeEur: this.stakeInfo(risk).effective };
+  }
+
   async #open(pair, reason, indicators = null) {
     this.#step(`${pair}: kopen`);
     if (this.tickStats) this.tickStats.opened++;
-    const stake = this.risk.stakeEur;
+    const stakeInfo = this.stakeInfo();
+    const stake = stakeInfo.effective;
     const fill = await this.broker.buy(pair, stake);
     if (this.broker.mode === 'paper') this.store.state.balanceEur -= fill.costEur;
     this.store.state.positions[pair] = {
@@ -796,7 +820,8 @@ export class Bot {
       highest: fill.price,
       atrAtEntry: indicators?.atr ?? null,
     };
-    this.#event('info', pair, `Gekocht: ${fmtAmount(fill.amount)} @ ${fmtPrice(fill.price)} (${this.broker.mode})`);
+    this.#event('info', pair, `Gekocht: ${fmtAmount(fill.amount)} @ ${fmtPrice(fill.price)} (${this.broker.mode})` +
+      (stakeInfo.extra > 0 ? `, inzet ${fmtEur(stake)} waarvan ${fmtEur(stakeInfo.extra)} herinvesteerde winst` : ''));
     // Volgers laten meedoen (alleen gezet op de bot van de leider).
     this.onTrade?.('open', { pair, reason, indicators });
     this.#notify('trades', {
