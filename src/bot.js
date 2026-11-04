@@ -696,9 +696,12 @@ export class Bot {
     }
 
     if (position) {
-      if (result.signal === 'sell') {
-        await this.#close(pair, result.reason);
+      const sell = this.#signalExit(position, candles, strategy, timeframe);
+      if (sell.sell) {
+        await this.#close(pair, sell.reason);
         this.pairStatus[pair].inPosition = false;
+      } else if (sell.reason) {
+        this.pairStatus[pair].reason = sell.reason;
       }
       return;
     }
@@ -836,6 +839,34 @@ export class Bot {
     });
   }
 
+  // Verkopen op het verkoopsignaal, met bescherming tegen whipsaw: op korte candles kruisen
+  // de EMA's door ruis steeds heen en weer, waardoor de bot koopt en een paar minuten later met
+  // verlies (vooral fees) weer verkoopt. Daarom pas verkopen als EMA fast zoveel candles op rij
+  // onder EMA slow ligt én de positie minimaal zoveel candles open staat.
+  // Stop-loss, trailing stop, take-profit en de AI-winstcheck staan hier los van en werken altijd.
+  #signalExit(position, candles, strategy, timeframe) {
+    const closes = candles.map((c) => c[4]);
+    const fast = ema(closes, strategy.emaFast);
+    const slow = ema(closes, strategy.emaSlow);
+    const confirm = Math.max(1, Math.round(strategy.sellConfirmCandles || 1));
+    const n = closes.length;
+    if (n < confirm + 1) return { sell: false };
+    let below = 0;
+    for (let i = n - 1; i >= 0 && fast[i] != null && slow[i] != null && fast[i] < slow[i]; i--) below++;
+    if (below === 0) return { sell: false };
+    if (below < confirm) {
+      return { sell: false, reason: `Trend draait omlaag (${below} van ${confirm} candles), wacht op bevestiging` };
+    }
+    const tfMs = (TIMEFRAME_MINUTES[timeframe] ?? 60) * 60000;
+    const heldMs = Date.now() - Date.parse(position.openedAt ?? 0);
+    const minHold = Math.max(0, strategy.minHoldCandles || 0);
+    if (heldMs < minHold * tfMs) {
+      const left = Math.ceil((minHold * tfMs - heldMs) / 60000);
+      return { sell: false, reason: `Verkoopsignaal, maar de positie staat pas ${Math.floor(heldMs / 60000)} min open (minimaal ${minHold} candles, nog ${left} min). Stops blijven actief.` };
+    }
+    return { sell: true, reason: `Trend omlaag: EMA fast ${below} candle${below === 1 ? '' : 's'} onder EMA slow` };
+  }
+
   // Stop-loss, ATR-stop, trailing stop en take-profit op de actuele koers. Geeft de reden
   // terug als de positie gesloten moet worden, anders null. Werkt het hoogste punt bij.
   #exitReason(position, price, risk) {
@@ -953,6 +984,8 @@ export class Bot {
       amount: pos.amount,
       pnlEur,
       pnlPct: (pnlEur / pos.costEur) * 100,
+      costEur: pos.costEur,
+      feesEur: (pos.entryFeeEur ?? 0) + (fill.feeEur ?? 0),
       entryReason: pos.reason,
       exitReason: reason,
     });

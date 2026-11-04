@@ -8,6 +8,7 @@ import { COOKIE, readCookie } from './users.js';
 import { SECRET_NAMES, remapAiKeys } from './secrets.js';
 import { NOTIFY_EVENTS } from './notify.js';
 import { aiLabel } from './ai.js';
+import { analyzeTrades } from './analysis.js';
 import { AI_PROVIDERS, MAX_PAIRS, TIMEFRAMES, RISK_LIMITS, STRATEGY_LIMITS } from './settings.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -204,6 +205,17 @@ export function createApp({ users, manager, log = console }) {
     return keyStatus(req);
   }));
 
+  // De analyse verandert alleen als er een trade bij komt; niet bij elke poll opnieuw rekenen.
+  const analysisCache = new WeakMap();
+  const cachedAnalysis = (bot, trades) => {
+    const key = `${bot.mode}:${trades.length}:${trades[0]?.closedAt ?? ''}:${bot.risk.feePct}`;
+    const hit = analysisCache.get(bot);
+    if (hit?.key === key) return hit.value;
+    const value = analyzeTrades(trades, { feePct: bot.risk.feePct });
+    analysisCache.set(bot, { key, value });
+    return value;
+  };
+
   app.get('/api/state', async (req, res) => {
     const { bot, settings, secrets, notifier } = req.ctx;
     const isAdmin = req.user.role === 'admin';
@@ -240,6 +252,7 @@ export function createApp({ users, manager, log = console }) {
       bitvavoKeysSet: keys.bitvavoApiKey.set && keys.bitvavoApiSecret.set,
       risk: bot.risk,
       stake: bot.stakeInfo(),
+      analysis: cachedAnalysis(bot, closed),
       riskLimits: RISK_LIMITS,
       strategy: bot.strategy,
       strategyLimits: STRATEGY_LIMITS,

@@ -187,6 +187,18 @@
   .explain .body { padding: 0 14px 14px; font-size: 13.5px; line-height: 1.55; color: var(--muted); }
   .explain .body p { margin: 0 0 10px; }
   .explain .body b { color: var(--text); font-weight: 600; }
+  .an-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--line); border-bottom: 1px solid var(--line); }
+  .an-stats > div { background: var(--panel); padding: 12px 16px; }
+  .an-stats .k { font-size: 12px; color: var(--muted); }
+  .an-stats .v { font-size: 18px; font-weight: 700; margin-top: 2px; }
+  .an-stats .s { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .an-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  .an-grid > div + div { border-left: 1px solid var(--line); }
+  @media (max-width: 720px) { .an-grid > div + div { border-left: 0; border-top: 1px solid var(--line); } }
+  .an-bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; min-width: 60px; }
+  .an-bar i { display: block; height: 100%; }
+  .an-tips { margin: 0; padding: 12px 16px 12px 34px; border-bottom: 1px solid var(--line); background: var(--warn-soft); font-size: 13.5px; line-height: 1.55; }
+  .an-tips li + li { margin-top: 6px; }
   .presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; margin-top: 12px; }
   .preset { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--panel); display: flex; flex-direction: column; }
   .preset.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
@@ -466,6 +478,10 @@
     </section>
 
     <section data-section="trades" hidden>
+      <div class="panel" style="margin-bottom:14px">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Resultaatanalyse</h2><span class="hint" id="an-hint"></span></div>
+        <div id="analysis"></div>
+      </div>
       <div class="panel">
         <div class="panel-h"><h2><svg class="i"><use href="#i-history"/></svg>Afgesloten trades</h2></div>
         <div class="scroll" id="trades"></div>
@@ -619,6 +635,8 @@
             <div><label for="st-vol">Volumefilter (× normaal, 0 = uit)</label><input id="st-vol" type="number" min="0" max="20" step="any" required></div>
             <div><label for="st-btc">BTC-filter (geen altcoins als BTC daalt)</label><select id="st-btc"><option value="0">Uit</option><option value="1">Aan</option></select></div>
             <div><label for="st-chase">Max. stijging na signaal (%)</label><input id="st-chase" type="number" min="0" max="50" step="any" required></div>
+            <div><label for="st-confirm">Verkoopsignaal bevestigen (candles)</label><input id="st-confirm" type="number" min="1" max="20" step="1" required></div>
+            <div><label for="st-hold">Minimaal in positie (candles, 0 = uit)</label><input id="st-hold" type="number" min="0" max="500" step="1" required></div>
             <div><label for="st-open">Lopende candle meenemen</label><select id="st-open"><option value="0">Nee (aanbevolen)</option><option value="1">Ja, sneller</option></select></div>
             <div id="st-pass-wrap"><label for="st-pass">Je wachtwoord (verplicht in live)</label><input id="st-pass" type="password" autocomplete="current-password"></div>
           </div>
@@ -1047,7 +1065,7 @@ async function load() {
 // seconden honderden rijen opnieuw op, wat het dashboard traag maakt en hover/scrollen stoort.
 const innerHTMLDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
 for (const id of ['alerts', 'tiles', 'dash-market', 'market', 'dash-positions', 'positions', 'signals', 'trades',
-  'dash-activity', 'activity', 'dash-summary', 'coin-list', 'coin-chips', 'presets', 'users-table', 'invites-table']) {
+  'dash-activity', 'activity', 'dash-summary', 'analysis', 'coin-list', 'coin-chips', 'presets', 'users-table', 'invites-table']) {
   const el = $(id);
   Object.defineProperty(el, 'innerHTML', {
     get() { return innerHTMLDesc.get.call(el); },
@@ -1172,6 +1190,7 @@ function render() {
     ['Reden', d => `<div class="reason">${esc(d.reason)}${d.aiError ? ' <span class="warnc">(AI-fout)</span>' : ''}</div>`],
   ], 'Nog geen koopsignalen. Bij 1h-candles kan dat even duren.', 'pulse');
 
+  if (isOn('trades')) { $('analysis').innerHTML = analysisHtml(s.analysis); $('an-hint').textContent = s.analysis?.trades ? `${s.analysis.trades} gesloten trades in ${live ? 'live' : 'paper'}${s.analysis.since ? ` sinds ${time(s.analysis.since)}` : ''}` : ''; }
   if (isOn('trades')) $('trades').innerHTML = table(s.trades, [
     ['Gesloten', t => `<span class="muted">${time(t.closedAt)}</span>`],
     ['Coin', t => pairHtml(t.pair)],
@@ -1347,6 +1366,8 @@ function renderSettings() {
     $('st-btc').value = String(s.strategy.btcFilter ?? 0);
     $('st-chase').value = s.strategy.maxChasePct ?? 0;
     $('st-open').value = String(s.strategy.useOpenCandle ?? 0);
+    $('st-confirm').value = s.strategy.sellConfirmCandles || 1;
+    $('st-hold').value = s.strategy.minHoldCandles ?? 0;
   }
   if (!document.activeElement?.closest('#risk-form') && !riskDirty) {
     $('r-stake').value = s.risk.stakeEur;
@@ -1417,6 +1438,39 @@ $('mode-form').addEventListener('submit', async (e) => {
   } catch (err) { $('md-error').textContent = err.message; }
   finally { $('md-go').disabled = false; }
 });
+
+// ---------- Resultaatanalyse ----------
+function analysisHtml(a) {
+  if (!a?.trades) return `<div class="empty">${icon('target')}Nog geen gesloten trades om te analyseren.</div>`;
+  const stat = (k, v, sub = '') => `<div><div class="k">${k}</div><div class="v num">${v}</div><div class="s">${sub}</div></div>`;
+  const hold = (m) => m == null ? '–' : m < 60 ? `${Math.round(m)} min` : m < 1440 ? `${(m / 60).toFixed(1).replace('.', ',')} uur` : `${(m / 1440).toFixed(1).replace('.', ',')} dag`;
+  const stats = `<div class="an-stats">
+    ${stat('Resultaat', signEur(a.pnlEur), `${signEur(a.expectancyEur)} per trade gemiddeld`)}
+    ${stat('Winrate', `${a.winRate.toFixed(0)}%`, `${a.wins} gewonnen, ${a.losses} verloren`)}
+    ${stat('Gem. winst / verlies', `${a.avgWinEur != null ? signEur(a.avgWinEur) : '–'} / ${a.avgLossEur != null ? signEur(a.avgLossEur) : '–'}`,
+      a.payoff != null ? `een winst is ${a.payoff.toFixed(2).replace('.', ',')}× een verlies` : '')}
+    ${stat('Fees betaald', eur2(a.feesEur), 'kopen + verkopen, alle trades')}
+    ${stat('Gem. duur', hold(a.avgHoldMin), a.quickLosses ? `${a.quickLosses} verliezen binnen 15 min` : 'per trade')}
+  </div>`;
+  const tips = a.advice?.length ? `<ul class="an-tips">${a.advice.map(t => `<li>${esc(t)}</li>`).join('')}</ul>` : '';
+  const maxAbs = Math.max(...a.byExit.map(b => Math.abs(b.pnlEur)), 0.01);
+  const bar = (v) => `<div class="an-bar"><i style="width:${Math.round(Math.abs(v) / maxAbs * 100)}%;background:${v >= 0 ? 'var(--up)' : 'var(--down)'}"></i></div>`;
+  const exits = table([...a.byExit].sort((x, y) => x.pnlEur - y.pnlEur), [
+    ['Hoe geëindigd', b => esc(b.label)],
+    ['Aantal', b => `<span class="num">${b.count}</span>`, 'r'],
+    ['Gewonnen', b => `<span class="num">${Math.round(b.wins / b.count * 100)}%</span>`, 'r'],
+    ['Resultaat', b => `<span class="num">${signEur(b.pnlEur)}</span>`, 'r'],
+    ['', b => bar(b.pnlEur)],
+  ], '');
+  const pairs = a.byPair.length > 8 ? [...a.byPair.slice(0, 5), ...a.byPair.slice(-3)] : a.byPair;
+  const coins = table(pairs, [
+    ['Coin', b => pairHtml(b.pair)],
+    ['Trades', b => `<span class="num">${b.count}</span>`, 'r'],
+    ['Gewonnen', b => `<span class="num">${Math.round(b.wins / b.count * 100)}%</span>`, 'r'],
+    ['Resultaat', b => `<span class="num">${signEur(b.pnlEur)}</span>`, 'r'],
+  ], '');
+  return stats + tips + `<div class="an-grid"><div class="scroll">${exits}</div><div class="scroll">${coins}</div></div>`;
+}
 
 // ---------- Instellingen: strategie volgen ----------
 // Panelen die van de admin komen zolang je volgt. inert maakt ze niet bedienbaar, ook niet met het toetsenbord.
@@ -1802,6 +1856,8 @@ const HELP = {
   'st-adx': 'De ADX (0–100) meet hoe sterk een trend is, ongeacht de richting. Onder de 20 beweegt de markt meestal zijwaarts, en dan kruisen de lijnen vaak heen en weer zonder echte beweging. <b>Gebruikelijk:</b> 20 tot 25. 0 = uit.',
   'st-vol': 'Koop alleen als het volume op de kruising zoveel keer hoger is dan normaal (gemiddelde van de 20 candles ervoor). Een kruising zonder volume is vaak loos. <b>Gebruikelijk:</b> 1,2 tot 2. 0 = uit. Te hoog en er komen bijna geen signalen meer.',
   'st-chase': 'Een koopsignaal is gebaseerd op de slotkoers van een candle. Is de koers sindsdien al flink gestegen, dan koop je duurder dan het signaal bedoelde en is een deel van de stijging al voorbij. Met deze waarde slaat de bot de aankoop over als de koers nu meer dan zoveel procent boven die slotkoers ligt. <b>Gebruikelijk:</b> 0,5 tot 2. 0 = uit.',
+  'st-confirm': 'Bij korte candles kruisen de lijnen vaak heen en weer door ruis. De bot koopt dan en verkoopt een paar minuten later met verlies, vooral door de fees (whipsaw). Met deze waarde verkoopt de bot op het verkoopsignaal pas als EMA fast zoveel candles <b>op rij</b> onder EMA slow ligt. Herstelt de koers binnen die tijd, dan blijft de positie staan. Stop-loss, trailing stop, take-profit en de AI-winstcheck werken altijd direct. <b>Gebruikelijk:</b> 2 of 3. 1 = direct verkopen.',
+  'st-hold': 'Hoeveel candles een positie minimaal open blijft voordat het verkoopsignaal mag verkopen. Geeft een nieuwe positie de tijd om te bewegen. Stop-loss, trailing stop, take-profit en de AI-winstcheck werken altijd direct, dus je verlies blijft begrensd. <b>Gebruikelijk:</b> 3 tot 6. 0 = uit.',
   'st-open': 'Normaal kijkt de bot alleen naar gesloten candles, zodat een signaal vaststaat. Met <b>Ja</b> telt ook de candle die nog loopt mee: je ziet een kruising tot een hele candle eerder, maar hij kan binnen die candle ook weer verdwijnen, waardoor je vaker te vroeg koopt. Vooral nuttig bij lange candles (1 uur of meer). Een kortere candle-tijd bij Planning is meestal de betere manier om sneller te zijn.',
   'st-btc': 'Bijna alle coins bewegen mee met Bitcoin. Met dit filter koopt de bot geen andere coins zolang BTC onder zijn gemiddelde van 50 candles ligt. BTC zelf wordt niet gefilterd.',
   'r-trail': 'De stop schuift mee omhoog met de koers. Bij 2% verkoopt de bot zodra de koers 2% onder het hoogste punt sinds aankoop zakt. Zo laat je winnaars doorlopen en zet je winst vast. Werkt naast de stop-loss en take-profit; zet de take-profit op 0 om winnaars echt te laten lopen. 0 = uit.',
@@ -1960,7 +2016,8 @@ $('strat-form').onsubmit = async (e) => {
   e.preventDefault();
   const strategy = { emaFast: $('st-fast').value, emaSlow: $('st-slow').value, rsiPeriod: $('st-rsi').value, rsiMaxEntry: $('st-rsimax').value,
     trendEma: $('st-trend').value, adxMin: $('st-adx').value, volumeMult: $('st-vol').value, btcFilter: $('st-btc').value,
-    maxChasePct: $('st-chase').value, useOpenCandle: $('st-open').value };
+    maxChasePct: $('st-chase').value, useOpenCandle: $('st-open').value,
+    sellConfirmCandles: $('st-confirm').value, minHoldCandles: $('st-hold').value };
   if (state.mode === 'live' && !$('st-pass').value) { $('strat-msg').className = 'msg err'; $('strat-msg').textContent = 'Vul je wachtwoord in'; return; }
   try {
     await api('api/settings/strategy', { strategy, password: $('st-pass').value });

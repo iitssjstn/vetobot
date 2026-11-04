@@ -444,7 +444,9 @@ test('BTC-filter blokkeert altcoins als BTC daalt', async () => {
 test('alle posities bezet: signalen stil overslaan, geen AI en geen regel bij AI-signalen', async () => {
   const { bot, ex } = setup({});
   await bot.setRisk({ stakeEur: 25, maxOpenTrades: 1, cooldownMinutes: 0, stopLossPct: 0, takeProfitPct: 0 });
-  bot.store.state.positions = { 'X/EUR': { pair: 'X/EUR', entryPrice: 1, amount: 1, costEur: 25 } };
+  // Net gekocht en minimaal 500 candles vasthouden: blijft staan, zodat alle posities bezet blijven.
+  await bot.setStrategy({ minHoldCandles: 500 });
+  bot.store.state.positions = { 'X/EUR': { pair: 'X/EUR', entryPrice: 1, amount: 1, costEur: 25, openedAt: new Date().toISOString() } };
   let aiAsked = 0;
   bot.settings.setAi({ provider: 'openai', model: 'm', baseUrl: 'http://127.0.0.1:9', failMode: 'reject' });
   bot.secrets = { get: () => { aiAsked++; return 'k'; } };
@@ -635,4 +637,42 @@ test('winst herinvesteren: de grotere inzet wordt ook echt gebruikt bij kopen', 
   await openPaperPosition(bot, ex);
   assert.equal(bot.store.state.positions['BTC/EUR'].costEur, 30);
   assert.ok(bot.activity.some((a) => /waarvan € 5,00 herinvesteerde winst/.test(a.message)));
+});
+
+test('whipsaw-bescherming: pas verkopen na bevestiging en minimale tijd in de positie', async () => {
+  const { bot, ex } = setup({});
+  await bot.setRisk({ cooldownMinutes: 0, stopLossPct: 50, takeProfitPct: 0, aiExitMinPct: 0 });
+  await bot.setStrategy({ sellConfirmCandles: 2, minHoldCandles: 3 });
+  await openPaperPosition(bot, ex);
+  const pos = bot.store.state.positions['BTC/EUR'];
+  const up = ex.prices.slice();
+  // Eén candle omlaag: EMA fast zakt onder EMA slow, maar nog niet bevestigd
+  ex.prices = up.concat([60]);
+  await bot.tick();
+  assert.ok(bot.store.state.positions['BTC/EUR'], 'na 1 candle nog niet verkopen');
+  assert.match(bot.pairStatus['BTC/EUR'].reason, /wacht op bevestiging/);
+  // Tweede candle omlaag: bevestigd, maar de positie staat pas net open
+  ex.prices = up.concat([60, 58]);
+  await bot.tick();
+  assert.ok(bot.store.state.positions['BTC/EUR'], 'te kort in de positie');
+  assert.match(bot.pairStatus['BTC/EUR'].reason, /minimaal 3 candles/);
+  // Na 3 uur (3 candles van 1 uur): nu wel verkopen
+  pos.openedAt = new Date(Date.now() - 3 * H - 1000).toISOString();
+  ex.prices = up.concat([60, 58, 57]);
+  await bot.tick();
+  assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
+  assert.match(bot.store.state.trades[0].exitReason, /Trend omlaag: EMA fast \d+ candles onder EMA slow/);
+});
+
+test('whipsaw-bescherming: herstelt de trend binnen de bevestiging, dan geen verkoop', async () => {
+  const { bot, ex } = setup({});
+  await bot.setRisk({ cooldownMinutes: 0, stopLossPct: 50, takeProfitPct: 0, aiExitMinPct: 0 });
+  await bot.setStrategy({ sellConfirmCandles: 2, minHoldCandles: 0 });
+  await openPaperPosition(bot, ex);
+  const up = ex.prices.slice();
+  ex.prices = up.concat([60]);
+  await bot.tick();
+  ex.prices = up.concat([60, 75]);
+  await bot.tick();
+  assert.ok(bot.store.state.positions['BTC/EUR'], 'dip hersteld: positie blijft');
 });
