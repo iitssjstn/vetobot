@@ -34,6 +34,8 @@ export const STRATEGY_LIMITS = {
   adxMin: [0, 100],
   volumeMult: [0, 20],
   btcFilter: [0, 1],
+  maxChasePct: [0, 50],
+  useOpenCandle: [0, 1],
 };
 export const AI_FAIL_MODES = ['reject', 'approve'];
 const NOTIFY_DEFAULTS = {
@@ -175,7 +177,7 @@ export class Settings {
   }
 
   setStrategy(values) {
-    const next = validated({ ...this.data.strategy, ...values }, STRATEGY_LIMITS, ['emaFast', 'emaSlow', 'rsiPeriod', 'trendEma', 'btcFilter']);
+    const next = validated({ ...this.data.strategy, ...values }, STRATEGY_LIMITS, ['emaFast', 'emaSlow', 'rsiPeriod', 'trendEma', 'btcFilter', 'useOpenCandle']);
     if (next.emaFast >= next.emaSlow) throw new Error('EMA fast moet kleiner zijn dan EMA slow');
     this.data.strategy = next;
     this.#save();

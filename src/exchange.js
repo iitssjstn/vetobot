@@ -109,8 +109,10 @@ export function userExchange(shared, privateEx) {
 }
 
 // Haalt candles op en laat de laatste (nog niet gesloten) candle weg.
-export async function fetchClosedCandles(ex, pair, timeframe, limit = 200) {
+// includeOpen: de lopende candle juist wel meenemen (de close is dan de actuele koers).
+export async function fetchClosedCandles(ex, pair, timeframe, limit = 200, { includeOpen = false } = {}) {
   const candles = await ex.fetchOHLCV(pair, timeframe, undefined, limit + 1);
+  if (includeOpen) return candles.slice(-limit);
   const tfMs = ex.parseTimeframe(timeframe) * 1000;
   const now = Date.now();
   return candles.filter((c) => c[0] + tfMs <= now);

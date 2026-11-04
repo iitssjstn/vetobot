@@ -597,6 +597,8 @@
             <div><label for="st-adx">Minimale ADX (0 = uit)</label><input id="st-adx" type="number" min="0" max="100" step="any" required></div>
             <div><label for="st-vol">Volumefilter (× normaal, 0 = uit)</label><input id="st-vol" type="number" min="0" max="20" step="any" required></div>
             <div><label for="st-btc">BTC-filter (geen altcoins als BTC daalt)</label><select id="st-btc"><option value="0">Uit</option><option value="1">Aan</option></select></div>
+            <div><label for="st-chase">Max. stijging na signaal (%)</label><input id="st-chase" type="number" min="0" max="50" step="any" required></div>
+            <div><label for="st-open">Lopende candle meenemen</label><select id="st-open"><option value="0">Nee (aanbevolen)</option><option value="1">Ja, sneller</option></select></div>
             <div id="st-pass-wrap"><label for="st-pass">Je wachtwoord (verplicht in live)</label><input id="st-pass" type="password" autocomplete="current-password"></div>
           </div>
           <div class="help">Lagere EMA-waarden reageren sneller maar geven meer valse signalen. Een max RSI van 100 schakelt het RSI-filter uit.</div>
@@ -1295,6 +1297,8 @@ function renderSettings() {
     $('st-adx').value = s.strategy.adxMin ?? 0;
     $('st-vol').value = s.strategy.volumeMult ?? 0;
     $('st-btc').value = String(s.strategy.btcFilter ?? 0);
+    $('st-chase').value = s.strategy.maxChasePct ?? 0;
+    $('st-open').value = String(s.strategy.useOpenCandle ?? 0);
   }
   if (!document.activeElement?.closest('#risk-form') && !riskDirty) {
     $('r-stake').value = s.risk.stakeEur;
@@ -1715,6 +1719,8 @@ const HELP = {
   'st-trend': 'Koop alleen als de koers boven een lange gemiddelde lijn ligt, zodat de bot niet koopt op een kort opveren in een dalende markt. <b>Gebruikelijk:</b> 200 candles bij 15m- of 1h-candles, 50 tot 100 bij 5m. 0 = uit. Hoe groter, hoe meer candles hij moet ophalen.',
   'st-adx': 'De ADX (0–100) meet hoe sterk een trend is, ongeacht de richting. Onder de 20 beweegt de markt meestal zijwaarts, en dan kruisen de lijnen vaak heen en weer zonder echte beweging. <b>Gebruikelijk:</b> 20 tot 25. 0 = uit.',
   'st-vol': 'Koop alleen als het volume op de kruising zoveel keer hoger is dan normaal (gemiddelde van de 20 candles ervoor). Een kruising zonder volume is vaak loos. <b>Gebruikelijk:</b> 1,2 tot 2. 0 = uit. Te hoog en er komen bijna geen signalen meer.',
+  'st-chase': 'Een koopsignaal is gebaseerd op de slotkoers van een candle. Is de koers sindsdien al flink gestegen, dan koop je duurder dan het signaal bedoelde en is een deel van de stijging al voorbij. Met deze waarde slaat de bot de aankoop over als de koers nu meer dan zoveel procent boven die slotkoers ligt. <b>Gebruikelijk:</b> 0,5 tot 2. 0 = uit.',
+  'st-open': 'Normaal kijkt de bot alleen naar gesloten candles, zodat een signaal vaststaat. Met <b>Ja</b> telt ook de candle die nog loopt mee: je ziet een kruising tot een hele candle eerder, maar hij kan binnen die candle ook weer verdwijnen, waardoor je vaker te vroeg koopt. Vooral nuttig bij lange candles (1 uur of meer). Een kortere candle-tijd bij Planning is meestal de betere manier om sneller te zijn.',
   'st-btc': 'Bijna alle coins bewegen mee met Bitcoin. Met dit filter koopt de bot geen andere coins zolang BTC onder zijn gemiddelde van 50 candles ligt. BTC zelf wordt niet gefilterd.',
   'r-trail': 'De stop schuift mee omhoog met de koers. Bij 2% verkoopt de bot zodra de koers 2% onder het hoogste punt sinds aankoop zakt. Zo laat je winnaars doorlopen en zet je winst vast. Werkt naast de stop-loss en take-profit; zet de take-profit op 0 om winnaars echt te laten lopen. 0 = uit.',
   'r-atr': 'Een stop-loss die meebeweegt met de beweeglijkheid van de coin. De ATR is hoeveel een coin gemiddeld per candle beweegt. Bij 2 ligt de stop op instapkoers − 2 × ATR: ruimer bij wilde coins, krapper bij rustige. <b>Vervangt</b> de vaste stop-loss als hij aan staat. <b>Gebruikelijk:</b> 1,5 tot 3. 0 = uit.',
@@ -1795,7 +1801,8 @@ document.querySelectorAll('#strat-form input[type=number]').forEach(i => i.oninp
 $('strat-form').onsubmit = async (e) => {
   e.preventDefault();
   const strategy = { emaFast: $('st-fast').value, emaSlow: $('st-slow').value, rsiPeriod: $('st-rsi').value, rsiMaxEntry: $('st-rsimax').value,
-    trendEma: $('st-trend').value, adxMin: $('st-adx').value, volumeMult: $('st-vol').value, btcFilter: $('st-btc').value };
+    trendEma: $('st-trend').value, adxMin: $('st-adx').value, volumeMult: $('st-vol').value, btcFilter: $('st-btc').value,
+    maxChasePct: $('st-chase').value, useOpenCandle: $('st-open').value };
   if (state.mode === 'live' && !$('st-pass').value) { $('strat-msg').className = 'msg err'; $('strat-msg').textContent = 'Vul je wachtwoord in'; return; }
   try {
     await api('api/settings/strategy', { strategy, password: $('st-pass').value });

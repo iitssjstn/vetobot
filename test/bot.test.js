@@ -19,7 +19,8 @@ function fakeExchange(prices, { keys = false, balanceFails = false } = {}) {
     prices,
     parseTimeframe: () => 3600,
     async fetchOHLCV(_p, _tf, _s, limit) {
-      const base = Math.floor(Date.now() / H) * H - this.prices.length * H;
+      // Vaste tijdlijn: een prijs die erbij komt is een nieuwe candle, net als in het echt.
+      const base = Math.floor(Date.now() / H) * H - 1000 * H;
       return this.prices.map((c, i) => [base + i * H, c, c, c, c, 1]).slice(-limit);
     },
     async fetchTicker() { return { last: this.prices.at(-1) }; },
@@ -448,7 +449,8 @@ test('alle posities bezet: signalen stil overslaan, geen AI en geen regel bij AI
   bot.settings.setAi({ provider: 'openai', model: 'm', baseUrl: 'http://127.0.0.1:9', failMode: 'reject' });
   bot.secrets = { get: () => { aiAsked++; return 'k'; } };
   const seq = [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66, 68]);
-  for (let n = 41; n <= 44; n++) { ex.prices = seq.slice(0, n); await bot.tick(); }
+  // De kruising valt op de 43e candle; daarna is hij niet meer vers.
+  for (let n = 41; n <= 43; n++) { ex.prices = seq.slice(0, n); await bot.tick(); }
   assert.equal(bot.store.state.decisions.length, 0, 'geen beslissingen');
   assert.equal(aiAsked, 0, 'AI niet gevraagd');
   assert.match(bot.pairStatus['BTC/EUR'].reason, /alle 1 posities zijn bezet/);
@@ -463,4 +465,66 @@ test('posities in coins die niet (meer) in de lijst staan worden ook bewaakt', a
   await bot.tick();
   assert.equal(bot.store.state.positions['OUD/EUR'], undefined);
   assert.match(bot.store.state.trades.find((x) => x.pair === 'OUD/EUR').exitReason, /Stop-loss/);
+});
+
+test('alleen verse kruisingen: na een herstart niet kopen op een oude kruising', async () => {
+  const { bot, ex } = setup({});
+  await bot.setRisk({ cooldownMinutes: 0 });
+  const seq = [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66, 68]);
+  // Kruising op candle 43, de bot "start" pas bij candle 44.
+  ex.prices = seq;
+  await bot.tick();
+  assert.equal(Object.keys(bot.store.state.positions).length, 0);
+  assert.doesNotMatch(bot.pairStatus['BTC/EUR'].reason, /kruist boven/);
+});
+
+test('kruisingen tussen twee checks worden niet gemist', async () => {
+  const { bot, ex } = setup({});
+  await bot.setRisk({ cooldownMinutes: 0 });
+  const seq = [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66, 68]);
+  ex.prices = seq.slice(0, 41);
+  await bot.tick();
+  // Drie candles later pas weer een check: de kruising van twee candles terug telt nog.
+  ex.prices = seq;
+  await bot.tick();
+  assert.ok(bot.store.state.positions['BTC/EUR'], 'gekocht');
+});
+
+test('niet achter de koers aan: overslaan als de koers sinds het signaal te ver is gestegen', async () => {
+  const { bot, ex } = setup({});
+  await bot.setRisk({ cooldownMinutes: 0 });
+  await bot.setStrategy({ maxChasePct: 1 });
+  const seq = [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66]);
+  ex.prices = seq.slice(0, 42);
+  await bot.tick();
+  ex.prices = seq;
+  ex.fetchTicker = async () => ({ last: 66 * 1.03 });
+  await bot.tick();
+  assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
+  assert.match(bot.pairStatus['BTC/EUR'].reason, /al 3\.00% gestegen \(max 1%\)/);
+  // Binnen de marge wel kopen
+  ex.fetchTicker = async () => ({ last: 66 * 1.005 });
+  bot.lastCandleSeen['BTC/EUR'] = null;
+  ex.prices = seq;
+  await bot.tick();
+  assert.ok(bot.store.state.positions['BTC/EUR']);
+});
+
+test('lopende candle meenemen geeft het signaal een candle eerder', async () => {
+  const run = async (useOpenCandle) => {
+    const { bot, ex } = setup({});
+    await bot.setRisk({ cooldownMinutes: 0 });
+    await bot.setStrategy({ useOpenCandle });
+    // De laatste candle loopt nog (tijdstempel van nu).
+    const seq = [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66]);
+    ex.fetchOHLCV = async (_p, _tf, _s, limit) => {
+      const end = Math.floor(Date.now() / H) * H;
+      return seq.map((c, i) => [end - (seq.length - 1 - i) * H, c, c, c, c, 1]).slice(-limit);
+    };
+    ex.fetchTicker = async () => ({ last: 66 });
+    await bot.tick();
+    return Boolean(bot.store.state.positions['BTC/EUR']);
+  };
+  assert.equal(await run(0), false, 'zonder lopende candle nog geen kruising');
+  assert.equal(await run(1), true, 'met lopende candle al wel');
 });

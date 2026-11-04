@@ -48,7 +48,7 @@ export function evaluate(candles, params, lookback = 1) {
     const up = fast[i - 1] <= slow[i - 1] && fast[i] > slow[i];
     const down = fast[i - 1] >= slow[i - 1] && fast[i] < slow[i];
     if (up || down) {
-      cross = { dir: up ? 'up' : 'down', ago, at: candles[i][0] };
+      cross = { dir: up ? 'up' : 'down', ago, at: candles[i][0], close: closes[i] };
       break;
     }
   }
@@ -72,7 +72,7 @@ export function evaluate(candles, params, lookback = 1) {
       if (vr == null) return blocked('te weinig data voor het volume');
       if (vr < params.volumeMult) return blocked(`volume ${vr.toFixed(1)}× normaal, minder dan ${params.volumeMult}×`);
     }
-    return { signal: 'buy', reason: `EMA fast kruist boven EMA slow (${when(cross)})`, indicators, crossAt: cross.at };
+    return { signal: 'buy', reason: `EMA fast kruist boven EMA slow (${when(cross)})`, indicators, crossAt: cross.at, crossClose: cross.close };
   }
   if (cross?.dir === 'down' && !above) {
     return { signal: 'sell', reason: `EMA fast kruist onder EMA slow (${when(cross)})`, indicators, crossAt: cross.at };

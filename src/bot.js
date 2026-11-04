@@ -167,6 +167,12 @@ export class Bot {
 
   // Welke kruising per coin al beoordeeld is. Staat in het state-bestand van de
   // huidige modus, zodat een herstart geen dubbele aankoop op dezelfde kruising geeft.
+  // Laatste candle per coin bij de vorige check (alleen in het geheugen).
+  get lastCandleSeen() {
+    this._lastCandleSeen ??= {};
+    return this._lastCandleSeen;
+  }
+
   get seenSignals() {
     this.store.state.seenSignals ??= {};
     return this.store.state.seenSignals;
@@ -655,13 +661,30 @@ export class Bot {
     this.#step(`${pair}: candles ophalen`);
     // Genoeg candles voor de langste indicator (trend-EMA), met een maximum van wat Bitvavo in één keer geeft.
     const need = Math.max(200, strategy.emaSlow * 4, (strategy.trendEma || 0) * 2 + 20);
-    const candles = await fetchClosedCandles(this.ex, pair, timeframe, Math.min(1400, need));
+    const useOpen = Boolean(strategy.useOpenCandle);
+    const candles = await fetchClosedCandles(this.ex, pair, timeframe, Math.min(1400, need), { includeOpen: useOpen });
     const lastCandleTs = candles.at(-1)?.[0];
-    // Kijk terug over alle candles sinds de vorige check, plus één als marge.
-    const lookback = Math.min(50, Math.ceil(this.checkIntervalMinutes / (TIMEFRAME_MINUTES[timeframe] ?? 60)) + 1);
+    // Alleen verse kruisingen: kijk terug over de candles die sinds de vorige check van deze coin
+    // zijn bijgekomen (minimaal de laatste). Zo mist hij niets tussen twee checks, maar koopt hij
+    // niet op een kruising van uren geleden, bijvoorbeeld na een herstart.
+    const prevTs = this.lastCandleSeen[pair];
+    // Met de lopende candle telt de vorige (inmiddels gesloten) candle ook nog mee.
+    const fresh = prevTs ? candles.filter((c) => (useOpen ? c[0] >= prevTs : c[0] > prevTs)).length : 1;
+    const lookback = Math.min(50, Math.max(1, fresh));
+    this.lastCandleSeen[pair] = lastCandleTs;
     let result = evaluate(candles, strategy, lookback);
     if (result.signal === 'buy' && strategy.btcFilter && pair !== 'BTC/EUR' && this.btcTrend && !this.btcTrend.up) {
       result = { ...result, signal: 'none', reason: 'Kruising, maar BTC zit in een dalende trend (BTC-filter)', filtered: true };
+    }
+    // Niet achter de koers aan: is hij sinds de signaalcandle al te ver gestegen, dan overslaan.
+    if (result.signal === 'buy' && strategy.maxChasePct > 0 && result.crossClose) {
+      const now = await fetchPrice(this.ex, pair).catch(() => null);
+      const moved = now ? ((now - result.crossClose) / result.crossClose) * 100 : null;
+      if (moved != null && result.indicators) result.indicators.movedSinceSignalPct = moved;
+      if (moved != null && moved > strategy.maxChasePct) {
+        result = { ...result, signal: 'none', filtered: true,
+          reason: `Kruising, maar de koers is sinds het signaal al ${moved.toFixed(2)}% gestegen (max ${strategy.maxChasePct}%)` };
+      }
     }
     const ind = result.indicators;
     this.pairStatus[pair] = {

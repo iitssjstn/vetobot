@@ -36,6 +36,10 @@ export const config = {
     adxMin: num('ADX_MIN', 0),
     volumeMult: num('VOLUME_MULT', 0),
     btcFilter: num('BTC_FILTER', 0),
+    // Niet kopen als de koers sinds het signaal al meer dan zoveel procent is gestegen (0 = uit).
+    maxChasePct: num('MAX_CHASE_PCT', 1),
+    // 1 = ook de candle die nog loopt meenemen: sneller, maar signalen kunnen weer verdwijnen.
+    useOpenCandle: num('USE_OPEN_CANDLE', 0),
   },
 
   // Harde limieten. De AI kan hier nooit aan komen.
