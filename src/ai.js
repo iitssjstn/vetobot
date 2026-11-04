@@ -37,11 +37,50 @@ Laatste candles:
 ${candles}`;
 }
 
+// Haalt het JSON-object uit een AI-antwoord. Robuust voor:
+// - "denkende" modellen (Qwen, DeepSeek, ...) die eerst <think>...</think> schrijven,
+// - tekst of ```json-blokken rond de JSON,
+// - accolades in de uitleg vóór de JSON.
+// Probeert van achter naar voren elk { tot de bijpassende }, en neemt het laatste geldige object.
+export function extractJson(text) {
+  let t = String(text ?? '');
+  t = t.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  // Afgebroken denkblok zonder </think>: alles tot en met <think> weg.
+  if (/<think>/i.test(t)) t = t.slice(t.toLowerCase().lastIndexOf('<think>') + 7);
+  t = t.trim();
+  try {
+    const whole = JSON.parse(t);
+    if (whole && typeof whole === 'object') return whole;
+  } catch {}
+  for (let start = t.lastIndexOf('{'); start >= 0; start = t.lastIndexOf('{', start - 1)) {
+    let depth = 0;
+    let inStr = false;
+    for (let i = start; i < t.length; i++) {
+      const c = t[i];
+      if (inStr) {
+        if (c === '\\') i++;
+        else if (c === '"') inStr = false;
+      } else if (c === '"') inStr = true;
+      else if (c === '{') depth++;
+      else if (c === '}' && --depth === 0) {
+        try {
+          const obj = JSON.parse(t.slice(start, i + 1));
+          // Alleen het buitenste object met de velden die we zoeken telt; een los { } in de tekst niet.
+          if (obj && typeof obj === 'object' && ('decision' in obj || 'analyse' in obj || 'analysis' in obj)) return obj;
+        } catch {}
+        break;
+      }
+      if (start === 0 && i === t.length - 1) break;
+    }
+    if (start === 0) break;
+  }
+  return null;
+}
+
 export function parseDecision(text) {
   if (!text) throw new Error('Leeg antwoord van AI');
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error('Geen JSON in AI-antwoord');
-  const obj = JSON.parse(match[0]);
+  const obj = extractJson(text);
+  if (!obj) throw new Error(`Geen JSON in AI-antwoord: "${String(text).replace(/\s+/g, ' ').slice(0, 120)}"`);
   const decision = String(obj.decision || '').toLowerCase();
   if (!['approve', 'reject'].includes(decision)) throw new Error(`Ongeldige decision "${obj.decision}"`);
   return { decision, reason: String(obj.reason || '').slice(0, 500) };
@@ -186,7 +225,8 @@ export function parseSummary(text) {
   const raw = String(text ?? '').trim();
   if (!raw) return null;
   try {
-    const obj = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] ?? raw);
+    const obj = extractJson(raw);
+    if (!obj) throw new Error('geen JSON');
     return {
       analysis: String(obj.analyse ?? obj.analysis ?? '').trim().slice(0, 1500) || null,
       suggestions: obj.voorstel && typeof obj.voorstel === 'object' ? obj.voorstel : {},
@@ -194,7 +234,8 @@ export function parseSummary(text) {
     };
   } catch {
     // Geen geldige JSON: gebruik de tekst als analyse, zonder voorstel.
-    return { analysis: raw.slice(0, 1500), suggestions: {}, rationale: null };
+    const clean = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    return { analysis: clean.slice(0, 1500) || null, suggestions: {}, rationale: null };
   }
 }
 
@@ -302,9 +343,8 @@ ${candles}`;
 
 export function parseExit(text) {
   if (!text) throw new Error('Leeg antwoord van AI');
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error('Geen JSON in AI-antwoord');
-  const obj = JSON.parse(match[0]);
+  const obj = extractJson(text);
+  if (!obj) throw new Error(`Geen JSON in AI-antwoord: "${String(text).replace(/\s+/g, ' ').slice(0, 120)}"`);
   const decision = String(obj.decision || '').toLowerCase();
   if (!['sell', 'hold'].includes(decision)) throw new Error(`Ongeldige decision "${obj.decision}"`);
   return { decision, reason: String(obj.reason || '').slice(0, 500) };
