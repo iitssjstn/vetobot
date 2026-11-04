@@ -279,3 +279,27 @@ test('modellen ophalen vraagt om een key, en gebruikt anders die van hetzelfde t
   await assert.rejects(bot.listAiModels({ provider: 'none' }), /provider/);
   await assert.rejects(bot.listAiModels({ provider: 'gemini', fromSlot: null, newKey: '' }), /API-key/);
 });
+
+test('open posities: waarde en P/L met live koers en verkoopfee, koersen gecachet', async () => {
+  const { bot } = setup({});
+  await bot.setRisk({ stakeEur: 25, maxOpenTrades: 2, stopLossPct: 0, takeProfitPct: 0, maxDailyLossEur: 0, feePct: 0.25 });
+  bot.store.state.positions = {
+    'BTC/EUR': { pair: 'BTC/EUR', entryPrice: 100, amount: 0.25, costEur: 25 },
+    'ETH/EUR': { pair: 'ETH/EUR', entryPrice: 50, amount: 0.5, costEur: 25 },
+  };
+  let calls = 0;
+  bot.ex.fetchTickers = async (pairs) => { calls++; return Object.fromEntries(pairs.map((p) => [p, { last: p === 'BTC/EUR' ? 110 : 45 }])); };
+  await bot.refreshPrices(['BTC/EUR', 'ETH/EUR']);
+  await bot.refreshPrices(['BTC/EUR', 'ETH/EUR']);
+  assert.equal(calls, 1, 'tweede keer uit de cache');
+
+  const v = bot.openPositionsValue();
+  const btc = v.positions.find((p) => p.pair === 'BTC/EUR');
+  // 0,25 × 110 = 27,50, min 0,25% fee = 27,43125; P/L = +2,43125
+  assert.ok(Math.abs(btc.valueEur - 27.43125) < 1e-9);
+  assert.ok(Math.abs(btc.pnlEur - 2.43125) < 1e-9);
+  // ETH: 0,5 × 45 = 22,50 × 0,9975 = 22,44375; P/L = −2,55625
+  assert.ok(Math.abs(v.pnlEur - (2.43125 - 2.55625)) < 1e-9);
+  assert.equal(v.costEur, 50);
+  assert.equal(v.complete, true);
+});

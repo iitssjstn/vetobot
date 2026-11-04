@@ -116,7 +116,10 @@ export function startServer({ config, bot, settings, secrets, auth, notifier, lo
     }
   };
 
-  app.get('/api/state', (_req, res) => {
+  app.get('/api/state', async (_req, res) => {
+    const openPairs = Object.keys(bot.store.state.positions);
+    if (openPairs.length) await bot.refreshPrices(openPairs).catch(() => {});
+    const open = bot.openPositionsValue();
     const store = bot.store;
     const s = store.state;
     const closed = s.trades;
@@ -142,11 +145,8 @@ export function startServer({ config, bot, settings, secrets, auth, notifier, lo
       startBalanceEur: s.startBalanceEur,
       liveBalance: bot.liveBalance,
       halted: s.halted,
-      positions: Object.values(s.positions).map((p) => {
-        const ps = bot.pairStatus[p.pair];
-        const current = ps?.price ?? null;
-        return { ...p, currentPrice: current, changePct: current ? ((current - p.entryPrice) / p.entryPrice) * 100 : null };
-      }),
+      positions: open.positions,
+      open: { valueEur: open.valueEur, costEur: open.costEur, pnlEur: open.pnlEur, complete: open.complete },
       trades: closed.slice(0, 100),
       decisions: s.decisions.slice(0, 100),
       stats: {

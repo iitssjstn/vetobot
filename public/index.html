@@ -108,6 +108,11 @@
   .tile .k svg { width: 16px; height: 16px; color: var(--faint); }
   .tile .v { font-size: 23px; font-weight: 700; margin-top: 6px; letter-spacing: -.01em; }
   .tile .s { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .tile.flash-up { animation: flashUp 1.2s ease-out; }
+  .tile.flash-down { animation: flashDown 1.2s ease-out; }
+  @keyframes flashUp { from { background: var(--up-soft); } to { background: var(--panel); } }
+  @keyframes flashDown { from { background: var(--down-soft); } to { background: var(--panel); } }
+  @media (prefers-reduced-motion: reduce) { .tile.flash-up, .tile.flash-down { animation: none; } }
 
   table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
   th, td { text-align: left; padding: 10px 16px; border-bottom: 1px solid var(--line); vertical-align: middle; }
@@ -640,7 +645,9 @@ const $ = (id) => document.getElementById(id);
 const eur = (n, d) => n == null ? '–' : new Intl.NumberFormat('nl-NL', { style: 'currency', currency: 'EUR',
   maximumFractionDigits: d ?? (Math.abs(n) < 1 ? 6 : Math.abs(n) < 100 ? 4 : 2) }).format(n);
 const eur2 = (n) => eur(n, 2);
-const pct = (n) => n == null ? '–' : `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
+// Bedrag met teken ervoor (+€ 1,20 / −€ 0,50), gekleurd.
+const signEur = (n) => n == null ? '–' : `<span class="${n > 0 ? 'up' : n < 0 ? 'down' : ''}">${n > 0 ? '+' : n < 0 ? '−' : ''}${eur(Math.abs(n), 2)}</span>`;
+const pct = (n) => n == null ? '–' : `${n > 0 ? '+' : n < 0 ? '−' : ''}${Math.abs(n).toFixed(2)}%`;
 const cls = (n) => n > 0 ? 'up' : n < 0 ? 'down' : '';
 const time = (s) => s ? new Date(s).toLocaleString('nl-NL', { dateStyle: 'short', timeStyle: 'short' }) : '–';
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -666,7 +673,7 @@ function table(rows, cols, empty, emptyIcon = 'list', rowAttr) {
 }
 
 // ---------- Views ----------
-let pollTimer, state, me;
+let pollTimer, state, me, lastNums = {};
 const titles = { dashboard: 'Dashboard', market: 'Markt', positions: 'Posities', signals: 'AI-signalen',
   trades: 'Trades', activity: 'Activiteit', settings: 'Instellingen' };
 const isOn = (section) => !document.querySelector(`[data-section="${section}"]`).hidden;
@@ -698,7 +705,7 @@ $('menu-btn').onclick = () => $('aside').classList.toggle('open');
 function poll() {
   clearTimeout(pollTimer);
   pollTimer = setTimeout(async () => { await load().catch(() => {}); if (!$('view-app').hidden) poll(); },
-    state?.running ? 2000 : 15000);
+    state?.running ? 2000 : state?.positions?.length ? 5000 : 15000);
 }
 
 async function init() {
@@ -761,19 +768,42 @@ async function load() {
   if (s.lastError) alerts.push(['err', `Fout bij laatste check (${esc(s.lastError.pair)}): ${esc(s.lastError.message)}`]);
   $('alerts').innerHTML = alerts.map(([c, t]) => `<div class="alert ${c}">${icon('alert')}<div>${t}</div></div>`).join('');
 
+  // Open posities live meegerekend (incl. geschatte verkoopfee).
+  const o = s.open ?? { valueEur: 0, costEur: 0, pnlEur: 0 };
+  const hasOpen = s.positions.length > 0;
+  const cash = live ? s.liveBalance?.eurTotal ?? null : s.balanceEur;
+  const equity = cash == null ? null : cash + o.valueEur;
+  const totalPnl = s.stats.realizedEur + o.pnlEur;
+  const todayPnl = s.stats.realizedTodayEur + o.pnlEur;
+  const sign = signEur;
   const tiles = [];
-  if (live) tiles.push(['Bitvavo-saldo', s.liveBalance ? eur2(s.liveBalance.eurFree) : '–',
-    s.liveBalance ? `totaal ${eur2(s.liveBalance.eurTotal)}` : 'nog niet opgehaald', 'var(--down)', 'wallet']);
-  else tiles.push(['Paper-saldo', eur2(s.balanceEur), `start ${eur2(s.startBalanceEur)}`, 'var(--accent)', 'wallet']);
+  if (live) tiles.push(['Portefeuille (live)', equity == null ? '–' : eur2(equity),
+    s.liveBalance ? `${eur2(s.liveBalance.eurFree)} vrij · ${eur2(o.valueEur)} in posities` : 'saldo nog niet opgehaald', 'var(--down)', 'wallet', 'equity']);
+  else {
+    const vsStart = equity - s.startBalanceEur;
+    const vsPct = (vsStart / s.startBalanceEur) * 100;
+    tiles.push(['Portefeuille (paper)', eur2(equity),
+      `<span class="${cls(vsPct)}">${pct(vsPct)}</span> sinds start · ${eur2(s.balanceEur)} vrij + ${eur2(o.valueEur)} in posities`,
+      'var(--accent)', 'wallet', 'equity']);
+  }
   tiles.push(
-    ['Resultaat totaal', `<span class="${cls(s.stats.realizedEur)}">${eur2(s.stats.realizedEur)}</span>`, `${s.stats.totalTrades} afgesloten trades`, 'var(--up)', 'chart'],
-    ['Resultaat vandaag', `<span class="${cls(s.stats.realizedTodayEur)}">${eur2(s.stats.realizedTodayEur)}</span>`, s.risk.maxDailyLossEur ? `daglimiet −${eur2(s.risk.maxDailyLossEur)}` : 'daglimiet uit', 'var(--info)', 'target'],
-    ['Open posities', `${s.positions.length} / ${s.risk.maxOpenTrades}`, `${eur2(s.risk.stakeEur)} per trade`, 'var(--warn)', 'brief'],
-    ['Winrate', s.stats.winRate == null ? '–' : `${s.stats.winRate.toFixed(0)}%`, s.stats.totalTrades ? 'van afgesloten trades' : 'nog geen trades', 'var(--up)', 'pulse'],
+    ['Resultaat totaal', sign(totalPnl), `gesloten ${sign(s.stats.realizedEur)} · open ${sign(o.pnlEur)}`, 'var(--up)', 'chart', 'total'],
+    ['Resultaat vandaag', sign(todayPnl), hasOpen ? `incl. open posities · ${s.risk.maxDailyLossEur ? `daglimiet −${eur2(s.risk.maxDailyLossEur)}` : 'daglimiet uit'}`
+      : (s.risk.maxDailyLossEur ? `daglimiet −${eur2(s.risk.maxDailyLossEur)}` : 'daglimiet uit'), 'var(--info)', 'target', 'today'],
+    ['Open posities', `${s.positions.length} / ${s.risk.maxOpenTrades}`,
+      hasOpen ? `${sign(o.pnlEur)} (${o.costEur ? pct((o.pnlEur / o.costEur) * 100) : '–'}) op ${eur2(o.costEur)}`
+        : `${eur2(s.risk.stakeEur)} per trade`, 'var(--warn)', 'brief', 'open'],
+    ['Winrate', s.stats.winRate == null ? '–' : `${s.stats.winRate.toFixed(0)}%`, s.stats.totalTrades ? 'van afgesloten trades' : 'nog geen afgesloten trades', 'var(--up)', 'pulse'],
     ['AI goed / af', `${s.stats.approved} / ${s.stats.vetoed}`, `${s.stats.blocked} geblokkeerd door regels`, 'var(--accent)', 'cpu'],
   );
-  $('tiles').innerHTML = tiles.map(([k, v, sub, c, ic]) =>
-    `<div class="panel tile" style="--c:${c}"><div class="k">${k}${icon(ic)}</div><div class="v num">${v}</div><div class="s">${sub}</div></div>`).join('');
+  // Kort oplichten als een bedrag verandert, zodat je ziet dat het meebeweegt.
+  const nums = { equity, total: totalPnl, today: todayPnl, open: o.pnlEur };
+  $('tiles').innerHTML = tiles.map(([k, v, sub, c, ic, id]) => {
+    const prev = id ? lastNums[id] : undefined, now = id ? nums[id] : undefined;
+    const flash = prev != null && now != null && Math.abs(now - prev) >= 0.005 ? (now > prev ? 'flash-up' : 'flash-down') : '';
+    return `<div class="panel tile ${flash}" style="--c:${c}"><div class="k">${k}${icon(ic)}</div><div class="v num">${v}</div><div class="s">${sub}</div></div>`;
+  }).join('');
+  lastNums = nums;
 
   renderStatus();
 
@@ -801,15 +831,16 @@ async function load() {
     ['Coin', p => pairHtml(p.pair)],
     ['Instap', p => `<span class="num">${eur(p.entryPrice)}</span>`, 'r'],
     ['Huidig', p => `<span class="num">${eur(p.currentPrice)}</span>`, 'r'],
-    ['P/L', p => `<span class="num ${cls(p.changePct)}">${pct(p.changePct)}</span>`, 'r'],
     ['Inzet', p => `<span class="num">${eur2(p.costEur)}</span>`, 'r'],
+    ['Waarde', p => `<span class="num">${eur2(p.valueEur)}</span>`, 'r'],
+    ['P/L', p => p.pnlEur == null ? '–' : `<span class="num">${signEur(p.pnlEur)} <span class="${cls(p.pnlPct)}">(${pct(p.pnlPct)})</span></span>`, 'r'],
     ['Geopend', p => `<span class="muted">${time(p.openedAt)}</span>`],
     ['', p => `<button class="btn sm danger" data-close="${esc(p.pair)}">Sluiten</button>`, 'r'],
   ];
   const posEmpty = 'Geen open posities. De bot opent er een bij een koopsignaal dat door de regels en de AI komt.';
   $('dash-positions').innerHTML = table(s.positions, posCols, posEmpty, 'brief');
   $('positions').innerHTML = table(s.positions, posCols, posEmpty, 'brief');
-  $('pos-hint').textContent = `Stop-loss ${s.risk.stopLossPct ? `−${s.risk.stopLossPct}%` : 'uit'} · take-profit ${s.risk.takeProfitPct ? `+${s.risk.takeProfitPct}%` : 'uit'}`;
+  $('pos-hint').textContent = `Koersen live, elke 5 sec · P/L inclusief verkoopfee · Stop-loss ${s.risk.stopLossPct ? `−${s.risk.stopLossPct}%` : 'uit'} · take-profit ${s.risk.takeProfitPct ? `+${s.risk.takeProfitPct}%` : 'uit'}`;
 
   const outcome = { approved: ['Goedgekeurd', 'ok'], vetoed: ['Afgewezen door AI', 'bad'], blocked: ['Geblokkeerd', 'wait'] };
   $('signals').innerHTML = table(s.decisions, [
@@ -826,7 +857,7 @@ async function load() {
     ['Coin', t => pairHtml(t.pair)],
     ['In', t => `<span class="num">${eur(t.entryPrice)}</span>`, 'r'],
     ['Uit', t => `<span class="num">${eur(t.exitPrice)}</span>`, 'r'],
-    ['Resultaat', t => `<span class="num ${cls(t.pnlEur)}">${eur2(t.pnlEur)} (${pct(t.pnlPct)})</span>`, 'r'],
+    ['Resultaat', t => `<span class="num">${signEur(t.pnlEur)} <span class="${cls(t.pnlPct)}">(${pct(t.pnlPct)})</span></span>`, 'r'],
     ['Exit', t => `<span class="muted">${esc(t.exitReason)}</span>`],
   ], 'Nog geen afgesloten trades.', 'history');
 

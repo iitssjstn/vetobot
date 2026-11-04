@@ -344,6 +344,65 @@ export class Bot {
     });
   }
 
+  // Live koersen voor het dashboard, los van de check. Gecachet zodat meerdere
+  // open tabbladen of snelle verversingen Bitvavo niet overbelasten.
+  async refreshPrices(pairs, maxAgeMs = 5000) {
+    this.livePrices ??= {};
+    const stale = pairs.filter((p) => !this.livePrices[p] || Date.now() - this.livePrices[p].at > maxAgeMs);
+    if (!stale.length) return this.livePrices;
+    if (this.pricesInFlight) return this.pricesInFlight;
+    this.pricesInFlight = (async () => {
+      try {
+        let tickers = {};
+        try {
+          tickers = await this.ex.fetchTickers(stale);
+        } catch {
+          for (const p of stale) {
+            try {
+              tickers[p] = await this.ex.fetchTicker(p);
+            } catch {}
+          }
+        }
+        for (const p of stale) {
+          const price = tickers[p]?.last ?? tickers[p]?.close;
+          if (price) this.livePrices[p] = { price, at: Date.now() };
+        }
+      } finally {
+        this.pricesInFlight = null;
+      }
+      return this.livePrices;
+    })();
+    return this.pricesInFlight;
+  }
+
+  // Waarde en open winst/verlies van de posities, inclusief de geschatte verkoopfee.
+  openPositionsValue() {
+    const fee = (this.risk.feePct ?? 0) / 100;
+    const list = Object.values(this.store.state.positions).map((p) => {
+      const live = this.livePrices?.[p.pair];
+      const price = live?.price ?? this.pairStatus[p.pair]?.price ?? null;
+      const valueEur = price != null ? p.amount * price * (1 - fee) : null;
+      const pnlEur = valueEur != null ? valueEur - p.costEur : null;
+      return {
+        ...p,
+        currentPrice: price,
+        priceAt: live ? new Date(live.at).toISOString() : this.pairStatus[p.pair]?.at ?? null,
+        valueEur,
+        pnlEur,
+        pnlPct: pnlEur != null ? (pnlEur / p.costEur) * 100 : null,
+        changePct: price != null ? ((price - p.entryPrice) / p.entryPrice) * 100 : null,
+      };
+    });
+    const known = list.filter((p) => p.valueEur != null);
+    return {
+      positions: list,
+      valueEur: known.reduce((a, p) => a + p.valueEur, 0),
+      costEur: list.reduce((a, p) => a + p.costEur, 0),
+      pnlEur: known.reduce((a, p) => a + p.pnlEur, 0),
+      complete: known.length === list.length,
+    };
+  }
+
   // Haalt het echte EUR-saldo op bij Bitvavo. Gooit als de keys niet werken.
   async refreshLiveBalance() {
     if (!hasTradingKeys(this.ex)) {
