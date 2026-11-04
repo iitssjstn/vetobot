@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Auth } from '../src/auth.js';
-import { SecretStore } from '../src/secrets.js';
+import { SecretStore, remapAiKeys } from '../src/secrets.js';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'vetobot-'));
 
@@ -59,4 +59,16 @@ test('secrets worden versleuteld opgeslagen en overleven een herstart', () => {
   again.update({ aiApiKey: null });
   assert.equal(again.get('aiApiKey'), '');
   assert.throws(() => again.update({ onbekend: 'x' }));
+});
+
+test('AI-keys verhuizen mee bij verschuiven, verwijderen en nieuwe keys', () => {
+  const s = new SecretStore(tmp());
+  s.update({ aiApiKey: 'A', aiApiKey2: 'B', aiApiKey3: 'C' });
+  // Nieuwe volgorde: oud 3, oud 1, een nieuw model met een nieuwe key. Oud 2 is verwijderd.
+  remapAiKeys(s, [3, 1, null], { 3: 'NIEUW' }, 3);
+  assert.deepEqual([1, 2, 3, 4, 5].map((i) => s.get(i === 1 ? 'aiApiKey' : `aiApiKey${i}`)), ['C', 'A', 'NIEUW', '', '']);
+  // Alles op één model na weg
+  remapAiKeys(s, [2], {}, 1);
+  assert.equal(s.get('aiApiKey'), 'A');
+  assert.equal(s.get('aiApiKey2'), '');
 });

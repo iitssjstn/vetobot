@@ -480,28 +480,25 @@
       <div class="panel gap">
         <div class="panel-h"><h2><svg class="i"><use href="#i-cpu"/></svg>AI-veto</h2></div>
         <form class="panel-b" id="ai-form">
-          <div class="fields">
-            <div><label for="ai-provider">Provider</label>
-              <select id="ai-provider">
-                <option value="none">Geen AI (elk signaal gaat door)</option>
-                <option value="gemini">Google Gemini</option>
-                <option value="openai">OpenAI-compatibel (Groq, OpenRouter, …)</option>
-              </select></div>
-            <div><label for="ai-model">Model</label>
-              <div style="display:flex;gap:8px"><input id="ai-model" placeholder="leeg = standaardmodel" list="ai-models" autocomplete="off">
-                <button class="btn" type="button" id="ai-fetch" title="Haal de modellen op die je key mag gebruiken">Ophalen</button></div>
-              <datalist id="ai-models"></datalist></div>
-            <div id="ai-base-wrap"><label for="ai-base">Base-URL</label><input id="ai-base" placeholder="https://api.groq.com/openai/v1"></div>
-            <div><label for="ai-fail">Als de AI faalt of geen key heeft</label>
+          <div class="help" style="margin:0 0 12px">De AI mag alleen koopsignalen afwijzen; bedragen, stop-loss en verkopen bepaalt hij nooit.
+            Faalt een model (fout, time-out of tegoed op), dan probeert hij het volgende in de lijst. Een afwijzing is een geldig antwoord en gaat niet door naar de volgende.</div>
+          <div id="ai-rows"></div>
+          <div class="row-actions" style="margin-top:10px">
+            <button class="btn sm" type="button" id="ai-add">+ Back-upmodel toevoegen</button>
+            <span class="help" style="margin:0" id="ai-count"></span>
+          </div>
+          <div class="fields" style="margin-top:14px">
+            <div><label for="ai-fail">Als alle modellen falen</label>
               <select id="ai-fail"><option value="reject">Trade afwijzen (veilig)</option><option value="approve">Trade doorlaten</option></select></div>
           </div>
-          <div class="help">De AI mag alleen koopsignalen afwijzen. Bedragen, stop-loss en verkopen bepaalt hij nooit. De AI-key stel je hieronder in.</div>
+          <div class="help">Je krijgt een Discord-melding als een back-up het overneemt, en een melding met tag als alle modellen falen (zie Meldingen).
+            Laat je een key leeg, dan gebruikt dat model de key van een eerder model met dezelfde provider.</div>
           <div class="row-actions">
             <button class="btn primary" type="submit">Opslaan</button>
-            <button class="btn" type="button" id="ai-test">AI testen</button>
+            <button class="btn" type="button" id="ai-test">Alle modellen testen</button>
             <span class="msg" id="ai-msg"></span>
           </div>
-          <div class="alert" id="ai-result" hidden style="margin-top:14px"></div>
+          <div id="ai-result" hidden style="margin-top:14px"></div>
         </form>
       </div>
 
@@ -571,15 +568,13 @@
 
       <div class="panel gap">
         <div class="panel-h"><h2><svg class="i"><use href="#i-key"/></svg>API-keys</h2>
-          <span class="hint">Versleuteld opgeslagen, nooit meer volledig zichtbaar</span></div>
+          <span class="hint">Versleuteld opgeslagen, nooit meer volledig zichtbaar. AI-keys staan bij AI-veto.</span></div>
         <form class="panel-b" id="keys-form">
           <div class="fields">
             <div><label for="k-bv">Bitvavo API-key <span class="kstate" id="st-bitvavoApiKey"></span></label>
               <input id="k-bv" data-name="bitvavoApiKey" type="password" autocomplete="off" placeholder="leeg = niet wijzigen"></div>
             <div><label for="k-bvs">Bitvavo API-secret <span class="kstate" id="st-bitvavoApiSecret"></span></label>
               <input id="k-bvs" data-name="bitvavoApiSecret" type="password" autocomplete="off" placeholder="leeg = niet wijzigen"></div>
-            <div><label for="k-ai">AI API-key <span class="kstate" id="st-aiApiKey"></span></label>
-              <input id="k-ai" data-name="aiApiKey" type="password" autocomplete="off" placeholder="leeg = niet wijzigen"></div>
           </div>
           <div class="help">Bitvavo: maak een key met alleen handelsrechten, zonder opnamerechten, gekoppeld aan het IP van je server.</div>
           <div class="row-actions">
@@ -980,11 +975,12 @@ function renderSettings() {
     schedHelp();
   }
   if (document.activeElement?.closest('#ai-form')) return;
-  $('ai-provider').value = s.ai.provider;
-  $('ai-model').value = s.ai.model ?? '';
-  $('ai-base').value = s.ai.baseUrl ?? '';
-  $('ai-fail').value = s.ai.failMode ?? 'reject';
-  $('ai-base-wrap').hidden = s.ai.provider !== 'openai';
+  if (!aiDirty) {
+    aiRows = [{ provider: s.ai.provider, model: s.ai.model ?? '', baseUrl: s.ai.baseUrl ?? '', fromSlot: 1, newKey: '' },
+      ...(s.ai.fallbacks ?? []).map((f, i) => ({ ...f, fromSlot: i + 2, newKey: '' }))];
+    $('ai-fail').value = s.ai.failMode ?? 'reject';
+    renderAiRows();
+  }
 }
 
 $('mc-switch').onclick = () => {
@@ -1241,52 +1237,128 @@ $('sched-form').onsubmit = async (e) => {
 };
 
 // ---------- Instellingen: AI ----------
-$('ai-provider').onchange = () => { $('ai-base-wrap').hidden = $('ai-provider').value !== 'openai'; };
+// ---------- AI-volgorde ----------
+const GROQ = 'https://api.groq.com/openai/v1';
+let aiRows = [], aiDirty = false;
+const chainInfo = (slot) => state?.aiChain?.find(c => c.slot === slot);
+
+function renderAiRows() {
+  const off = aiRows[0]?.provider === 'none';
+  $('ai-rows').innerHTML = aiRows.map((r, i) => {
+    if (i > 0 && off) return '';
+    // Key-status hoort bij de opgeslagen plek; na verschuiven pas weer zeker na opslaan.
+    const info = !aiDirty ? chainInfo(i + 1) : null;
+    const keyState = r.newKey ? '<span class="up">nieuwe key</span>'
+      : info ? (info.keyFrom === i + 1 ? '<span class="up">eigen key</span>'
+        : info.keyFrom ? `<span class="muted">key van model ${info.keyFrom}</span>` : '<span class="warnc">geen key</span>')
+      : '<span class="muted">wordt bepaald na opslaan</span>';
+    const providers = (i === 0 ? '<option value="none">Geen AI (elk signaal gaat door)</option>' : '') +
+      '<option value="gemini">Google Gemini</option><option value="openai">OpenAI-compatibel (Groq, OpenRouter, …)</option>';
+    return `<div class="panel" style="padding:12px 14px;margin-bottom:10px;box-shadow:none;background:var(--panel-2)" data-row="${i}">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <span class="badge ${i === 0 ? 'paper' : 'soft'}">${i === 0 ? '1 · hoofdmodel' : `${i + 1} · back-up`}</span>
+        <span style="margin-left:auto;display:flex;gap:6px">
+          <button class="btn sm" type="button" data-move="${i}:-1" ${i === 0 ? 'disabled' : ''} aria-label="Omhoog">↑</button>
+          <button class="btn sm" type="button" data-move="${i}:1" ${i === aiRows.length - 1 ? 'disabled' : ''} aria-label="Omlaag">↓</button>
+          ${i > 0 ? `<button class="btn sm danger" type="button" data-del="${i}">Verwijderen</button>` : ''}
+        </span>
+      </div>
+      <div class="fields">
+        <div><label>Provider</label><select data-f="provider">${providers}</select></div>
+        ${r.provider === 'none' ? '' : `
+        <div><label>Model</label><div style="display:flex;gap:8px">
+          <input data-f="model" value="${esc(r.model)}" placeholder="leeg = standaardmodel" list="ai-models-${i}" autocomplete="off">
+          <button class="btn" type="button" data-fetch="${i}" title="Modellen ophalen die je key mag gebruiken">Ophalen</button></div>
+          <datalist id="ai-models-${i}"></datalist></div>
+        ${r.provider === 'openai' ? `<div><label>Base-URL</label><input data-f="baseUrl" value="${esc(r.baseUrl || GROQ)}" placeholder="${GROQ}"></div>` : ''}
+        <div><label>API-key <span class="kstate">${keyState}</span></label>
+          <input data-f="newKey" type="password" value="${esc(r.newKey)}" autocomplete="off" placeholder="leeg = niet wijzigen"></div>`}
+      </div>
+    </div>`;
+  }).join('');
+  aiRows.forEach((r, i) => { const sel = document.querySelector(`[data-row="${i}"] [data-f="provider"]`); if (sel) sel.value = r.provider; });
+  $('ai-add').hidden = off || aiRows.length >= 5;
+  $('ai-count').textContent = off ? 'AI staat uit.' : `${aiRows.length} van 5 modellen`;
+}
+
+$('ai-rows').addEventListener('input', (e) => {
+  const row = e.target.closest('[data-row]'); const f = e.target.dataset.f;
+  if (!row || !f) return;
+  aiRows[Number(row.dataset.row)][f] = e.target.value;
+  aiDirty = true;
+  if (f === 'provider') {
+    const r = aiRows[Number(row.dataset.row)];
+    if (r.provider === 'openai' && !r.baseUrl) r.baseUrl = GROQ;
+    renderAiRows();
+  }
+});
+$('ai-rows').addEventListener('click', async (e) => {
+  const mv = e.target.closest('[data-move]'), del = e.target.closest('[data-del]'), fe = e.target.closest('[data-fetch]');
+  if (mv) {
+    const [i, d] = mv.dataset.move.split(':').map(Number);
+    [aiRows[i], aiRows[i + d]] = [aiRows[i + d], aiRows[i]];
+    aiDirty = true; renderAiRows();
+  } else if (del) {
+    aiRows.splice(Number(del.dataset.del), 1);
+    aiDirty = true; renderAiRows();
+  } else if (fe) {
+    const i = Number(fe.dataset.fetch);
+    const msg = (t, c) => { $('ai-msg').className = `msg ${c ?? ''}`; $('ai-msg').textContent = t; };
+    if (aiDirty) return msg('Sla eerst op, dan haalt hij de modellen op met die instellingen.', 'err');
+    fe.disabled = true; msg(`Modellen ophalen voor model ${i + 1}…`);
+    try {
+      const { models } = await api('api/settings/ai/models', { slot: i + 1 });
+      $(`ai-models-${i}`).innerHTML = models.map(m => `<option value="${esc(m.id)}">${esc(m.label)}</option>`).join('');
+      msg(`${models.length} modellen gevonden voor model ${i + 1}. Klik in het veld Model om er een te kiezen.`, 'ok');
+      document.querySelector(`[data-row="${i}"] [data-f="model"]`)?.focus();
+    } catch (err) { msg(err.message, 'err'); }
+    finally { fe.disabled = false; }
+  }
+});
+$('ai-add').onclick = () => {
+  const last = aiRows[aiRows.length - 1];
+  aiRows.push({ provider: last?.provider === 'gemini' ? 'openai' : 'gemini', model: '', baseUrl: GROQ, fromSlot: null, newKey: '' });
+  aiDirty = true; renderAiRows();
+};
+$('ai-fail').onchange = () => { aiDirty = true; };
+
 $('ai-form').onsubmit = async (e) => {
   e.preventDefault();
+  const msg = (t, c) => { $('ai-msg').className = `msg ${c ?? ''}`; $('ai-msg').textContent = t; };
+  const rows = aiRows[0].provider === 'none' ? [aiRows[0]] : aiRows;
+  const [first, ...rest] = rows;
+  const newKeys = {};
+  rows.forEach((r, i) => { if (r.newKey?.trim()) newKeys[i + 1] = r.newKey.trim(); });
   try {
-    await api('api/settings/ai', { provider: $('ai-provider').value, model: $('ai-model').value, baseUrl: $('ai-base').value, failMode: $('ai-fail').value });
-    $('ai-msg').className = 'msg ok'; $('ai-msg').textContent = 'Opgeslagen.';
-    document.activeElement?.blur(); await load();
-  } catch (err) { $('ai-msg').className = 'msg err'; $('ai-msg').textContent = err.message; }
-};
-
-$('ai-fetch').onclick = async () => {
-  if ($('ai-provider').value !== state.ai.provider) {
-    $('ai-msg').className = 'msg err'; $('ai-msg').textContent = 'Sla eerst de provider op, dan haalt hij de modellen daarvan op.'; return;
-  }
-  $('ai-fetch').disabled = true; $('ai-msg').className = 'msg'; $('ai-msg').textContent = 'Modellen ophalen…';
-  try {
-    const { models } = await api('api/settings/ai/models', {});
-    $('ai-models').innerHTML = models.map(m => `<option value="${esc(m.id)}">${esc(m.label)}</option>`).join('');
-    $('ai-msg').className = 'msg ok';
-    $('ai-msg').textContent = `${models.length} modellen gevonden. Klik in het veld Model om er een te kiezen.`;
-    $('ai-model').focus();
-  } catch (err) { $('ai-msg').className = 'msg err'; $('ai-msg').textContent = err.message; }
-  finally { $('ai-fetch').disabled = false; }
+    await api('api/settings/ai', {
+      provider: first.provider, model: first.model, baseUrl: first.baseUrl, failMode: $('ai-fail').value,
+      fallbacks: rest.map(r => ({ provider: r.provider, model: r.model, baseUrl: r.baseUrl })),
+      keyMap: rows.map(r => r.fromSlot), newKeys,
+    });
+    aiDirty = false; msg('Opgeslagen.', 'ok');
+    document.activeElement?.blur(); await load(); renderSettings();
+  } catch (err) { msg(err.message, 'err'); }
 };
 
 $('ai-test').onclick = async () => {
   const box = $('ai-result');
-  if ($('ai-provider').value !== state.ai.provider || $('ai-model').value !== (state.ai.model ?? '')) {
-    $('ai-msg').className = 'msg err'; $('ai-msg').textContent = 'Sla je AI-instellingen eerst op, dan test hij die.'; return;
-  }
-  $('ai-test').disabled = true; $('ai-msg').className = 'msg'; $('ai-msg').textContent = 'Vraag naar de AI gestuurd…';
-  box.hidden = true;
+  const msg = (t, c) => { $('ai-msg').className = `msg ${c ?? ''}`; $('ai-msg').textContent = t; };
+  if (aiDirty) return msg('Sla je AI-instellingen eerst op, dan test hij die.', 'err');
+  $('ai-test').disabled = true; msg('Elk model een testvraag sturen…'); box.hidden = true;
   try {
-    const { result: r } = await api('api/settings/ai/test', {});
-    $('ai-msg').textContent = '';
-    box.className = 'alert'; box.style.borderColor = 'color-mix(in srgb, var(--up) 40%, transparent)'; box.style.background = 'var(--up-soft)';
-    box.innerHTML = `${icon('cpu')}<div><b class="up">Verbonden.</b> ${esc(r.provider)} · ${esc(r.model)} · ${r.ms} ms<br>` +
-      `Testvraag over ${esc(r.pair)}: <span class="badge ${r.decision === 'approve' ? 'ok' : 'bad'}">${r.decision === 'approve' ? 'goedgekeurd' : 'afgewezen'}</span> ` +
-      `<span class="muted">${esc(r.reason)}</span><div class="help">Dit was alleen een test; er is geen trade geplaatst.</div></div>`;
-  } catch (err) {
-    $('ai-msg').textContent = '';
-    box.className = 'alert err'; box.style.borderColor = ''; box.style.background = '';
-    box.innerHTML = `${icon('alert')}<div><b class="down">Niet gelukt.</b> ${esc(err.message)}</div>`;
-  } finally {
-    box.hidden = false; $('ai-test').disabled = false;
-  }
+    const { pair, results } = await api('api/settings/ai/test', {});
+    const ok = results.filter(r => r.ok).length;
+    msg(ok === results.length ? 'Alle modellen werken.' : ok ? `${ok} van ${results.length} modellen werken.` : 'Geen enkel model werkt.',
+      ok === results.length ? 'ok' : 'err');
+    box.innerHTML = `<div class="scroll" style="border:1px solid var(--line);border-radius:10px"><table class="evtable">
+      <thead><tr><th>#</th><th>Model</th><th>Resultaat</th></tr></thead><tbody>` +
+      results.map(r => `<tr><td>${r.slot}</td><td>${esc(r.label)}</td><td>${r.ok
+        ? `<span class="up">Verbonden</span> <span class="muted">· ${r.ms} ms · ${r.decision === 'approve' ? 'goedgekeurd' : 'afgewezen'}: ${esc(r.reason)}</span>`
+        : `<span class="down">Mislukt:</span> <span class="muted">${esc(r.error)}</span>`}</td></tr>`).join('') +
+      `</tbody></table></div><div class="help">Testvraag over ${esc(pair)}. Dit was alleen een test; er is geen trade geplaatst.</div>`;
+    box.hidden = false;
+  } catch (err) { msg(err.message, 'err'); }
+  finally { $('ai-test').disabled = false; }
 };
 
 // ---------- Instellingen: keys ----------
@@ -1315,7 +1387,7 @@ $('keys-clear').onclick = async () => {
   if (state?.mode === 'live') return keyMsg('Schakel eerst terug naar paper voordat je de keys verwijdert.', 'err');
   if (!confirm('Alle API-keys verwijderen?')) return;
   try {
-    renderKeyStatus(await api('api/settings/keys', { bitvavoApiKey: null, bitvavoApiSecret: null, aiApiKey: null }));
+    renderKeyStatus(await api('api/settings/keys', { bitvavoApiKey: null, bitvavoApiSecret: null, aiApiKey: null, aiApiKey2: null, aiApiKey3: null, aiApiKey4: null, aiApiKey5: null }));
     keyMsg('Verwijderd.', 'ok'); load();
   } catch (err) { keyMsg(err.message, 'err'); }
 };

@@ -2,8 +2,9 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { COOKIE, readCookie } from './auth.js';
-import { SECRET_NAMES } from './secrets.js';
+import { SECRET_NAMES, remapAiKeys } from './secrets.js';
 import { NOTIFY_EVENTS } from './notify.js';
+import { aiLabel } from './ai.js';
 import { AI_PROVIDERS, MAX_PAIRS, TIMEFRAMES, RISK_LIMITS, STRATEGY_LIMITS } from './settings.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -130,7 +131,8 @@ export function startServer({ config, bot, settings, secrets, auth, notifier, lo
       timeframes: TIMEFRAMES,
       ai: settings.ai,
       aiProviders: AI_PROVIDERS,
-      aiKeySet: keys.aiApiKey.set,
+      aiKeySet: bot.aiChain().some((c) => c.apiKey),
+      aiChain: bot.aiChain().map((c) => ({ slot: c.slot, label: aiLabel(c), keySet: Boolean(c.apiKey), keyFrom: c.keyFrom })),
       bitvavoKeysSet: keys.bitvavoApiKey.set && keys.bitvavoApiSecret.set,
       risk: bot.risk,
       riskLimits: RISK_LIMITS,
@@ -268,15 +270,18 @@ export function startServer({ config, bot, settings, secrets, auth, notifier, lo
   }));
 
   app.post('/api/settings/ai', wrap((req) => {
-    settings.setAi(req.body ?? {});
+    const body = req.body ?? {};
+    settings.setAi(body);
+    // Keys verhuizen mee met het verschuiven of verwijderen van modellen.
+    if (Array.isArray(body.keyMap)) remapAiKeys(secrets, body.keyMap, body.newKeys, 1 + settings.ai.fallbacks.length);
     log.info(`AI-instelling gewijzigd door ${req.user}: ${settings.ai.provider}`);
     return { ok: true, ai: settings.ai };
   }));
 
   // Test de Bitvavo-keys zonder van modus te wisselen.
-  app.post('/api/settings/ai/models', wrap(async () => ({ ok: true, models: await bot.listAiModels() })));
+  app.post('/api/settings/ai/models', wrap(async (req) => ({ ok: true, models: await bot.listAiModels(req.body?.slot ?? 1) })));
 
-  app.post('/api/settings/ai/test', wrap(async () => ({ ok: true, result: await bot.testAi() })));
+  app.post('/api/settings/ai/test', wrap(async () => ({ ok: true, ...(await bot.testAi()) })));
 
   app.post('/api/settings/keys/test', wrap(async () => ({ ok: true, liveBalance: await bot.refreshLiveBalance() })));
 

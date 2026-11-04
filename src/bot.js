@@ -1,5 +1,5 @@
 import { evaluate } from './strategy.js';
-import { askVeto, testConnection, listModels, defaultModel, writeSummary } from './ai.js';
+import { askVetoChain, testChain, listModels, writeSummaryChain, aiLabel } from './ai.js';
 import { TIMEFRAME_MINUTES } from './settings.js';
 import { cleanSuggestions, currentValues, applySuggestions } from './suggest.js';
 import { fetchClosedCandles, fetchPrice, hasTradingKeys } from './exchange.js';
@@ -158,7 +158,7 @@ export class Bot {
     let suggestions = [];
     let rationale = null;
     try {
-      const res = await writeSummary({ ...this.config.ai, ...this.settings.ai, apiKey: this.secrets?.get('aiApiKey') }, data);
+      const res = await writeSummaryChain(this.aiChain(), data);
       analysis = res?.analysis ?? null;
       suggestions = cleanSuggestions(res?.suggestions, currentValues(this));
       rationale = suggestions.length ? res?.rationale ?? null : null;
@@ -231,8 +231,32 @@ export class Bot {
     return applied;
   }
 
-  listAiModels() {
-    return listModels({ ...this.config.ai, ...this.settings.ai, apiKey: this.secrets?.get('aiApiKey') });
+  // De AI-volgorde: model 1 plus maximaal 4 back-ups, elk met zijn key. Zonder eigen key
+  // gebruikt een model de key van een eerder model met dezelfde provider (en base-URL).
+  // Staat model 1 op "geen AI", dan is de AI helemaal uit.
+  aiChain() {
+    const base = { ...this.config.ai, ...this.settings.ai };
+    const entries = [{ provider: base.provider, model: base.model, baseUrl: base.baseUrl }, ...(this.settings.ai.fallbacks ?? [])];
+    if (entries[0].provider === 'none') return [];
+    const keyOf = (i) => this.secrets?.get(i === 0 ? 'aiApiKey' : `aiApiKey${i + 1}`) || '';
+    const same = (a, b) => a.provider === b.provider && (a.provider === 'gemini' || a.baseUrl === b.baseUrl);
+    return entries.map((e, i) => {
+      let apiKey = keyOf(i);
+      let keyFrom = apiKey ? i + 1 : null;
+      for (let j = 0; !apiKey && j < i; j++) {
+        if (same(entries[j], e) && keyOf(j)) {
+          apiKey = keyOf(j);
+          keyFrom = j + 1;
+        }
+      }
+      return { timeoutMs: base.timeoutMs, failMode: base.failMode, ...e, apiKey, keyFrom, slot: i + 1 };
+    });
+  }
+
+  listAiModels(slot = 1) {
+    const cfg = this.aiChain().find((c) => c.slot === Number(slot));
+    if (!cfg) throw new Error(`Model ${slot} is niet ingesteld (sla eerst op)`);
+    return listModels(cfg);
   }
 
   // Test de AI-koppeling met actuele data van de eerste gevolgde coin.
@@ -251,12 +275,12 @@ export class Bot {
       indicators = { close: 100, emaFast: 101, emaSlow: 100, rsi: 55, change24: 1.5 };
       candles = [];
     }
-    const result = await testConnection(
-      { ...this.config.ai, ...this.settings.ai, apiKey: this.secrets?.get('aiApiKey') },
-      { pair, timeframe, indicators, recentCandles: candles.slice(-24) },
-    );
-    this.#event('info', null, `AI-test geslaagd (${result.provider}, ${result.ms} ms): ${result.decision}`);
-    return { ...result, pair };
+    const chain = this.aiChain();
+    if (!chain.length) throw new Error('Er is geen AI-provider gekozen');
+    const results = await testChain(chain, { pair, timeframe, indicators, recentCandles: candles.slice(-24) });
+    const ok = results.filter((r) => r.ok).length;
+    this.#event(ok ? 'info' : 'warn', null, `AI-test: ${ok} van ${results.length} model(len) werken`);
+    return { pair, results };
   }
 
   setStrategy(values) {
@@ -500,7 +524,7 @@ export class Bot {
 
     this.#step(`${pair}: AI om oordeel vragen`);
     if (this.tickStats && this.settings.ai.provider !== 'none') this.tickStats.aiCalls++;
-    const veto = await askVeto({ ...this.config.ai, ...this.settings.ai, apiKey: this.secrets?.get('aiApiKey') }, {
+    const veto = await askVetoChain(this.aiChain(), this.settings.ai.failMode ?? this.config.ai.failMode, {
       pair,
       timeframe,
       indicators: result.indicators,
@@ -519,7 +543,21 @@ export class Bot {
     });
     this.#event(veto.decision === 'approve' ? 'info' : 'warn', pair,
       `AI (${veto.provider}) ${veto.decision === 'approve' ? 'keurt goed' : 'wijst af'}: ${veto.reason}`);
-    if (veto.decision !== 'approve') {
+    const errList = (list) => list.map((x) => `**${x.slot}. ${x.label}**: ${x.error}`).join('\n');
+    if (veto.error && veto.chainErrors) {
+      this.#notify('aiFailed', {
+        title: 'Alle AI-modellen faalden',
+        message: `${errList(veto.chainErrors)}\n\nHet koopsignaal voor ${pair} is ${veto.decision === 'approve' ? 'doorgelaten' : 'afgewezen'} volgens je fail-mode.`,
+        level: 'error',
+      });
+    } else if (veto.fallbackErrors?.length) {
+      this.#notify('aiFallback', {
+        title: `Back-up nam het over: ${veto.provider}`,
+        message: errList(veto.fallbackErrors),
+        level: 'warn',
+      });
+    }
+    if (veto.decision !== 'approve' && !veto.error) {
       this.#notify('aiVeto', { title: `${pair}: koopsignaal afgewezen`, message: veto.reason, level: 'warn' });
     }
 

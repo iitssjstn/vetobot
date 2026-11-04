@@ -27,8 +27,8 @@ export const STRATEGY_LIMITS = {
 export const AI_FAIL_MODES = ['reject', 'approve'];
 const NOTIFY_DEFAULTS = {
   discordUserId: '',
-  events: { startup: true, trades: true, stoploss: true, errors: true, dailyLimit: true, mode: true, aiVeto: false, dailySummary: true },
-  mentions: { startup: true, trades: false, stoploss: true, errors: true, dailyLimit: true, mode: true, aiVeto: false, dailySummary: false },
+  events: { startup: true, trades: true, stoploss: true, errors: true, dailyLimit: true, mode: true, aiVeto: false, dailySummary: true, aiFallback: true, aiFailed: true },
+  mentions: { startup: true, trades: false, stoploss: true, errors: true, dailyLimit: true, mode: true, aiVeto: false, dailySummary: false, aiFallback: false, aiFailed: true },
   summaryTime: '08:00',
 };
 const RISK_LABELS = {
@@ -68,6 +68,7 @@ export class Settings {
         model: saved.ai?.model ?? defaults.ai.model,
         baseUrl: saved.ai?.baseUrl ?? defaults.ai.baseUrl,
         failMode: saved.ai?.failMode ?? defaults.ai.failMode ?? 'reject',
+        fallbacks: Array.isArray(saved.ai?.fallbacks) ? saved.ai.fallbacks : [],
       },
       strategy: Object.fromEntries(Object.keys(STRATEGY_LIMITS).map((k) => [k, saved.strategy?.[k] ?? defaults.strategy[k]])),
       pairs: saved.pairs ?? defaults.pairs,
@@ -185,14 +186,24 @@ export class Settings {
     this.#save();
   }
 
-  setAi({ provider, model, baseUrl, failMode }) {
+  // fallbacks: maximaal 4 back-upmodellen, op volgorde. Ontbreekt de lijst, dan blijft hij gelijk.
+  setAi({ provider, model, baseUrl, failMode, fallbacks }) {
+    const entry = (e, n) => {
+      if (!['gemini', 'openai'].includes(e?.provider)) throw new Error(`Model ${n}: kies Gemini of OpenAI-compatibel`);
+      const url = String(e.baseUrl ?? '').trim();
+      if (url && !/^https?:\/\/[^\s]+$/.test(url)) throw new Error(`Model ${n}: base-URL moet met http:// of https:// beginnen`);
+      return { provider: e.provider, model: String(e.model ?? '').trim().slice(0, 100), baseUrl: url || 'https://api.groq.com/openai/v1' };
+    };
     if (!AI_PROVIDERS.includes(provider)) throw new Error(`Onbekende AI-provider "${provider}"`);
     if (baseUrl && !/^https?:\/\/[^\s]+$/.test(baseUrl)) throw new Error('Base-URL moet met http:// of https:// beginnen');
+    const list = fallbacks === undefined ? this.data.ai.fallbacks ?? [] : fallbacks;
+    if (!Array.isArray(list) || list.length > 4) throw new Error('Maximaal 4 back-upmodellen');
     this.data.ai = {
       provider,
       model: String(model ?? '').trim().slice(0, 100),
       baseUrl: String(baseUrl ?? '').trim() || 'https://api.groq.com/openai/v1',
       failMode: AI_FAIL_MODES.includes(failMode) ? failMode : 'reject',
+      fallbacks: list.map((e, i) => entry(e, i + 2)),
     };
     this.#save();
   }

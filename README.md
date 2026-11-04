@@ -51,6 +51,16 @@ De AI-key vul je in via het dashboard. Met **Ophalen** naast het modelveld zie j
 
 Tip: draai een tijd met `none` en daarna met een AI, en vergelijk de resultaten in het dashboard. Zo zie je of de veto echt helpt.
 
+### AI-volgorde (back-upmodellen)
+
+Bij AI-veto zet je maximaal 5 modellen op volgorde, elk met een eigen provider, model en key. Faalt een model (fout, time-out, quota op of een onleesbaar antwoord), dan probeert vetobot het volgende. Een afwijzing is een geldig antwoord; dan gaat hij niet verder naar de volgende.
+
+- Laat je de key van een model leeg, dan gebruikt het de key van een eerder model met dezelfde provider (en base-URL). Zo kun je bijvoorbeeld twee Gemini-modellen met één key gebruiken.
+- Met ↑ en ↓ verander je de volgorde; de keys verhuizen mee.
+- **Alle modellen testen** stuurt elk model een testvraag en laat per model zien of het werkt.
+- Neemt een back-up het over, dan krijg je een Discord-melding. Falen alle modellen, dan krijg je een melding met tag en de fout van elk model, en volgt het signaal je instelling bij "Als alle modellen falen".
+- Dezelfde volgorde wordt ook gebruikt voor het dagoverzicht.
+
 ## Installeren in je bestaande Docker Compose
 
 De GitHub Action bouwt bij elke push naar `main` de image `ghcr.io/iitssjstn/vetobot:latest`.

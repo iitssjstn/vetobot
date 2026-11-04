@@ -12,7 +12,9 @@ import path from 'node:path';
 // Dit beschermt tegen uitlekken via git, backups van losse bestanden of het dashboard.
 // Wie root is op de server kan bij beide bestanden; dat is bij elke opslag op disk zo.
 
-export const SECRET_NAMES = ['bitvavoApiKey', 'bitvavoApiSecret', 'aiApiKey', 'discordWebhook', 'heartbeatUrl'];
+// aiApiKey hoort bij AI-model 1, aiApiKey2 t/m aiApiKey5 bij de back-ups.
+export const SECRET_NAMES = ['bitvavoApiKey', 'bitvavoApiSecret', 'aiApiKey', 'aiApiKey2', 'aiApiKey3', 'aiApiKey4', 'aiApiKey5',
+  'discordWebhook', 'heartbeatUrl'];
 
 // Extra controle voor secrets die een URL zijn, zodat een typfout direct opvalt.
 const VALIDATORS = {
@@ -21,6 +23,22 @@ const VALIDATORS = {
     'Dat is geen Discord-webhook-URL (https://discord.com/api/webhooks/...)',
   heartbeatUrl: (v) => /^https:\/\/[^\s]+$/.test(v) || 'De heartbeat-URL moet met https:// beginnen',
 };
+
+// Verhuist de AI-keys mee als je modellen in de lijst verschuift of verwijdert.
+// keyMap[i]: van welk oud model (1-5) plek i+1 zijn key krijgt (null = nieuw model).
+// newKeys[plek]: een nieuw ingevulde key. count: hoeveel modellen er nu zijn.
+export function remapAiKeys(secrets, keyMap, newKeys, count) {
+  const name = (i) => (i === 1 ? 'aiApiKey' : `aiApiKey${i}`);
+  const old = [1, 2, 3, 4, 5].map((i) => secrets.get(name(i)));
+  const updates = {};
+  for (let i = 1; i <= 5; i++) {
+    const from = Number(keyMap?.[i - 1]);
+    const fresh = String(newKeys?.[i] ?? '').trim();
+    const value = i > count ? '' : fresh || (from >= 1 && from <= 5 ? old[from - 1] : '');
+    updates[name(i)] = value || null;
+  }
+  secrets.update(updates);
+}
 
 export class SecretStore {
   constructor(dataDir) {

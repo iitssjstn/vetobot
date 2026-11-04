@@ -16,6 +16,8 @@ export const NOTIFY_EVENTS = {
   dailyLimit: 'Dagelijkse verlieslimiet bereikt',
   mode: 'Gewisseld tussen paper en live',
   aiVeto: 'Koopsignaal afgewezen door de AI',
+  aiFallback: 'Back-upmodel nam het over van de AI',
+  aiFailed: 'Alle AI-modellen faalden',
   dailySummary: 'Dagelijks overzicht',
 };
 
@@ -45,8 +47,8 @@ export class Notifier {
     const url = this.secrets.get('discordWebhook');
     if (!url || !cfg.events[event]) return false;
 
-    if (event === 'errors') {
-      const key = String(message).slice(0, 80);
+    if (['errors', 'aiFallback', 'aiFailed'].includes(event)) {
+      const key = `${event}:${String(message).slice(0, 80)}`;
       const last = this.lastErrorSent.get(key);
       if (last && Date.now() - last < ERROR_THROTTLE_MS) return false;
       this.lastErrorSent.set(key, Date.now());

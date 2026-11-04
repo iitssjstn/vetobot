@@ -252,3 +252,24 @@ test('voorstel overnemen past alleen de aangevinkte instellingen toe', async () 
   assert.ok(bot.store.state.lastSummary.appliedAt);
   await assert.rejects(bot.applySummarySuggestions(['stopLossPct']), /staan al zo|Kies minimaal/);
 });
+
+test('AI-volgorde: keys per model en hergebruik bij dezelfde provider', () => {
+  const { bot } = setup({});
+  const keys = { aiApiKey: 'gem-key', aiApiKey3: 'groq-key' };
+  bot.secrets = { get: (n) => keys[n] ?? '' };
+  bot.settings.setAi({
+    provider: 'gemini', model: 'g1', failMode: 'reject',
+    fallbacks: [
+      { provider: 'gemini', model: 'g2' },                                        // geen key: hergebruikt model 1
+      { provider: 'openai', model: 'l1', baseUrl: 'https://api.groq.com/openai/v1' },  // eigen key
+      { provider: 'openai', model: 'l2', baseUrl: 'https://api.groq.com/openai/v1' },  // hergebruikt model 3
+      { provider: 'openai', model: 'x', baseUrl: 'https://openrouter.ai/api/v1' },     // andere provider: geen key
+    ],
+  });
+  const chain = bot.aiChain();
+  assert.deepEqual(chain.map((c) => [c.slot, c.apiKey, c.keyFrom]),
+    [[1, 'gem-key', 1], [2, 'gem-key', 1], [3, 'groq-key', 3], [4, 'groq-key', 3], [5, '', null]]);
+  assert.throws(() => bot.settings.setAi({ provider: 'gemini', fallbacks: [1, 2, 3, 4, 5].map(() => ({ provider: 'gemini' })) }), /Maximaal 4/);
+  bot.settings.setAi({ provider: 'none', fallbacks: [{ provider: 'gemini' }] });
+  assert.deepEqual(bot.aiChain(), [], 'model 1 op geen AI = AI uit');
+});

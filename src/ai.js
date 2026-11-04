@@ -182,6 +182,75 @@ export async function listModels(cfg) {
   return (data.data ?? []).map((m) => ({ id: m.id, label: m.id })).sort((a, b) => a.id.localeCompare(b.id));
 }
 
+// ---------- AI-volgorde (back-ups) ----------
+const hostOf = (u) => {
+  try {
+    return new URL(u).hostname.replace(/^api\./, '');
+  } catch {
+    return 'openai';
+  }
+};
+export const aiLabel = (cfg) => `${cfg.provider === 'gemini' ? 'Gemini' : hostOf(cfg.baseUrl)} · ${cfg.model || defaultModel(cfg.provider)}`;
+const callModel = (cfg, prompt, opts) => (cfg.provider === 'gemini' ? askGemini(cfg, prompt, opts) : askOpenAICompatible(cfg, prompt, opts));
+
+// Probeert de modellen op volgorde. Gooit fn een fout (verbinding, quota, time-out,
+// onleesbaar antwoord), dan volgt het volgende model. Lukt geen enkele, dan gooit runChain
+// een fout met chainErrors: [{ slot, label, error }].
+export async function runChain(chain, fn) {
+  const errors = [];
+  for (const cfg of chain) {
+    if (!cfg.apiKey) {
+      errors.push({ slot: cfg.slot, label: aiLabel(cfg), error: 'Geen API-key ingesteld' });
+      continue;
+    }
+    try {
+      return { result: await fn(cfg), cfg, errors };
+    } catch (err) {
+      errors.push({ slot: cfg.slot, label: aiLabel(cfg), error: err.message });
+    }
+  }
+  const e = new Error(errors.map((x) => `${x.label}: ${x.error}`).join(' | ') || 'Geen AI ingesteld');
+  e.chainErrors = errors;
+  throw e;
+}
+
+// Veto via de volgorde. Een afwijzing is een geldig antwoord; alleen fouten gaan door naar het volgende model.
+// Geeft altijd een beslissing terug en gooit nooit.
+export async function askVetoChain(chain, failMode, context) {
+  if (!chain.length) return { decision: 'approve', reason: 'Geen AI ingesteld, signaal automatisch goedgekeurd', provider: 'none' };
+  const prompt = buildPrompt(context);
+  try {
+    const r = await runChain(chain, async (cfg) => parseDecision(await callModel(cfg, prompt)));
+    return { ...r.result, provider: aiLabel(r.cfg), usedSlot: r.cfg.slot, fallbackErrors: r.errors };
+  } catch (err) {
+    const decision = failMode === 'approve' ? 'approve' : 'reject';
+    return { decision, reason: `Alle AI-modellen faalden, fail-mode "${decision}"`, provider: 'geen', error: true, chainErrors: err.chainErrors ?? [] };
+  }
+}
+
+export async function writeSummaryChain(chain, data) {
+  if (!chain.length) return null;
+  const r = await runChain(chain, async (cfg) => {
+    const res = await writeSummary(cfg, data);
+    if (!res?.analysis) throw new Error('Leeg antwoord');
+    return res;
+  });
+  return { ...r.result, model: aiLabel(r.cfg), fallbackErrors: r.errors };
+}
+
+// Test elk model in de volgorde los, zodat je ziet welke werken.
+export async function testChain(chain, context) {
+  const out = [];
+  for (const cfg of chain) {
+    try {
+      out.push({ slot: cfg.slot, label: aiLabel(cfg), ok: true, ...(await testConnection(cfg, context)) });
+    } catch (err) {
+      out.push({ slot: cfg.slot, label: aiLabel(cfg), ok: false, error: err.message });
+    }
+  }
+  return out;
+}
+
 // Geeft altijd { decision, reason, provider, error? } terug en gooit nooit.
 export async function askVeto(cfg, context) {
   if (cfg.provider === 'none') {
