@@ -1,6 +1,7 @@
 import { evaluate } from './strategy.js';
 import { askVeto, testConnection, listModels, defaultModel, writeSummary } from './ai.js';
 import { TIMEFRAME_MINUTES } from './settings.js';
+import { cleanSuggestions, currentValues, applySuggestions } from './suggest.js';
 import { fetchClosedCandles, fetchPrice, hasTradingKeys } from './exchange.js';
 import { checkEntry } from './risk.js';
 
@@ -154,8 +155,13 @@ export class Bot {
 
     let analysis = null;
     let aiError = null;
+    let suggestions = [];
+    let rationale = null;
     try {
-      analysis = await writeSummary({ ...this.config.ai, ...this.settings.ai, apiKey: this.secrets?.get('aiApiKey') }, data);
+      const res = await writeSummary({ ...this.config.ai, ...this.settings.ai, apiKey: this.secrets?.get('aiApiKey') }, data);
+      analysis = res?.analysis ?? null;
+      suggestions = cleanSuggestions(res?.suggestions, currentValues(this));
+      rationale = suggestions.length ? res?.rationale ?? null : null;
     } catch (err) {
       aiError = err.message;
     }
@@ -171,6 +177,9 @@ export class Bot {
       openPositions: positions,
       analysis,
       aiError,
+      suggestions,
+      rationale,
+      appliedAt: null,
     };
     s.lastSummary = summary;
     this.store.save();
@@ -193,10 +202,33 @@ export class Bot {
         inline: false,
       });
     }
+    if (suggestions.length) {
+      fields.push({
+        name: 'Voorstel van de AI',
+        value: suggestions.map((x) => `${x.label}: ${x.from} → **${x.to}**`).join('\n') +
+          (rationale ? `\n_${rationale}_` : '') + '\nOvernemen kan op het dashboard.',
+        inline: false,
+      });
+    }
     const message = analysis ?? (aiError ? `Geen AI-analyse: ${aiError}` : 'Geen AI ingesteld, dus alleen de cijfers.');
     this.#event('info', null, `Dagoverzicht gemaakt${analysis ? ' met AI-analyse' : ''}`);
     await this.notifier?.send('dailySummary', { title: `Dagoverzicht · ${eur(pnl)}`, message, level: pnl >= 0 ? 'ok' : 'warn', fields });
     return summary;
+  }
+
+  // Neemt (een deel van) het voorstel uit het laatste dagoverzicht over.
+  async applySummarySuggestions(keys) {
+    const sum = this.store.state.lastSummary;
+    if (!sum?.suggestions?.length) throw new Error('Er is geen voorstel om over te nemen');
+    // Opnieuw vergelijken met nu: tussendoor kan er al iets zijn aangepast.
+    const fresh = cleanSuggestions(Object.fromEntries(sum.suggestions.map((x) => [x.key, x.to])), currentValues(this));
+    if (!fresh.length) throw new Error('Deze instellingen staan al zo');
+    const applied = await applySuggestions(this, fresh, keys);
+    sum.appliedAt = new Date().toISOString();
+    sum.appliedKeys = applied.map((x) => x.key);
+    this.store.save();
+    this.#event('info', null, `AI-voorstel overgenomen: ${applied.map((x) => `${x.label} ${x.from} → ${x.to}`).join(', ')}`);
+    return applied;
   }
 
   listAiModels() {

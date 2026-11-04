@@ -233,3 +233,22 @@ test('tijd voor het dagoverzicht wordt gevalideerd', () => {
   assert.equal(settings.notify.summaryTime, '07:30');
   assert.equal(settings.notify.events.trades, true, 'andere keuzes blijven staan');
 });
+
+test('voorstel overnemen past alleen de aangevinkte instellingen toe', async () => {
+  const { bot } = setup({});
+  await bot.setSchedule({ timeframe: '5m', checkIntervalMinutes: 5 });
+  bot.store.state.lastSummary = {
+    suggestions: [
+      { key: 'stopLossPct', label: 'Stop-loss (%)', group: 'risk', from: 50, to: 4.5 },
+      { key: 'timeframe', label: 'Candle-tijd', group: 'schedule', from: '5m', to: '15m' },
+    ],
+  };
+  const stakeBefore = bot.risk.stakeEur;
+  const applied = await bot.applySummarySuggestions(['stopLossPct']);
+  assert.deepEqual(applied.map((x) => x.key), ['stopLossPct']);
+  assert.equal(bot.risk.stopLossPct, 4.5);
+  assert.equal(bot.settings.timeframe, '5m', 'niet aangevinkt blijft gelijk');
+  assert.equal(bot.risk.stakeEur, stakeBefore);
+  assert.ok(bot.store.state.lastSummary.appliedAt);
+  await assert.rejects(bot.applySummarySuggestions(['stopLossPct']), /staan al zo|Kies minimaal/);
+});

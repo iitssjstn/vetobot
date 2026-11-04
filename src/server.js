@@ -238,6 +238,14 @@ export function startServer({ config, bot, settings, secrets, auth, notifier, lo
     return { ok: true, notify: settings.notify };
   }));
 
+  app.post('/api/summary/apply', wrap(async (req) => {
+    if (bot.mode === 'live') auth.confirmPassword(req.body?.password, req.ip);
+    const keys = Array.isArray(req.body?.keys) ? req.body.keys.map(String) : [];
+    const applied = await bot.applySummarySuggestions(keys);
+    log.info(`AI-voorstel overgenomen door ${req.user}: ${applied.map((x) => x.key).join(', ')}`);
+    return { ok: true, applied };
+  }));
+
   app.post('/api/summary/now', wrap(async () => ({ ok: true, summary: await bot.dailySummary() })));
 
   app.post('/api/settings/notify/test', wrap(async () => {

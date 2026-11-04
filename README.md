@@ -138,6 +138,8 @@ Met **Testmelding sturen** controleer je of het werkt.
 
 Elke dag op een tijd naar keuze (standaard 08:00) stuurt vetobot een overzicht van de afgelopen 24 uur naar Discord: resultaat, winrate, signalen, saldo en open posities, met een korte analyse door de AI van hoe het ging en wat opvalt. Dat kost één AI-call per dag. Faalt de AI, dan komt het overzicht er zonder analyse. Het laatste overzicht staat ook op het dashboard. Met **Overzicht nu versturen** maak je er direct een.
 
+Ziet de AI daar aanleiding toe, dan doet hij in het overzicht ook een **voorstel** voor andere instellingen. Op het dashboard zie je per instelling de huidige waarde en het voorstel; vink aan wat je wilt en klik op **Geselecteerde overnemen**. Er verandert nooit iets vanzelf. De AI mag alleen de strategie (EMA's en RSI), de stop-loss en take-profit en de planning voorstellen, nooit bedragen zoals de inzet per trade, het aantal open trades of de daglimiet. In live-modus is je wachtwoord nodig om over te nemen.
+
 Start vetobot pas na de ingestelde tijd op, dan komt het overzicht van die dag direct na het opstarten.
 
 ### Melding als de server offline gaat

@@ -832,6 +832,7 @@ async function load() {
   $('activity').innerHTML = logHtml(s.activity);
 
   const sum = s.lastSummary;
+  if (!sumBox()) {
   $('dash-summary-meta').textContent = sum ? `${time(sum.at)} · ${sum.mode === 'live' ? 'live' : 'paper'}` : `Elke dag om ${s.notify?.summaryTime ?? '08:00'}`;
   $('dash-summary').innerHTML = !sum
     ? `<div class="muted">Nog geen overzicht. Het eerste komt om ${esc(s.notify?.summaryTime ?? '08:00')}, of verstuur er nu een bij Instellingen → Meldingen.</div>`
@@ -841,13 +842,56 @@ async function load() {
         `<div><div class="muted" style="font-size:12px">Signalen</div><div class="num" style="font-size:18px;font-weight:700">${sum.signals.totaal} <span class="muted" style="font-size:13px;font-weight:500">(${sum.signals.goedgekeurd} goed, ${sum.signals.afgewezenDoorAi} af)</span></div></div>` +
       `</div>` +
       (sum.analysis ? `<div style="line-height:1.55">${esc(sum.analysis).replace(/\n/g, '<br>')}</div>`
-        : `<div class="muted">${sum.aiError ? `Geen AI-analyse: ${esc(sum.aiError)}` : 'Geen AI ingesteld, dus alleen de cijfers.'}</div>`);
+        : `<div class="muted">${sum.aiError ? `Geen AI-analyse: ${esc(sum.aiError)}` : 'Geen AI ingesteld, dus alleen de cijfers.'}</div>`) +
+      suggestionsHtml(sum, live);
+  }
 
   if (isOn('settings')) {
     renderSettings();
     if (!coinsDirty) { selected = [...s.pairs]; renderChips(); renderCoinList(); }
   }
 }
+
+// ---------- AI-voorstel uit het dagoverzicht ----------
+function suggestionsHtml(sum, live) {
+  if (!sum.suggestions?.length) return '';
+  const applied = sum.appliedAt;
+  const rows = sum.suggestions.map(x => {
+    const done = applied && (sum.appliedKeys ?? []).includes(x.key);
+    return `<tr><td>${done ? '<span class="up">✓</span>' : `<input type="checkbox" data-sug="${esc(x.key)}" checked aria-label="${esc(x.label)} overnemen">`}</td>` +
+      `<td>${esc(x.label)}</td><td class="r num muted">${esc(x.from)}</td><td class="r num"><b>${esc(x.to)}</b></td></tr>`;
+  }).join('');
+  const open = sum.suggestions.some(x => !(sum.appliedKeys ?? []).includes(x.key));
+  return `<div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
+    <div class="sub-h" style="margin:0 0 6px">${icon('cpu')}Voorstel van de AI</div>
+    ${sum.rationale ? `<div class="help" style="margin:0 0 10px">${esc(sum.rationale)}</div>` : ''}
+    <div class="scroll" style="border:1px solid var(--line);border-radius:10px;max-width:560px">
+      <table class="evtable"><thead><tr><th style="width:40px"></th><th>Instelling</th><th class="r">Nu</th><th class="r">Voorstel</th></tr></thead><tbody>${rows}</tbody></table>
+    </div>
+    ${open ? `<div class="row-actions">
+      ${live ? '<input id="sug-pass" type="password" placeholder="Je wachtwoord (live)" autocomplete="current-password" style="max-width:240px">' : ''}
+      <button class="btn primary" type="button" id="sug-apply">Geselecteerde overnemen</button>
+      <span class="msg" id="sug-msg"></span></div>
+      <div class="help">Er verandert niets tot je op de knop klikt. Bedragen stelt de AI nooit voor.</div>`
+      : `<div class="help up">Overgenomen op ${time(applied)}.</div>`}
+  </div>`;
+}
+document.addEventListener('click', async (e) => {
+  if (!e.target.closest('#sug-apply')) return;
+  const keys = [...document.querySelectorAll('[data-sug]:checked')].map(c => c.dataset.sug);
+  const msg = (t, c) => { $('sug-msg').className = `msg ${c ?? ''}`; $('sug-msg').textContent = t; };
+  if (!keys.length) return msg('Vink minimaal één voorstel aan.', 'err');
+  if (state.mode === 'live' && !$('sug-pass')?.value) return msg('Vul je wachtwoord in.', 'err');
+  if (!confirm(`${keys.length} instelling(en) overnemen? Dit geldt vanaf de volgende check.`)) return;
+  $('sug-apply').disabled = true;
+  try {
+    await api('api/summary/apply', { keys, password: $('sug-pass')?.value });
+    riskDirty = stratDirty = schedDirty = false;
+    await load();
+  } catch (err) { msg(err.message, 'err'); $('sug-apply').disabled = false; }
+});
+// Niet overschrijven tijdens het aanvinken of typen in het voorstel.
+const sumBox = () => document.activeElement?.closest('#dash-summary');
 
 // ---------- Status ----------
 let lastForcedLoad = 0;

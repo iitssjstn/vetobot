@@ -102,15 +102,40 @@ const SUMMARY_PROMPT = `Je schrijft het dagelijkse overzicht van een crypto trad
 Schrijf in het Nederlands, zakelijk en concreet, maximaal 120 woorden, zonder opsommingstekens of kopjes.
 Behandel: hoe het de afgelopen 24 uur ging, wat opvalt in de markt voor de gevolgde coins, en of de
 huidige instellingen passen bij wat je ziet (bijv. veel stop-losses, geen enkel signaal, veel AI-afwijzingen).
-Verzin geen cijfers die niet in de data staan. Geef geen garanties en voorspel geen koersen.`;
+Verzin geen cijfers die niet in de data staan. Geef geen garanties en voorspel geen koersen.
 
-// Schrijft de korte analyse voor het dagoverzicht. Gooit bij een fout; de aanroeper vangt dat op.
+Doe daarnaast, alleen als de data daar echt aanleiding toe geeft, een voorstel voor andere instellingen.
+Je mag ALLEEN deze velden voorstellen: emaFast, emaSlow, rsiPeriod, rsiMaxEntry, stopLossPct, takeProfitPct,
+timeframe (een van 1m, 5m, 15m, 30m, 1h, 2h, 4h, 1d) en checkIntervalMinutes. Stel nooit bedragen voor.
+Laat velden weg die je niet wilt veranderen. Geen goede reden? Laat "voorstel" dan leeg ({}).
+
+Antwoord uitsluitend met JSON in deze vorm:
+{"analyse": "de tekst van maximaal 120 woorden", "voorstel": {"veld": waarde}, "toelichting": "waarom, in 1 of 2 zinnen"}`;
+
+// Schrijft de analyse en een eventueel voorstel voor het dagoverzicht.
+// Gooit bij een fout; de aanroeper vangt dat op.
 export async function writeSummary(cfg, data) {
   if (cfg.provider === 'none' || !cfg.apiKey) return null;
   const prompt = `Data van de bot (JSON):\n${JSON.stringify(data, null, 1)}`;
-  const opts = { system: SUMMARY_PROMPT, json: false, temperature: 0.4 };
+  const opts = { system: SUMMARY_PROMPT, json: true, temperature: 0.4 };
   const text = cfg.provider === 'gemini' ? await askGemini(cfg, prompt, opts) : await askOpenAICompatible(cfg, prompt, opts);
-  return String(text ?? '').trim().slice(0, 1500) || null;
+  return parseSummary(text);
+}
+
+export function parseSummary(text) {
+  const raw = String(text ?? '').trim();
+  if (!raw) return null;
+  try {
+    const obj = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] ?? raw);
+    return {
+      analysis: String(obj.analyse ?? obj.analysis ?? '').trim().slice(0, 1500) || null,
+      suggestions: obj.voorstel && typeof obj.voorstel === 'object' ? obj.voorstel : {},
+      rationale: String(obj.toelichting ?? '').trim().slice(0, 500) || null,
+    };
+  } catch {
+    // Geen geldige JSON: gebruik de tekst als analyse, zonder voorstel.
+    return { analysis: raw.slice(0, 1500), suggestions: {}, rationale: null };
+  }
 }
 
 // Voor de testknop in het dashboard: dezelfde aanroep als een echte veto, maar
