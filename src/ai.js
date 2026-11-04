@@ -8,18 +8,29 @@ Wees kritisch: bij twijfel wijs je af.
 Antwoord uitsluitend met JSON in deze vorm:
 {"decision": "approve" | "reject", "reason": "korte uitleg in het Nederlands"}`;
 
-export function buildPrompt({ pair, timeframe, indicators, recentCandles }) {
+export function buildPrompt({ pair, timeframe, indicators, recentCandles, extra = {} }) {
+  const n = (v, d = 2) => (v == null ? 'onbekend' : Number(v).toFixed(d));
   const candles = recentCandles
     .map((c) => `${new Date(c[0]).toISOString()} O:${c[1]} H:${c[2]} L:${c[3]} C:${c[4]} V:${c[5]}`)
     .join('\n');
+  const btc = extra.btcTrend ? `${extra.btcTrend.up ? 'omhoog' : 'omlaag'} (koers ${n(extra.btcTrend.close, 0)} vs EMA50 ${n(extra.btcTrend.ema50, 0)})` : 'niet bekeken';
+  const trades = extra.recentTrades?.length
+    ? extra.recentTrades.map((t) => `${n(t.pnlPct)}% (${t.exit})`).join(', ')
+    : 'nog geen trades in deze coin';
   return `Pair: ${pair}
 Timeframe: ${timeframe}
 Signaal: KOPEN (EMA-crossover omhoog)
 Slotkoers: ${indicators.close}
-EMA fast: ${indicators.emaFast.toFixed(4)}
-EMA slow: ${indicators.emaSlow.toFixed(4)}
-RSI: ${indicators.rsi.toFixed(1)}
-Verandering laatste 24 candles: ${indicators.change24 == null ? 'onbekend' : indicators.change24.toFixed(2) + '%'}
+EMA fast: ${n(indicators.emaFast, 4)}
+EMA slow: ${n(indicators.emaSlow, 4)}
+Trend-EMA (lang): ${indicators.emaTrend == null ? 'uit' : n(indicators.emaTrend, 4)}
+RSI: ${n(indicators.rsi, 1)}
+ADX (trendsterkte, <20 = zijwaarts): ${n(indicators.adx, 1)}
+ATR (beweeglijkheid per candle): ${n(indicators.atrPct)}% van de koers
+Volume laatste candle: ${indicators.volumeRatio == null ? 'onbekend' : `${n(indicators.volumeRatio, 1)}× het gemiddelde`}
+Verandering laatste 24 candles: ${indicators.change24 == null ? 'onbekend' : n(indicators.change24) + '%'}
+Bitcoin-trend: ${btc}
+Laatste trades van deze bot in ${pair}: ${trades}
 
 Laatste candles:
 ${candles}`;

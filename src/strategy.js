@@ -1,6 +1,10 @@
-import { ema, rsi, last } from './indicators.js';
+import { ema, rsi, last, atr, adx, volumeRatio } from './indicators.js';
 
-// Regelgebaseerde strategie: EMA-crossover met een RSI-filter.
+// Regelgebaseerde strategie: EMA-crossover met een RSI-filter, plus optionele filters
+// (0 = uit) die alleen koopsignalen tegenhouden:
+//   trendEma   alleen kopen als de koers boven de EMA van zoveel candles ligt
+//   adxMin     alleen kopen als de ADX (trendsterkte) minstens zo hoog is
+//   volumeMult alleen kopen als het volume op de kruising minstens zoveel × het gemiddelde is
 // Werkt alleen op gesloten candles, zodat er geen look-ahead in zit.
 //
 // candles: [[timestamp, open, high, low, close, volume], ...] (alleen gesloten candles)
@@ -17,12 +21,21 @@ export function evaluate(candles, params, lookback = 1) {
     return { signal: 'none', reason: 'Te weinig data', indicators: null };
   }
 
+  const trendEma = params.trendEma > 0 ? ema(closes, params.trendEma) : null;
+  const atrArr = atr(candles, 14);
+  const adxArr = adx(candles, 14);
+  const lastAtr = last(atrArr);
   const indicators = {
     close: last(closes),
     emaFast: last(fast),
     emaSlow: last(slow),
     rsi: last(r),
     change24: changePct(closes, 24),
+    emaTrend: trendEma ? last(trendEma) : null,
+    adx: last(adxArr),
+    atr: lastAtr,
+    atrPct: lastAtr != null ? (lastAtr / last(closes)) * 100 : null,
+    volumeRatio: volumeRatio(candles, 20),
   };
 
   const n = closes.length;
@@ -42,10 +55,24 @@ export function evaluate(candles, params, lookback = 1) {
   const when = (c) => (c.ago === 0 ? 'op de laatste candle' : `${c.ago} candle${c.ago > 1 ? 's' : ''} geleden`);
 
   if (cross?.dir === 'up' && above) {
-    if (indicators.rsi < params.rsiMaxEntry) {
-      return { signal: 'buy', reason: `EMA fast kruist boven EMA slow (${when(cross)})`, indicators, crossAt: cross.at };
+    const blocked = (reason) => ({ signal: 'none', reason: `Kruising, maar ${reason}`, indicators, crossAt: cross.at, filtered: true });
+    if (indicators.rsi >= params.rsiMaxEntry) return blocked(`RSI ${indicators.rsi.toFixed(1)} is te hoog`);
+    if (trendEma) {
+      if (indicators.emaTrend == null) return blocked(`te weinig data voor de trend-EMA ${params.trendEma}`);
+      if (indicators.close <= indicators.emaTrend) return blocked(`koers onder de trend-EMA ${params.trendEma} (dalende trend)`);
     }
-    return { signal: 'none', reason: `Crossover, maar RSI ${indicators.rsi.toFixed(1)} is te hoog`, indicators, crossAt: cross.at };
+    if (params.adxMin > 0) {
+      if (indicators.adx == null) return blocked('te weinig data voor de ADX');
+      if (indicators.adx < params.adxMin) return blocked(`ADX ${indicators.adx.toFixed(1)} onder ${params.adxMin} (geen duidelijke trend)`);
+    }
+    if (params.volumeMult > 0) {
+      const i = candles.findIndex((c) => c[0] === cross.at);
+      const vr = volumeRatio(candles.slice(0, i + 1), 20);
+      indicators.volumeRatio = vr;
+      if (vr == null) return blocked('te weinig data voor het volume');
+      if (vr < params.volumeMult) return blocked(`volume ${vr.toFixed(1)}× normaal, minder dan ${params.volumeMult}×`);
+    }
+    return { signal: 'buy', reason: `EMA fast kruist boven EMA slow (${when(cross)})`, indicators, crossAt: cross.at };
   }
   if (cross?.dir === 'down' && !above) {
     return { signal: 'sell', reason: `EMA fast kruist onder EMA slow (${when(cross)})`, indicators, crossAt: cross.at };

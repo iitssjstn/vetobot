@@ -31,6 +31,11 @@ export const config = {
     emaSlow: num('EMA_SLOW', 26),
     rsiPeriod: num('RSI_PERIOD', 14),
     rsiMaxEntry: num('RSI_MAX_ENTRY', 70),
+    // Filters (0 = uit)
+    trendEma: num('TREND_EMA', 0),
+    adxMin: num('ADX_MIN', 0),
+    volumeMult: num('VOLUME_MULT', 0),
+    btcFilter: num('BTC_FILTER', 0),
   },
 
   // Harde limieten. De AI kan hier nooit aan komen.
@@ -47,6 +52,10 @@ export const config = {
     slippagePct: num('PAPER_SLIPPAGE_PCT', 0.1),
     // Live: nooit meer dan dit bedrag tegelijk in posities, ongeacht je saldo (0 = uit).
     liveBudgetEur: num('LIVE_BUDGET_EUR', 0),
+    // Trailing stop: verkoop als de koers zoveel % onder het hoogste punt sinds aankoop zakt (0 = uit).
+    trailingStopPct: num('TRAILING_STOP_PCT', 0),
+    // ATR-stop: stop-loss op instapkoers − zoveel × ATR, in plaats van het vaste percentage (0 = uit).
+    atrStopMult: num('ATR_STOP_MULT', 0),
   },
 
   paper: {

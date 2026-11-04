@@ -21,6 +21,8 @@ export const RISK_LIMITS = {
   cooldownMinutes: [0, 10080],
   slippagePct: [0, 5],
   liveBudgetEur: [0, 100000000],
+  trailingStopPct: [0, 100],
+  atrStopMult: [0, 20],
 };
 export const LIVE_MIN_STAKE_EUR = 5;
 export const STRATEGY_LIMITS = {
@@ -28,6 +30,10 @@ export const STRATEGY_LIMITS = {
   emaSlow: [3, 1000],
   rsiPeriod: [2, 200],
   rsiMaxEntry: [1, 100],
+  trendEma: [0, 1000],
+  adxMin: [0, 100],
+  volumeMult: [0, 20],
+  btcFilter: [0, 1],
 };
 export const AI_FAIL_MODES = ['reject', 'approve'];
 const NOTIFY_DEFAULTS = {
@@ -45,6 +51,12 @@ const RISK_LABELS = {
   cooldownMinutes: 'Afkoelperiode',
   slippagePct: 'Slippage (paper)',
   liveBudgetEur: 'Live budgetplafond',
+  trailingStopPct: 'Trailing stop',
+  atrStopMult: 'ATR-stop',
+  trendEma: 'Trend-EMA',
+  adxMin: 'Minimale ADX',
+  volumeMult: 'Volumefilter',
+  btcFilter: 'BTC-filter',
   feePct: 'Fee',
   emaFast: 'EMA fast',
   emaSlow: 'EMA slow',
@@ -85,7 +97,7 @@ export class Settings {
         failMode: saved.ai?.failMode ?? defaults.ai.failMode ?? 'reject',
         fallbacks: Array.isArray(saved.ai?.fallbacks) ? saved.ai.fallbacks : [],
       },
-      strategy: Object.fromEntries(Object.keys(STRATEGY_LIMITS).map((k) => [k, saved.strategy?.[k] ?? defaults.strategy[k]])),
+      strategy: Object.fromEntries(Object.keys(STRATEGY_LIMITS).map((k) => [k, saved.strategy?.[k] ?? defaults.strategy?.[k] ?? 0])),
       pairs: saved.pairs ?? defaults.pairs,
       timeframe: saved.timeframe ?? defaults.timeframe,
       checkIntervalMinutes: saved.checkIntervalMinutes ?? defaults.checkIntervalMinutes,
@@ -162,7 +174,7 @@ export class Settings {
   }
 
   setStrategy(values) {
-    const next = validated(values, STRATEGY_LIMITS, ['emaFast', 'emaSlow', 'rsiPeriod']);
+    const next = validated({ ...this.data.strategy, ...values }, STRATEGY_LIMITS, ['emaFast', 'emaSlow', 'rsiPeriod', 'trendEma', 'btcFilter']);
     if (next.emaFast >= next.emaSlow) throw new Error('EMA fast moet kleiner zijn dan EMA slow');
     this.data.strategy = next;
     this.#save();
