@@ -45,6 +45,8 @@ export const config = {
     cooldownMinutes: num('COOLDOWN_MINUTES', 30),
     // Paper: koop iets duurder en verkoop iets goedkoper dan de laatste koers, zoals live met spread.
     slippagePct: num('PAPER_SLIPPAGE_PCT', 0.1),
+    // Live: nooit meer dan dit bedrag tegelijk in posities, ongeacht je saldo (0 = uit).
+    liveBudgetEur: num('LIVE_BUDGET_EUR', 0),
   },
 
   paper: {

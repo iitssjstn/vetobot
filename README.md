@@ -130,6 +130,7 @@ De environment variables hieronder zijn alleen beginwaarden voor de allereerste 
 | `FEE_PCT` | `0.25` | Fee voor paper trading |
 | `COOLDOWN_MINUTES` | `30` | Na een verkoop dezelfde coin zoveel minuten niet kopen (0 = uit) |
 | `PAPER_SLIPPAGE_PCT` | `0.1` | Paper koopt iets duurder en verkoopt iets goedkoper, zoals live met spread |
+| `LIVE_BUDGET_EUR` | `0` | Live: nooit meer dan dit bedrag tegelijk in posities (0 = uit) |
 | `PAPER_START_BALANCE_EUR` | `500` | Startsaldo paper trading |
 | `AI_PROVIDER` | `none` | `none`, `gemini` of `openai` |
 | `AI_MODEL` | leeg | Leeg = standaardmodel van de provider |

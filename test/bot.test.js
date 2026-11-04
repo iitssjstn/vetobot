@@ -377,3 +377,16 @@ test('onder de € 5 kan alleen in paper', async () => {
   await bot.switchMode('live');
   await assert.rejects(bot.setRisk({ stakeEur: 2 }), /minimaal € 5/);
 });
+
+test('live budgetplafond begrenst de totale inzet', async () => {
+  const { checkEntry } = await import('../src/risk.js');
+  const { bot } = setup({ keys: true });
+  const risk = { ...bot.risk, stakeEur: 10, maxOpenTrades: 10, maxDailyLossEur: 0, cooldownMinutes: 0, liveBudgetEur: 25 };
+  bot.stores.live.state.positions = { 'A/EUR': { costEur: 10 }, 'B/EUR': { costEur: 10 } };
+  assert.match(checkEntry(bot.stores.live, { risk }, 'live', bot.ex, null, { pair: 'C/EUR' }), /Budgetplafond: 20.00 van 25.00/);
+  assert.equal(checkEntry(bot.stores.live, { risk: { ...risk, stakeEur: 5 } }, 'live', bot.ex, null, { pair: 'C/EUR' }), null, 'precies op 25 mag');
+  assert.equal(checkEntry(bot.stores.live, { risk: { ...risk, liveBudgetEur: 0 } }, 'live', bot.ex, null, { pair: 'C/EUR' }), null, '0 = uit');
+  // Geldt niet in paper
+  bot.stores.paper.state.positions = { 'A/EUR': { costEur: 10 }, 'B/EUR': { costEur: 10 } };
+  assert.equal(checkEntry(bot.stores.paper, { risk }, 'paper', bot.ex, null, { pair: 'C/EUR' }), null);
+});

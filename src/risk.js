@@ -29,6 +29,13 @@ export function checkEntry(store, config, mode, exchange, liveBalance, extra = {
     if (left > 0) return `Afkoelperiode: nog ${Math.ceil(left / 60000)} min na de vorige verkoop`;
   }
 
+  // Live budgetplafond: totale inzet van open posities plus deze trade mag er niet boven komen.
+  if (mode === 'live' && risk.liveBudgetEur > 0) {
+    const inUse = Object.values(s.positions).reduce((a, p) => a + (p.costEur ?? 0), 0);
+    if (inUse + risk.stakeEur > risk.liveBudgetEur + 1e-9) {
+      return `Budgetplafond: ${inUse.toFixed(2)} van ${risk.liveBudgetEur.toFixed(2)} EUR in gebruik, geen ruimte voor nog ${risk.stakeEur.toFixed(2)}`;
+    }
+  }
   if (mode === 'live' && liveBalance && liveBalance.eurFree < risk.stakeEur) {
     return `Bitvavo-saldo ${liveBalance.eurFree.toFixed(2)} EUR is lager dan de inzet`;
   }

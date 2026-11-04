@@ -20,6 +20,7 @@ export const RISK_LIMITS = {
   feePct: [0, 5],
   cooldownMinutes: [0, 10080],
   slippagePct: [0, 5],
+  liveBudgetEur: [0, 100000000],
 };
 export const LIVE_MIN_STAKE_EUR = 5;
 export const STRATEGY_LIMITS = {
@@ -43,6 +44,7 @@ const RISK_LABELS = {
   maxDailyLossEur: 'Dagelijkse verlieslimiet',
   cooldownMinutes: 'Afkoelperiode',
   slippagePct: 'Slippage (paper)',
+  liveBudgetEur: 'Live budgetplafond',
   feePct: 'Fee',
   emaFast: 'EMA fast',
   emaSlow: 'EMA slow',
