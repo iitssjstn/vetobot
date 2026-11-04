@@ -5,6 +5,15 @@ import { cleanSuggestions, currentValues, applySuggestions } from './suggest.js'
 import { fetchClosedCandles, fetchPrice, hasTradingKeys } from './exchange.js';
 import { checkEntry } from './risk.js';
 
+// Bedragen en koersen in Nederlandse notatie voor meldingen (€ 81,31 / € 0,3455 / −€ 0,36).
+const nl = (n, digits, min = digits) => new Intl.NumberFormat('nl-NL', { minimumFractionDigits: min, maximumFractionDigits: digits }).format(n);
+const priceDigits = (n) => (Math.abs(n) >= 1000 ? 2 : Math.abs(n) >= 1 ? 4 : 6);
+export const fmtEur = (n) => `${n < 0 ? '−' : ''}€ ${nl(Math.abs(n), 2)}`;
+export const fmtSigned = (n) => `${n > 0 ? '+' : n < 0 ? '−' : ''}€ ${nl(Math.abs(n), 2)}`;
+export const fmtPrice = (n) => `€ ${nl(n, priceDigits(n), 2)}`;
+export const fmtPct = (n) => `${n > 0 ? '+' : n < 0 ? '−' : ''}${nl(Math.abs(n), 2)}%`;
+const fmtAmount = (n) => nl(n, Math.abs(n) >= 100 ? 2 : Math.abs(n) >= 1 ? 4 : 8, 0);
+
 // Eén "tick": loopt alle pairs langs, beheert open posities en beoordeelt nieuwe signalen.
 //
 // Volgorde per pair:
@@ -166,7 +175,7 @@ export class Bot {
       aiError = err.message;
     }
 
-    const eur = (n) => `${n < 0 ? '−' : ''}€ ${Math.abs(n).toFixed(2)}`;
+    const eur = fmtSigned;
     const summary = {
       at: new Date().toISOString(),
       mode: this.mode,
@@ -191,14 +200,14 @@ export class Bot {
       {
         name: 'Saldo',
         value: this.mode === 'live'
-          ? (this.liveBalance ? `€ ${this.liveBalance.eurFree.toFixed(2)} vrij` : 'onbekend')
-          : `€ ${s.balanceEur.toFixed(2)} (paper)`,
+          ? (this.liveBalance ? `${fmtEur(this.liveBalance.eurFree)} vrij` : 'onbekend')
+          : `${fmtEur(s.balanceEur)} (paper)`,
       },
     ];
     if (positions.length) {
       fields.push({
         name: 'Open posities',
-        value: positions.map((p) => `${p.pair} ${p.changePct == null ? '' : `${p.changePct >= 0 ? '+' : ''}${p.changePct.toFixed(2)}%`}`).join('\n'),
+        value: positions.map((p) => `${p.pair} ${p.changePct == null ? '' : fmtPct(p.changePct)}`).join('\n'),
         inline: false,
       });
     }
@@ -315,8 +324,8 @@ export class Bot {
     return this.#exclusive(async () => {
       this.settings.setRisk(values);
       const r = this.risk;
-      this.#event('info', null, `Risico: € ${r.stakeEur} per trade, max ${r.maxOpenTrades} open, ` +
-        `stop-loss ${r.stopLossPct}%, take-profit ${r.takeProfitPct}%, daglimiet € ${r.maxDailyLossEur}`);
+      this.#event('info', null, `Risico: ${fmtEur(r.stakeEur)} per trade, max ${r.maxOpenTrades} open, ` +
+        `stop-loss ${r.stopLossPct}%, take-profit ${r.takeProfitPct}%, daglimiet ${fmtEur(r.maxDailyLossEur)}`);
     });
   }
 
@@ -441,7 +450,7 @@ export class Bot {
         : 'Overgeschakeld naar paper trading.');
       this.#notify('mode', mode === 'live'
         ? { title: 'vetobot staat nu op LIVE', message: 'Er worden echte orders geplaatst op Bitvavo.', level: 'live',
-            fields: this.liveBalance ? [{ name: 'Beschikbaar saldo', value: `€ ${this.liveBalance.eurFree.toFixed(2)}` }] : [] }
+            fields: this.liveBalance ? [{ name: 'Beschikbaar saldo', value: fmtEur(this.liveBalance.eurFree) }] : [] }
         : { title: 'vetobot staat nu op paper', message: 'Er worden geen echte orders meer geplaatst.', level: 'info' });
     });
   }
@@ -646,15 +655,15 @@ export class Bot {
       entryFeeEur: fill.feeEur,
       reason,
     };
-    this.#event('info', pair, `Gekocht: ${fill.amount} @ ${fill.price} (${this.broker.mode})`);
+    this.#event('info', pair, `Gekocht: ${fmtAmount(fill.amount)} @ ${fmtPrice(fill.price)} (${this.broker.mode})`);
     this.#notify('trades', {
       title: `Gekocht: ${pair}`,
       message: reason,
       level: this.broker.mode === 'live' ? 'live' : 'info',
       fields: [
-        { name: 'Koers', value: `€ ${fill.price}` },
-        { name: 'Inzet', value: `€ ${fill.costEur.toFixed(2)}` },
-        { name: 'Hoeveelheid', value: String(fill.amount) },
+        { name: 'Koers', value: fmtPrice(fill.price) },
+        { name: 'Inzet', value: fmtEur(fill.costEur) },
+        { name: 'Hoeveelheid', value: `${fmtAmount(fill.amount)} ${pair.split('/')[0]}` },
       ],
     });
   }
@@ -680,15 +689,15 @@ export class Bot {
       entryReason: pos.reason,
       exitReason: reason,
     });
-    this.#event(pnlEur >= 0 ? 'info' : 'warn', pair, `Verkocht @ ${fill.price}, resultaat ${pnlEur.toFixed(2)} EUR (${reason})`);
+    this.#event(pnlEur >= 0 ? 'info' : 'warn', pair, `Verkocht @ ${fmtPrice(fill.price)}, resultaat ${fmtSigned(pnlEur)} (${reason})`);
     const isStop = reason.startsWith('Stop-loss');
     this.#notify(isStop ? 'stoploss' : 'trades', {
       title: `${isStop ? 'Stop-loss' : 'Verkocht'}: ${pair}`,
       message: reason,
       level: pnlEur >= 0 ? 'ok' : 'warn',
       fields: [
-        { name: 'Resultaat', value: `${pnlEur >= 0 ? '+' : '−'}€ ${Math.abs(pnlEur).toFixed(2)} (${((pnlEur / pos.costEur) * 100).toFixed(2)}%)` },
-        { name: 'In → uit', value: `€ ${pos.entryPrice} → € ${fill.price}` },
+        { name: 'Resultaat', value: `${fmtSigned(pnlEur)} (${fmtPct((pnlEur / pos.costEur) * 100)})` },
+        { name: 'In → uit', value: `${fmtPrice(pos.entryPrice)} → ${fmtPrice(fill.price)}` },
       ],
     });
 
@@ -698,7 +707,7 @@ export class Bot {
       this.#event('warn', null, 'Dagelijkse verlieslimiet bereikt. Geen nieuwe trades tot morgen.');
       this.#notify('dailyLimit', {
         title: 'Dagelijkse verlieslimiet bereikt',
-        message: `Verlies vandaag: € ${today.toFixed(2)}. Geen nieuwe trades tot morgen; open posities worden nog bewaakt.`,
+        message: `Verlies vandaag: ${fmtEur(today)}. Geen nieuwe trades tot morgen; open posities worden nog bewaakt.`,
         level: 'error',
       });
     }
