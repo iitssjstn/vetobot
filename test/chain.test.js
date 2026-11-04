@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { askVetoChain, runChain, testChain } from '../src/ai.js';
+import { askVetoChain, runChain, testChain, retryAfterMs, rateLimit } from '../src/ai.js';
 
 // Nep-provider: /bad/ geeft een quota-fout, /good/ een geldig antwoord, /nee/ een afwijzing.
 let calls = [];
@@ -18,6 +18,15 @@ const server = http.createServer((req, res) => {
       }
       res.end(JSON.stringify({ choices: [{ message: { content: 'Mijn oordeel: {"decision": "reject", "reason": "zwak"}' } }] }));
     });
+  }
+  // /slow/: eerste keer een korte rate limit (zoals Groq), daarna gewoon antwoord.
+  if (req.url.startsWith('/slow/') && calls.filter((c) => c.startsWith('/slow/')).length === 1) {
+    res.statusCode = 429;
+    return res.end(JSON.stringify({ error: { message: 'Rate limit reached for model `allam-2-7b` on tokens per minute (TPM): Limit 6000, Used 3166, Requested 3201. Please try again in 3.67s.' } }));
+  }
+  if (req.url.startsWith('/long/')) {
+    res.statusCode = 429;
+    return res.end(JSON.stringify({ error: { message: 'Rate limit reached on requests per day (RPD). Please try again in 7m12s.' } }));
   }
   if (req.url.startsWith('/bad/')) {
     res.statusCode = 429;
@@ -68,6 +77,37 @@ test('model dat de JSON-modus niet aankan: één keer opnieuw zonder', async () 
   assert.equal(r.decision, 'reject');
   assert.equal(r.usedSlot, 1);
   assert.equal(calls.length, 2, 'eerst met, dan zonder JSON-modus');
+});
+
+test('korte rate limit: even wachten en opnieuw, niet meteen naar de back-up', async () => {
+  calls = [];
+  const waits = [];
+  const orig = rateLimit.sleep;
+  rateLimit.sleep = async (ms) => { waits.push(ms); };
+  try {
+    const r = await askVetoChain([entry(1, 'slow'), entry(2, 'good')], 'reject', ctx);
+    assert.equal(r.usedSlot, 1);
+    assert.equal(r.fallbackErrors?.length ?? 0, 0);
+    assert.equal(waits.length, 1);
+    assert.ok(waits[0] >= 3670 && waits[0] < 4500, `wachttijd ${waits[0]}`);
+    // Lange wachttijd: direct door naar de back-up
+    waits.length = 0;
+    const r2 = await askVetoChain([entry(1, 'long'), entry(2, 'good')], 'reject', ctx);
+    assert.equal(r2.usedSlot, 2);
+    assert.equal(waits.length, 0);
+  } finally {
+    rateLimit.sleep = orig;
+  }
+});
+
+test('wachttijd uit de foutmelding of Retry-After halen', () => {
+  assert.equal(retryAfterMs('Please try again in 3.67s.'), 3670);
+  assert.equal(retryAfterMs('Please try again in 450ms.'), 450);
+  assert.equal(retryAfterMs('Please retry in 2.5s'), 2500);
+  assert.equal(retryAfterMs('"retryDelay": "12s"'), 12000);
+  assert.equal(retryAfterMs('anything', '4'), 4000);
+  assert.equal(retryAfterMs('Quota exceeded'), null);
+  assert.ok(retryAfterMs('Please try again in 7m12s.') === null || retryAfterMs('Please try again in 7m12s.') > 20000);
 });
 
 test('testChain test elk model los', async () => {

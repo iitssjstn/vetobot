@@ -46,7 +46,39 @@ export function parseDecision(text) {
   return { decision, reason: String(obj.reason || '').slice(0, 500) };
 }
 
-async function fetchWithTimeout(url, options, timeoutMs) {
+// Hoe lang een provider vraagt te wachten na een rate limit (HTTP 429), in ms, of null.
+// Groq: "Please try again in 3.67s" / "in 450ms"; Gemini: "retry in 3.2s" / "retryDelay": "3s";
+// of de standaard Retry-After-header (seconden).
+export function retryAfterMs(message, header) {
+  const h = Number(header);
+  if (header != null && header !== '' && Number.isFinite(h)) return h * 1000;
+  const m = String(message).match(/(?:try again|retry)(?: in)?[^0-9]{0,12}([\d.]+)\s*(ms|s)\b/i) ?? String(message).match(/retryDelay"?:\s*"([\d.]+)(s)"/i);
+  if (!m) return null;
+  return Number(m[1]) * (m[2].toLowerCase() === 'ms' ? 1 : 1000);
+}
+
+// Bij een rate limit met een korte wachttijd eerst even wachten en het opnieuw proberen,
+// in plaats van meteen naar het back-upmodel te gaan. Langer dan 20 seconden wachten
+// heeft geen zin; dan neemt het back-upmodel het over.
+const MAX_RATE_WAIT_MS = 20000;
+export const rateLimit = { sleep: (ms) => new Promise((r) => setTimeout(r, ms)) };
+
+async function fetchWithTimeout(url, options, timeoutMs, attempt = 0) {
+  try {
+    return await fetchOnce(url, options, timeoutMs);
+  } catch (err) {
+    if (err.status === 429 && attempt < 2) {
+      const wait = retryAfterMs(err.message, err.retryAfter);
+      if (wait != null && wait <= MAX_RATE_WAIT_MS) {
+        await rateLimit.sleep(wait + 250);
+        return fetchWithTimeout(url, options, timeoutMs, attempt + 1);
+      }
+    }
+    throw err;
+  }
+}
+
+async function fetchOnce(url, options, timeoutMs) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -59,7 +91,9 @@ async function fetchWithTimeout(url, options, timeoutMs) {
         const j = JSON.parse(body);
         message = j.error?.message ?? j.message ?? j.error ?? body;
       } catch {}
-      throw new Error(`HTTP ${res.status}: ${String(message).slice(0, 500)}`);
+      throw Object.assign(new Error(`HTTP ${res.status}: ${String(message).slice(0, 500)}`), {
+        status: res.status, retryAfter: res.headers.get('retry-after'),
+      });
     }
     return await res.json();
   } finally {
