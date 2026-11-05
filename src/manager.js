@@ -65,7 +65,7 @@ export class BotManager {
     const privateEx = this.makePrivateExchange(secrets);
     const exchange = userExchange(this.shared, privateEx);
     const brokers = {
-      paper: new PaperBroker(exchange, () => settings.risk.feePct, () => settings.risk.slippagePct),
+      paper: new PaperBroker(exchange, () => settings.risk.feePct, () => settings.risk.slippagePct, () => settings.risk.makerFeePct),
       live: new LiveBroker(exchange),
     };
     const stores = {

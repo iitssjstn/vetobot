@@ -811,7 +811,10 @@ export class Bot {
   #tradePlan() {
     const r = this.risk;
     const pctTxt = (v) => `${parseFloat(Number(v).toFixed(2))}%`;
-    const fees = (r.feePct ?? 0) * 2 + (this.mode === 'paper' ? (r.slippagePct ?? 0) * 2 : 0);
+    // Met limietorders: kopen tegen maker-fee, verkopen deels maker (winst nemen) en deels taker (stops).
+    const fees = r.limitOrders
+      ? (r.makerFeePct ?? r.feePct ?? 0) + (r.feePct ?? 0) + (this.mode === 'paper' ? (r.slippagePct ?? 0) : 0)
+      : (r.feePct ?? 0) * 2 + (this.mode === 'paper' ? (r.slippagePct ?? 0) * 2 : 0);
     const parts = [`kosten per ronde (kopen + verkopen) ± ${pctTxt(fees)}`];
     parts.push(r.atrStopMult > 0 ? `stop-loss ${r.atrStopMult}× ATR` : r.stopLossPct > 0 ? `stop-loss −${pctTxt(r.stopLossPct)}` : 'geen stop-loss');
     if (r.takeProfitPct > 0) parts.push(`take-profit +${pctTxt(r.takeProfitPct)}`);
@@ -820,12 +823,26 @@ export class Bot {
     return parts.join(', ');
   }
 
+  // Limietorder gebruiken? Alleen als het aan staat; stop-losses en handmatig sluiten altijd market.
+  #orderOpts(reason = null) {
+    const r = this.risk;
+    if (!r.limitOrders) return {};
+    if (reason && /^(Stop-loss|ATR-stop|Trailing stop|Handmatig)/.test(reason)) return {};
+    return { limit: true, waitSec: r.limitWaitSec > 0 ? r.limitWaitSec : 20 };
+  }
+
   async #open(pair, reason, indicators = null) {
     this.#step(`${pair}: kopen`);
-    if (this.tickStats) this.tickStats.opened++;
     const stakeInfo = this.stakeInfo();
     const stake = stakeInfo.effective;
-    const fill = await this.broker.buy(pair, stake);
+    const opts = this.#orderOpts();
+    if (opts.limit) this.#step(`${pair}: limietorder, wacht max. ${opts.waitSec} sec op vulling`);
+    const fill = await this.broker.buy(pair, stake, opts);
+    if (!fill) {
+      this.#event('info', pair, `Limietorder niet gevuld binnen ${opts.waitSec} sec: de koers liep weg, aankoop overgeslagen`);
+      return false;
+    }
+    if (this.tickStats) this.tickStats.opened++;
     if (this.broker.mode === 'paper') this.store.state.balanceEur -= fill.costEur;
     this.store.state.positions[pair] = {
       pair,
@@ -838,7 +855,7 @@ export class Bot {
       highest: fill.price,
       atrAtEntry: indicators?.atr ?? null,
     };
-    this.#event('info', pair, `Gekocht: ${fmtAmount(fill.amount)} @ ${fmtPrice(fill.price)} (${this.broker.mode})` +
+    this.#event('info', pair, `Gekocht: ${fmtAmount(fill.amount)} @ ${fmtPrice(fill.price)} (${this.broker.mode}${fill.limit ? `, limietorder${fill.partial ? ', deels gevuld' : ''}` : ''})` +
       (stakeInfo.extra > 0 ? `, inzet ${fmtEur(stake)} waarvan ${fmtEur(stakeInfo.extra)} herinvesteerde winst` : ''));
     // Volgers laten meedoen (alleen gezet op de bot van de leider).
     this.onTrade?.('open', { pair, reason, indicators });
@@ -983,7 +1000,9 @@ export class Bot {
     this.#step(`${pair}: verkopen`);
     if (this.tickStats) this.tickStats.closed++;
     const pos = this.store.state.positions[pair];
-    const fill = await this.broker.sell(pair, pos.amount);
+    const opts = this.#orderOpts(reason);
+    if (opts.limit) this.#step(`${pair}: limietorder verkopen, wacht max. ${opts.waitSec} sec`);
+    const fill = await this.broker.sell(pair, pos.amount, opts);
     const pnlEur = fill.costEur - pos.costEur;
     if (this.broker.mode === 'paper') this.store.state.balanceEur += fill.costEur;
     delete this.store.state.positions[pair];
@@ -1004,7 +1023,8 @@ export class Bot {
       entryReason: pos.reason,
       exitReason: reason,
     });
-    this.#event(pnlEur >= 0 ? 'info' : 'warn', pair, `Verkocht @ ${fmtPrice(fill.price)}, resultaat ${fmtSigned(pnlEur)} (${reason})`);
+    const how = fill.limitFallback ? (fill.limit ? ', limietorder deels gevuld, rest market' : ', limietorder niet gevuld, market') : fill.limit ? ', limietorder' : '';
+    this.#event(pnlEur >= 0 ? 'info' : 'warn', pair, `Verkocht @ ${fmtPrice(fill.price)}, resultaat ${fmtSigned(pnlEur)} (${reason}${how})`);
     this.onTrade?.('close', { pair, reason });
     const isStop = reason.startsWith('Stop-loss');
     this.#notify(isStop ? 'stoploss' : 'trades', {

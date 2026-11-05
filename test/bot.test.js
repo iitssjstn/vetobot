@@ -676,3 +676,22 @@ test('whipsaw-bescherming: herstelt de trend binnen de bevestiging, dan geen ver
   await bot.tick();
   assert.ok(bot.store.state.positions['BTC/EUR'], 'dip hersteld: positie blijft');
 });
+
+test('limietorders: niet gevulde koop wordt overgeslagen, stop-loss verkoopt altijd market', async () => {
+  const { bot, ex } = setup({});
+  await bot.setRisk({ cooldownMinutes: 0, limitOrders: 1, limitWaitSec: 5, stopLossPct: 5, takeProfitPct: 0, aiExitMinPct: 0 });
+  const calls = [];
+  bot.brokers.paper.buy = async (pair, stake, opts) => { calls.push(['buy', opts]); return null; };
+  for (let n = 41; n <= 44; n++) { ex.prices = [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66, 68]).slice(0, n); await bot.tick(); }
+  assert.equal(Object.keys(bot.store.state.positions).length, 0);
+  assert.deepEqual(calls[0], ['buy', { limit: true, waitSec: 5 }]);
+  assert.ok(bot.activity.some((a) => /Limietorder niet gevuld binnen 5 sec/.test(a.message)));
+  // Stop-loss: sell zonder limiet
+  const sells = [];
+  bot.brokers.paper.sell = async (pair, amount, opts) => { sells.push(opts); return { amount, price: 60, costEur: 20, feeEur: 0.05 }; };
+  bot.store.state.positions['BTC/EUR'] = { pair: 'BTC/EUR', entryPrice: 70, amount: 0.35, costEur: 25, highest: 70, openedAt: new Date().toISOString() };
+  ex.fetchTicker = async () => ({ last: 60 });
+  await bot.watchPositions();
+  assert.deepEqual(sells[0], {});
+  assert.match(bot.store.state.trades[0].exitReason, /^Stop-loss/);
+});

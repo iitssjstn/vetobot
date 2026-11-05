@@ -73,6 +73,11 @@ export const config = {
     reinvestPct: num('REINVEST_PCT', 0),
     // Maximale inzet per trade als de inzet meegroeit met de winst (0 = geen maximum).
     maxStakeEur: num('MAX_STAKE_EUR', 0),
+    // Limietorders voor kopen en winst nemen (maker-fee); stop-losses blijven market (0 = uit, 1 = aan).
+    limitOrders: num('LIMIT_ORDERS', 0),
+    // Hoe lang een limietorder mag wachten op een vulling, in seconden.
+    limitWaitSec: num('LIMIT_WAIT_SEC', 20),
+    makerFeePct: num('MAKER_FEE_PCT', 0.15),
   },
 
   paper: {

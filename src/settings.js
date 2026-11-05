@@ -28,6 +28,9 @@ export const RISK_LIMITS = {
   aiExitEveryMin: [0, 1440],
   reinvestPct: [0, 100],
   maxStakeEur: [0, 1000000],
+  limitOrders: [0, 1],
+  limitWaitSec: [0, 300],
+  makerFeePct: [0, 5],
 };
 export const LIVE_MIN_STAKE_EUR = 5;
 export const STRATEGY_LIMITS = {
@@ -75,6 +78,9 @@ const RISK_LABELS = {
   aiExitEveryMin: 'AI winstcheck elke',
   reinvestPct: 'Winst herinvesteren',
   maxStakeEur: 'Maximale inzet per trade',
+  limitOrders: 'Limietorders',
+  limitWaitSec: 'Wachttijd limietorder',
+  makerFeePct: 'Maker-fee',
   feePct: 'Fee',
   emaFast: 'EMA fast',
   emaSlow: 'EMA slow',
@@ -158,7 +164,7 @@ export class Settings {
 
   setRisk(values) {
     // Velden die ontbreken houden hun huidige waarde.
-    this.data.risk = validated({ ...this.data.risk, ...values }, RISK_LIMITS, ['maxOpenTrades', 'cooldownMinutes', 'watchSeconds']);
+    this.data.risk = validated({ ...this.data.risk, ...values }, RISK_LIMITS, ['maxOpenTrades', 'cooldownMinutes', 'watchSeconds', 'limitOrders', 'limitWaitSec']);
     this.#save();
   }
 

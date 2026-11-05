@@ -135,16 +135,33 @@ export async function fetchPrice(ex, pair) {
 
 // --- Brokers -----------------------------------------------------------------
 // Beide brokers geven { amount, price, costEur, feeEur } terug.
+//
+// Limietorders (opts.limit): goedkoper, want Bitvavo rekent dan de maker-fee (0,15%) in plaats
+// van de taker-fee (0,25%). Een limietorder wordt alleen gevuld als de koers naar je toe komt:
+// - kopen: tegen de biedprijs; niet (volledig) gevuld binnen de wachttijd → rest annuleren.
+//   Niets gevuld → null (de aankoop gaat niet door).
+// - verkopen: tegen de laatprijs; niet gevuld → de rest alsnog met een market order, want
+//   een positie moet altijd dicht kunnen.
+// Stop-losses gebruiken nooit een limietorder; dat bepaalt de bot.
+
+// Wachten en pollen, instelbaar voor tests.
+export const orderTiming = { sleep: (ms) => new Promise((r) => setTimeout(r, ms)), pollMs: 2000 };
 
 export class PaperBroker {
   // feePct mag een getal of een functie zijn, zodat de fee uit het dashboard direct geldt.
   // slippagePct (getal of functie): koop zoveel procent duurder en verkoop zoveel goedkoper
   // dan de laatste koers, zodat paper niet rooskleuriger is dan live.
-  constructor(ex, feePct, slippagePct = 0) {
+  constructor(ex, feePct, slippagePct = 0, makerFeePct = null) {
     this.ex = ex;
     this.fee = typeof feePct === 'function' ? feePct : () => feePct;
     this.slip = typeof slippagePct === 'function' ? slippagePct : () => slippagePct;
+    const maker = makerFeePct ?? feePct;
+    this.maker = typeof maker === 'function' ? maker : () => maker;
     this.mode = 'paper';
+  }
+
+  get makerFeePct() {
+    return this.maker() ?? this.feePct;
   }
 
   get feePct() {
@@ -155,18 +172,39 @@ export class PaperBroker {
     return this.slip() ?? 0;
   }
 
-  async buy(pair, stakeEur) {
+  async buy(pair, stakeEur, opts = {}) {
+    if (opts.limit) {
+      // Nagebootst: limiet op de huidige koers. Na de wachttijd gevuld als de koers er niet
+      // boven is weggelopen (binnen een halve spread); anders gaat de aankoop niet door.
+      const limit = await fetchPrice(this.ex, pair);
+      await orderTiming.sleep((opts.waitSec ?? 20) * 1000);
+      const now = await fetchPrice(this.ex, pair);
+      if (now > limit * (1 + this.slippagePct / 200)) return null;
+      const feeEur = (stakeEur * this.makerFeePct) / 100;
+      return { amount: (stakeEur - feeEur) / limit, price: limit, costEur: stakeEur, feeEur, limit: true };
+    }
     const price = (await fetchPrice(this.ex, pair)) * (1 + this.slippagePct / 100);
     const feeEur = (stakeEur * this.feePct) / 100;
     const amount = (stakeEur - feeEur) / price;
     return { amount, price, costEur: stakeEur, feeEur };
   }
 
-  async sell(pair, amount) {
+  async sell(pair, amount, opts = {}) {
+    if (opts.limit) {
+      const limit = await fetchPrice(this.ex, pair);
+      await orderTiming.sleep((opts.waitSec ?? 20) * 1000);
+      const now = await fetchPrice(this.ex, pair);
+      if (now >= limit * (1 - this.slippagePct / 200)) {
+        const gross = amount * limit;
+        const feeEur = (gross * this.makerFeePct) / 100;
+        return { amount, price: limit, costEur: gross - feeEur, feeEur, limit: true };
+      }
+      // Niet gevuld: alsnog market.
+    }
     const price = (await fetchPrice(this.ex, pair)) * (1 - this.slippagePct / 100);
     const gross = amount * price;
     const feeEur = (gross * this.feePct) / 100;
-    return { amount, price, costEur: gross - feeEur, feeEur };
+    return { amount, price, costEur: gross - feeEur, feeEur, ...(opts.limit ? { limitFallback: true } : {}) };
   }
 }
 
@@ -192,9 +230,49 @@ export class LiveBroker {
     return { amount: o.filled, price: o.average ?? o.price, costEur: o.cost, feeEur };
   }
 
-  async buy(pair, stakeEur) {
+  // Wacht tot een order gevuld is, maximaal waitSec. Daarna de rest annuleren en de
+  // eindstand ophalen (de order kan tussen annuleren en ophalen alsnog gevuld zijn).
+  async #waitFill(order, pair, waitSec) {
+    let o = order;
+    const end = Date.now() + waitSec * 1000;
+    while (o.status !== 'closed' && o.status !== 'canceled' && Date.now() < end) {
+      await orderTiming.sleep(orderTiming.pollMs);
+      o = await this.ex.fetchOrder(o.id, pair);
+    }
+    if (o.status !== 'closed') {
+      try {
+        await this.ex.cancelOrder(o.id, pair);
+      } catch {
+        // Al gevuld of al geannuleerd; de status hieronder is leidend.
+      }
+      o = await this.ex.fetchOrder(o.id, pair);
+    }
+    return o;
+  }
+
+  #fillOf(o) {
+    const feeEur = o.fee?.currency === 'EUR' ? o.fee.cost : 0;
+    return { amount: o.filled, price: o.average ?? o.price, costEur: o.cost, feeEur };
+  }
+
+  async buy(pair, stakeEur, opts = {}) {
     this.#requireKeys();
     await this.ex.loadMarkets();
+    if (opts.limit) {
+      const t = await this.ex.fetchTicker(pair);
+      const price = Number(this.ex.priceToPrecision(pair, t.bid ?? t.last));
+      const amount = Number(this.ex.amountToPrecision(pair, stakeEur / price));
+      let order;
+      try {
+        // postOnly: wordt nooit direct tegen de laatprijs uitgevoerd, dus altijd maker-fee.
+        order = await this.ex.createOrder(pair, 'limit', 'buy', amount, price, { postOnly: true });
+      } catch {
+        return null; // Bijv. geweigerd omdat de koers net omhoog sprong: aankoop gaat niet door.
+      }
+      const o = await this.#waitFill(order, pair, opts.waitSec ?? 20);
+      if (!o.filled) return null;
+      return { ...this.#fillOf(o), limit: true, partial: o.filled < amount };
+    }
     let order;
     if (this.ex.has.createMarketBuyOrderWithCost) {
       order = await this.ex.createMarketBuyOrderWithCost(pair, stakeEur);
@@ -206,10 +284,31 @@ export class LiveBroker {
     return this.#settle(order, pair);
   }
 
-  async sell(pair, amount) {
+  async sell(pair, amount, opts = {}) {
     this.#requireKeys();
     await this.ex.loadMarkets();
     const amt = Number(this.ex.amountToPrecision(pair, amount));
+    if (opts.limit) {
+      const t = await this.ex.fetchTicker(pair);
+      const price = Number(this.ex.priceToPrecision(pair, t.ask ?? t.last));
+      let o = null;
+      try {
+        const order = await this.ex.createOrder(pair, 'limit', 'sell', amt, price, { postOnly: true });
+        o = await this.#waitFill(order, pair, opts.waitSec ?? 20);
+      } catch {
+        o = null;
+      }
+      const filled = o?.filled ?? 0;
+      if (filled >= amt) return { ...this.#fillOf(o), limit: true };
+      // Rest alsnog met een market order, zodat de positie echt dicht gaat.
+      const rest = Number(this.ex.amountToPrecision(pair, amt - filled));
+      const restFill = rest > 0 ? await this.#settle(await this.ex.createMarketOrder(pair, 'sell', rest), pair) : null;
+      if (!filled) return { ...restFill, limitFallback: true };
+      const a = this.#fillOf(o);
+      const b = restFill ?? { amount: 0, costEur: 0, feeEur: 0 };
+      const total = a.amount + b.amount;
+      return { amount: total, price: (a.costEur + b.costEur) / total, costEur: a.costEur + b.costEur, feeEur: a.feeEur + b.feeEur, limit: true, limitFallback: true };
+    }
     const order = await this.ex.createMarketOrder(pair, 'sell', amt);
     return this.#settle(order, pair);
   }
