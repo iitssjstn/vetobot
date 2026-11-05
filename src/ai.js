@@ -8,13 +8,14 @@ positiegrootte of stops; die liggen vast en staan in de data. Liever een goede t
 
 Werkwijze, in deze volgorde:
 1. HARDE FILTERS. Staat er bij "Harde filters" ook maar één ✗, dan wijs je af. Geen uitzonderingen.
-2. MARKTREGIME. Alleen kopen in een trend (of een uitbraak uit een range met volume). In "chop" wijs je af.
+2. MARKTBEELD. Alleen kopen in een trend (of een uitbraak uit een zijwaartse markt met volume).
+   Bij een richtingloze markt (koers gaat heen en weer) wijs je af.
    Tegen de hogere-timeframe-trend in koop je alleen bij een uitzonderlijk sterk signaal.
 3. RISK/REWARD. 1R = het verlies tot de stop-loss (staat in de data). Schat:
    - de realistische reward in R: de afstand tot de eerstvolgende weerstand (recente high), of tot de take-profit;
      meer dan 3R verwacht je alleen in een sterke trend met ruimte naar boven;
-   - de kans p (0-1) dat die reward eerder geraakt wordt dan de stop.
-   Keur alleen goed als p × reward − (1 − p) × 1R − kosten (in R) duidelijk positief is: minimaal +0,3R.
+   - de winstkans: hoe groot de kans is dat die winst eerder geraakt wordt dan de stop.
+   Keur alleen goed als winstkans × reward − (1 − winstkans) × 1R − kosten (in R) duidelijk positief is: minimaal +0,3R.
    Ligt een recente high binnen ±1R boven de koers en is die nog niet doorbroken, dan is de reward klein.
 4. MOMENTUM EN VOLUME. Een stijging op dalend of laag volume is zwak. Een kruising na een al grote stijging
    (koers ver boven de EMA's, veel groene candles op rij, RSI hoog) is te laat: je koopt dan de top.
@@ -22,7 +23,13 @@ Werkwijze, in deze volgorde:
    (winrate laag of gemiddelde R negatief), dan wees je extra streng. Herhaal geen fout die er al staat.
 
 Antwoord uitsluitend met JSON, zonder tekst eromheen:
-{"decision": "approve" | "reject", "reason": "Nederlands, max. 2 zinnen: regime, geschatte reward in R en kans p, en de doorslaggevende reden"}`;
+{"decision": "approve" | "reject", "reason": "max. 2 zinnen"}
+
+Schrijf de reden in gewoon, begrijpelijk Nederlands voor iemand zonder tradingkennis. Geen formules,
+geen losse letters of afkortingen (dus niet "p" of "R"), geen Engelse termen. Noem de winstkans in procenten
+en de verwachte winst als "x keer het risico". Voorbeeld: "Duidelijke stijgende trend met veel volume;
+winstkans ongeveer 55% en verwachte winst zo'n 2 keer het risico." of "Geen duidelijke richting en weinig
+volume, dus de kans op winst na kosten is te klein."`;
 
 // ---------- Hulpfuncties voor de prompts (alleen rekenwerk, geen beslissingen) ----------
 const fx = (v, d = 2) => (v == null || !Number.isFinite(Number(v)) ? 'onbekend' : Number(v).toFixed(d));
@@ -74,8 +81,8 @@ function candleStats(candles, close, atrPct) {
 function regimeOf(adx, er) {
   if (adx == null || er == null) return 'onbekend';
   if (adx >= 25 && er >= 0.35) return 'trend';
-  if (er < 0.2 || adx < 18) return 'chop';
-  return 'range';
+  if (er < 0.2 || adx < 18) return 'richtingloos';
+  return 'zijwaarts';
 }
 
 function volumeText(ratio) {
@@ -121,7 +128,7 @@ export function buildPrompt({ pair, timeframe, indicators, recentCandles, extra 
   add(ind.rsi == null ? null : ind.rsi <= 72, `RSI ${fx(ind.rsi, 1)} (max. 72: niet oververhit)`);
   add(distSlowAtr == null ? null : distSlowAtr <= 3, `koers ${fx(distSlowAtr, 1)} ATR boven EMA slow (max. 3: niet te ver doorgeschoten)`);
   add(st ? st.greens < 5 : null, `${st?.greens ?? '?'} groene candles op rij (max. 4)`);
-  add(regime === 'onbekend' ? null : regime !== 'chop', `regime: ${regime}`);
+  add(regime === 'onbekend' ? null : regime !== 'richtingloos', `marktbeeld: ${regime}`);
   if (!isBtc) add(extra.btcTrend ? extra.btcTrend.up : null, `Bitcoin-trend ${extra.btcTrend ? (extra.btcTrend.up ? 'omhoog' : 'omlaag') : 'onbekend'}`);
   if (rk?.stopPct) add(rk.feesR <= 0.35, `kosten ${fx(rk.feesPct)}% = ${fx(rk.feesR)}R per ronde (max. 0,35R)`);
 
@@ -164,7 +171,7 @@ Koers: ${px(ind.close)}
 ${filters.join('\n')}
 
 == Markt ==
-Regime: ${regime} (ADX ${fx(ind.adx, 1)}, efficiëntie ${fx(st?.er)}: 1 = strakke trend, 0 = heen en weer)
+Marktbeeld: ${regime} (ADX ${fx(ind.adx, 1)}, rechtheid van de beweging ${fx(st?.er)}: 1 = strakke trend, 0 = heen en weer)
 Hogere timeframe: ${htf}
 Bitcoin: ${isBtc ? 'dit is BTC zelf' : extra.btcTrend ? `${extra.btcTrend.up ? 'omhoog' : 'omlaag'} (koers ${fx(extra.btcTrend.close, 0)} vs EMA50 ${fx(extra.btcTrend.ema50, 0)})` : 'onbekend'}
 Structuur laatste ${st?.n ?? '?'} candles: ${st?.structure ?? 'onbekend'}, netto ${sgn(st?.netPct)}%, laatste 3 candles ${sgn(st?.last3Pct)}%
@@ -475,7 +482,10 @@ Houd vast (hold) alleen als de stijging aantoonbaar doorzet: nieuwe highs, groen
 geen zwaktesignalen. Twijfel je, verkoop dan: een zekere winst na fees is beter dan een winst die verdampt.
 
 Antwoord uitsluitend met JSON, zonder tekst eromheen:
-{"decision": "sell" | "hold", "reason": "Nederlands, max. 2 zinnen: welke signalen de doorslag gaven"}`;
+{"decision": "sell" | "hold", "reason": "max. 2 zinnen"}
+
+Schrijf de reden in gewoon, begrijpelijk Nederlands voor iemand zonder tradingkennis: welke signalen de
+doorslag gaven, zonder formules, losse letters of afkortingen en zonder Engelse termen.`;
 
 // Context voor de winstcheck. risk is optioneel (zelfde vorm als bij buildPrompt).
 export function buildExitPrompt({ pair, timeframe, position, price, indicators, recentCandles, feePct = 0.25, risk = null }) {

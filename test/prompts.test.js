@@ -30,14 +30,14 @@ test('koopprompt: goede setup heeft geen ✗, feedback met winrate en R', () => 
       recentTrades: [{ pnlPct: 3, exit: 'Take-profit (3%)' }, { pnlPct: -3, exit: 'Stop-loss (-3%)' }, { pnlPct: 1.5, exit: 'AI neemt winst (1.5%): x' }],
       aiHistory: [{ decision: 'approve', outcome: 'winst', resultPct: 3, reason: 'sterke trend' }] } });
   assert.doesNotMatch(p, /^✗/m);
-  assert.match(p, /Regime: trend/);
+  assert.match(p, /Marktbeeld: trend/);
   assert.match(p, /3 trades: winrate 67%, gemiddeld \+0\.50% = \+0\.17R/);
   assert.match(p, /goedgekeurd → winst \(\+3\.0%\): sterke trend/);
 });
 
 test('koopprompt: werkt ook zonder candles en zonder extra (onbekend in plaats van fout)', () => {
   const p = buildPrompt({ pair: 'BTC/EUR', timeframe: '1h', recentCandles: [], indicators: { close: 1, emaFast: 1, emaSlow: 1, rsi: 50, change24: 0 } });
-  assert.match(p, /Regime: onbekend/);
+  assert.match(p, /Marktbeeld: onbekend/);
   assert.match(p, /dit is BTC zelf/);
   assert.doesNotMatch(p, /NaN|undefined/);
 });
