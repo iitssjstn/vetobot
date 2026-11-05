@@ -724,3 +724,47 @@ test('AI krijgt stop, kosten, strengheid en eigen strategiegrenzen mee', async (
   for (let n = 41; n <= 44; n++) { b2.ex.prices = seq.slice(0, n); await b2.bot.tick(); }
   assert.match(lastAiPrompt, /Kosten per ronde: 0\.50%/);
 });
+
+test('tijdslimiet: positie wordt na de maximale tijd verkocht', async () => {
+  const { bot, ex } = setup({});
+  await bot.setRisk({ takeProfitPct: 0, stopLossPct: 10, aiExitMinPct: 0, maxHoldMinutes: 30 });
+  await openPaperPosition(bot, ex);
+  const pos = bot.store.state.positions['BTC/EUR'];
+  ex.fetchTicker = async () => ({ last: pos.entryPrice * 1.004 });
+  await bot.watchPositions();
+  assert.ok(bot.store.state.positions['BTC/EUR'], 'nog binnen de tijd');
+  pos.openedAt = new Date(Date.now() - 31 * 60000).toISOString();
+  await bot.watchPositions();
+  assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
+  assert.match(bot.store.state.trades[0].exitReason, /^Tijdslimiet: 31 min in de positie/);
+});
+
+test('limietorders stand 2: kopen direct (market), winst nemen met limiet', async () => {
+  const { bot, ex } = setup({});
+  await bot.setRisk({ cooldownMinutes: 0, limitOrders: 2, limitWaitSec: 5, takeProfitPct: 2, stopLossPct: 5, aiExitMinPct: 0 });
+  const buys = [], sells = [];
+  const b = bot.brokers.paper;
+  const origBuy = b.buy.bind(b), origSell = b.sell.bind(b);
+  b.buy = async (pair, stake, opts) => { buys.push(opts); return origBuy(pair, stake, {}); };
+  b.sell = async (pair, amount, opts) => { sells.push(opts); return origSell(pair, amount, {}); };
+  await openPaperPosition(bot, ex);
+  assert.deepEqual(buys[0], {});
+  const pos = bot.store.state.positions['BTC/EUR'];
+  ex.fetchTicker = async () => ({ last: pos.entryPrice * 1.03 });
+  await bot.watchPositions();
+  assert.deepEqual(sells[0], { limit: true, waitSec: 5 });
+});
+
+test('check haalt candles van alle coins vooraf op, maximaal 8 tegelijk', async () => {
+  const pairs = Array.from({ length: 20 }, (_, i) => `C${i}/EUR`);
+  const { bot, ex } = setup({});
+  bot.settings.data.pairs = pairs;
+  let active = 0, maxActive = 0;
+  const orig = ex.fetchOHLCV.bind(ex);
+  const seen = new Set();
+  ex.fetchOHLCV = async (...a) => { seen.add(a[0]); active++; maxActive = Math.max(maxActive, active); await new Promise((r) => setTimeout(r, 2)); active--; return orig(...a); };
+  ex.prices = [...Array(60)].map((_, i) => 100 + i * 0.1);
+  await bot.tick();
+  assert.equal(seen.size, 20);
+  assert.ok(maxActive > 1 && maxActive <= 8, `tegelijk: ${maxActive}`);
+});

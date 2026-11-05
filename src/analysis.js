@@ -10,6 +10,7 @@ export const EXIT_KINDS = [
   ['signal', 'Verkoopsignaal (trend omlaag)', /^(Trend omlaag|EMA fast kruist onder)/],
   ['manual', 'Handmatig gesloten', /^Handmatig/i],
   ['follow', 'Gevolgd (leider verkocht)', /^Gevolgd/],
+  ['time', 'Tijdslimiet', /^Tijdslimiet/],
 ];
 
 export function exitKind(reason) {

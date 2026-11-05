@@ -601,8 +601,9 @@
             <div><label for="r-aievery">AI-winstcheck hooguit elke (min)</label><input id="r-aievery" type="number" min="0.5" max="1440" step="any" required></div>
             <div><label for="r-reinvest">Winst herinvesteren (%, 0 = uit)</label><input id="r-reinvest" type="number" min="0" max="100" step="any" required></div>
             <div><label for="r-maxstake">Max. inzet per trade (€, 0 = geen)</label><input id="r-maxstake" type="number" min="0" step="any" required></div>
-            <div><label for="r-limit">Limietorders (lagere fee)</label><select id="r-limit"><option value="0">Nee, market orders</option><option value="1">Ja, kopen en winst nemen</option></select></div>
+            <div><label for="r-limit">Limietorders (lagere fee)</label><select id="r-limit"><option value="0">Nee, market orders</option><option value="2">Alleen winst nemen (kopen direct)</option><option value="1">Kopen en winst nemen</option></select></div>
             <div><label for="r-limitwait">Wachttijd limietorder (sec)</label><input id="r-limitwait" type="number" min="5" max="300" step="1" required></div>
+            <div><label for="r-maxhold">Maximale tijd in positie (min, 0 = uit)</label><input id="r-maxhold" type="number" min="0" max="43200" step="any" required></div>
             <div><label for="r-maker">Maker-fee (%)</label><input id="r-maker" type="number" min="0" max="5" step="any" required></div>
             <div id="r-pass-wrap"><label for="r-pass">Je wachtwoord (verplicht in live)</label><input id="r-pass" type="password" autocomplete="current-password"></div>
           </div>
@@ -1403,6 +1404,7 @@ function renderSettings() {
     $('r-limit').value = String(s.risk.limitOrders ?? 0);
     $('r-limitwait').value = s.risk.limitWaitSec || 20;
     $('r-maker').value = s.risk.makerFeePct ?? 0.15;
+    $('r-maxhold').value = s.risk.maxHoldMinutes ?? 0;
     riskHelp();
   }
   if (!document.activeElement?.closest('#sched-form') && !schedDirty) {
@@ -1739,7 +1741,7 @@ function riskHelp() {
     // Of de verhouding winst/verlies na kosten klopt.
     const fee = Number($('r-fee').value), slip = state?.mode === 'live' ? 0 : Number($('r-slip').value);
     // Met limietorders: kopen tegen maker-fee zonder slippage; verkopen deels market (stops).
-    const cost = $('r-limit').value === '1' ? Number($('r-maker').value) + fee + slip : (fee + slip) * 2;
+    const cost = $('r-limit').value !== '0' ? Number($('r-maker').value) + fee + slip : (fee + slip) * 2;
     const be = breakEvenWinrate(Number($('r-atr').value) > 0 ? null : sl, tp, cost);
     if (be != null) {
       const txt = `Een winnende trade levert na kosten ± ${(tp - cost).toFixed(2).replace('.', ',')}% op, een verliezende kost ± ${(sl + cost).toFixed(2).replace('.', ',')}%: je moet <b>${Math.round(be)}%</b> van je trades winnen om quitte te spelen.`;
@@ -1773,9 +1775,11 @@ function riskHelp() {
   parts.push(cool > 0 ? `Na een verkoop wordt dezelfde coin ${cool} min niet opnieuw gekocht.`
     : '<span class="warnc">Afkoelperiode uit: na een verkoop kan hij dezelfde coin direct weer kopen.</span>');
   if ($('r-limit').value === '1') parts.push(`<b>Limietorders:</b> kopen en winst nemen tegen de maker-fee (${String($('r-maker').value).replace('.', ',')}%), met maximaal ${Number($('r-limitwait').value) || 20} sec wachten. Wordt een koop niet gevuld, dan gaat hij niet door; een verkoop gaat dan alsnog market. Stop-losses en trailing stops zijn altijd market.`);
+  if ($('r-limit').value === '2') parts.push(`<b>Limietorders bij winst nemen:</b> kopen gaat direct (market), winst nemen met een limietorder tegen de maker-fee, maximaal ${Number($('r-limitwait').value) || 20} sec wachten en anders alsnog market. Stop-losses en trailing stops zijn altijd market.`);
+  if (Number($('r-maxhold').value) > 0) parts.push(`<b>Tijdslimiet:</b> na ${String($('r-maxhold').value).replace('.', ',')} minuten in een positie verkoopt de bot, ook zonder signaal of winst.`);
   {
     const s2 = state?.mode === 'live' ? 0 : slip;
-    const lim = $('r-limit').value === '1';
+    const lim = $('r-limit').value !== '0';
     const rc = lim ? Number($('r-maker').value) + fee + s2 : (fee + s2) * 2;
     parts.push(`Een volledige ronde (kopen + verkopen) kost ongeveer ${rc.toFixed(2).replace('.', ',')}%${state?.mode === 'live' ? ' aan fees, plus de spread' : ' aan fee en slippage'}${lim ? ` (met limietorders; zonder ${((fee + s2) * 2).toFixed(2).replace('.', ',')}%)` : ''}.`);
   }
@@ -1796,7 +1800,8 @@ $('risk-form').onsubmit = async (e) => {
     trailingStopPct: $('r-trail').value, atrStopMult: $('r-atr').value,
     watchSeconds: $('r-watch').value, aiExitMinPct: $('r-aiexit').value, aiExitEveryMin: $('r-aievery').value,
     reinvestPct: $('r-reinvest').value, maxStakeEur: $('r-maxstake').value,
-    limitOrders: $('r-limit').value, limitWaitSec: $('r-limitwait').value, makerFeePct: $('r-maker').value };
+    limitOrders: $('r-limit').value, limitWaitSec: $('r-limitwait').value, makerFeePct: $('r-maker').value,
+    maxHoldMinutes: $('r-maxhold').value };
   if (state.mode === 'live' && !$('r-pass').value) { $('risk-msg').className = 'msg err'; $('risk-msg').textContent = 'Vul je wachtwoord in'; return; }
   try {
     await api('api/settings/risk', { risk, password: $('r-pass').value });
@@ -1906,7 +1911,8 @@ const HELP = {
   'st-open': 'Normaal kijkt de bot alleen naar gesloten candles, zodat een signaal vaststaat. Met <b>Ja</b> telt ook de candle die nog loopt mee: je ziet een kruising tot een hele candle eerder, maar hij kan binnen die candle ook weer verdwijnen, waardoor je vaker te vroeg koopt. Vooral nuttig bij lange candles (1 uur of meer). Een kortere candle-tijd bij Planning is meestal de betere manier om sneller te zijn.',
   'st-btc': 'Bijna alle coins bewegen mee met Bitcoin. Met dit filter koopt de bot geen andere coins zolang BTC onder zijn gemiddelde van 50 candles ligt. BTC zelf wordt niet gefilterd.',
   'r-trail': 'De stop schuift mee omhoog met de koers. Bij 2% verkoopt de bot zodra de koers 2% onder het hoogste punt sinds aankoop zakt. Zo laat je winnaars doorlopen en zet je winst vast. Werkt naast de stop-loss en take-profit; zet de take-profit op 0 om winnaars echt te laten lopen. 0 = uit.',
-  'r-limit': 'Bitvavo rekent voor een market order de taker-fee (0,25%) en voor een limietorder die in het orderboek blijft staan de maker-fee (0,15%). Met <b>Ja</b> koopt de bot met een limietorder op de biedprijs en neemt hij winst met een limietorder op de laatprijs. Zo bespaar je ongeveer 0,2% per ronde. Nadeel: een limietorder wordt alleen gevuld als de koers naar je toe komt. Loopt de koers bij het kopen weg, dan gaat de aankoop niet door (dat voorkomt ook kopen op de top). Bij verkopen gaat de rest na de wachttijd alsnog met een market order. Stop-loss, ATR-stop, trailing stop en handmatig sluiten zijn altijd market, zodat je er bij een snelle daling altijd uit komt.',
+  'r-limit': 'Bitvavo rekent voor een market order de taker-fee (0,25%) en voor een limietorder die in het orderboek blijft staan de maker-fee (0,15%). <b>Alleen winst nemen</b>: kopen gaat direct (geen wachten, geen gemiste instap), alleen winst nemen gebeurt met een limietorder. Bespaart ± 0,1% per ronde. Met <b>Kopen en winst nemen</b> koopt de bot met een limietorder op de biedprijs en neemt hij winst met een limietorder op de laatprijs. Zo bespaar je ongeveer 0,2% per ronde. Nadeel: een limietorder wordt alleen gevuld als de koers naar je toe komt. Loopt de koers bij het kopen weg, dan gaat de aankoop niet door (dat voorkomt ook kopen op de top). Bij verkopen gaat de rest na de wachttijd alsnog met een market order. Stop-loss, ATR-stop, trailing stop en handmatig sluiten zijn altijd market, zodat je er bij een snelle daling altijd uit komt.',
+  'r-maxhold': 'Hoe lang een positie maximaal open mag staan. Is de tijd om, dan verkoopt de bot, ook als er geen verkoopsignaal is en ook als de positie (nog) verlies staat. Zo blijft je geld niet vastzitten in een coin die niets doet, en komt er sneller ruimte voor een nieuwe trade. Te kort kan winnende trades te vroeg afbreken. <b>Gebruikelijk:</b> 30 tot 120 minuten bij korte candles. 0 = uit.',
   'r-limitwait': 'Hoe lang een limietorder mag wachten op een vulling. Korter = minder gemiste kansen bij verkopen, maar vaker market. Tijdens het wachten pauzeert de bot even (ook de bewaking van andere posities), dus houd het kort. <b>Gebruikelijk:</b> 15 tot 30 seconden.',
   'r-maker': 'De maker-fee van Bitvavo bij jouw handelsvolume. Tot € 100.000 per 30 dagen is dat 0,15%. In live rekent de bot met wat Bitvavo werkelijk inhoudt; in paper met dit percentage.',
   'r-reinvest': 'Laat je winst voor je werken. Zoveel procent van je gerealiseerde winst (alle gesloten trades in deze modus) wordt verdeeld over je maximaal aantal open trades en bij de inzet per trade opgeteld. Voorbeeld: € 25 inzet, 3 trades, € 30 winst en 100% → de volgende trades zijn € 35. Verlies je weer, dan krimpt het extra deel mee, maar nooit onder je eigen inzet. Let op: na verlies koop je nog steeds met minimaal je eigen inzet. In live geldt ook je budgetplafond en saldo. 0 = uit.',

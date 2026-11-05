@@ -28,9 +28,10 @@ export const RISK_LIMITS = {
   aiExitEveryMin: [0, 1440],
   reinvestPct: [0, 100],
   maxStakeEur: [0, 1000000],
-  limitOrders: [0, 1],
+  limitOrders: [0, 2],
   limitWaitSec: [0, 300],
   makerFeePct: [0, 5],
+  maxHoldMinutes: [0, 43200],
 };
 export const LIVE_MIN_STAKE_EUR = 5;
 export const STRATEGY_LIMITS = {
@@ -83,6 +84,7 @@ const RISK_LABELS = {
   limitOrders: 'Limietorders',
   limitWaitSec: 'Wachttijd limietorder',
   makerFeePct: 'Maker-fee',
+  maxHoldMinutes: 'Maximale tijd in positie',
   feePct: 'Fee',
   emaFast: 'EMA fast',
   emaSlow: 'EMA slow',

@@ -80,6 +80,8 @@ export const config = {
     // Hoe lang een limietorder mag wachten op een vulling, in seconden.
     limitWaitSec: num('LIMIT_WAIT_SEC', 20),
     makerFeePct: num('MAKER_FEE_PCT', 0.15),
+    // Maximale tijd in een positie in minuten; daarna verkopen (0 = uit).
+    maxHoldMinutes: num('MAX_HOLD_MINUTES', 0),
   },
 
   paper: {

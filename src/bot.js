@@ -580,7 +580,9 @@ export class Bot {
       await this.#updateBtcTrend();
       // Gevolgde coins plus coins waarin nog een positie open staat, zodat een positie
       // altijd bewaakt blijft, ook als de coin uit de lijst is gehaald.
-      for (const pair of [...new Set([...this.pairs, ...Object.keys(this.store.state.positions)])]) {
+      const pairs = [...new Set([...this.pairs, ...Object.keys(this.store.state.positions)])];
+      await this.#prefetch(pairs);
+      for (const pair of pairs) {
         try {
           await this.#handlePair(pair);
         } catch (err) {
@@ -623,6 +625,28 @@ export class Bot {
       this.#event('info', null, 'Nieuwe dag, dagelijkse verlieslimiet gereset.');
       this.store.state.halted = null;
     }
+  }
+
+  // Haalt koersen en candles van alle coins tegelijk op (maximaal 8 tegelijk), zodat de
+  // gedeelde cache gevuld is voordat de coins één voor één beoordeeld worden. Scheelt bij
+  // veel coins veel tijd: anders wacht elke coin op zijn eigen verzoek naar Bitvavo.
+  // Fouten hier zijn niet erg; dan haalt #handlePair het gewoon zelf op.
+  async #prefetch(pairs) {
+    if (pairs.length < 2) return;
+    this.#step(`Koersen en candles van ${pairs.length} coins ophalen`);
+    const strategy = this.strategy;
+    const need = Math.min(1400, Math.max(200, strategy.emaSlow * 4, (strategy.trendEma || 0) * 2 + 20));
+    const timeframe = this.timeframe;
+    if (typeof this.ex.fetchTickers === 'function') await this.ex.fetchTickers(pairs).catch(() => {});
+    const queue = [...pairs];
+    const worker = async () => {
+      while (queue.length) {
+        const pair = queue.shift();
+        // Zelfde parameters als fetchClosedCandles, zodat het in de cache dezelfde sleutel is.
+        await this.ex.fetchOHLCV(pair, timeframe, undefined, need + 1).catch(() => {});
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(8, pairs.length) }, worker));
   }
 
   async #handlePair(pair) {
@@ -892,6 +916,8 @@ export class Bot {
   #orderOpts(reason = null) {
     const r = this.risk;
     if (!r.limitOrders) return {};
+    // 2 = alleen bij winst nemen; kopen gaat dan direct met een market order.
+    if (r.limitOrders === 2 && !reason) return {};
     if (reason && /^(Stop-loss|ATR-stop|Trailing stop|Handmatig)/.test(reason)) return {};
     return { limit: true, waitSec: r.limitWaitSec > 0 ? r.limitWaitSec : 20 };
   }
@@ -973,10 +999,14 @@ export class Bot {
     // ATR-stop vervangt de vaste stop-loss als hij aan staat én bij de aankoop een ATR bekend was.
     const atrStop = risk.atrStopMult > 0 && position.atrAtEntry ? position.entryPrice - risk.atrStopMult * position.atrAtEntry : null;
     // 0 = uit
+    // Maximale tijd in een positie: daarna verkopen, ook zonder signaal (0 = uit).
+    const heldMin = position.openedAt ? (Date.now() - Date.parse(position.openedAt)) / 60000 : 0;
+    const timeUp = risk.maxHoldMinutes > 0 && heldMin >= risk.maxHoldMinutes;
     return atrStop != null && price <= atrStop ? `ATR-stop (${changePct.toFixed(2)}%, stop op ${fmtPrice(atrStop)})`
       : atrStop == null && risk.stopLossPct > 0 && changePct <= -risk.stopLossPct ? `Stop-loss (${changePct.toFixed(2)}%)`
       : risk.trailingStopPct > 0 && fromTop <= -risk.trailingStopPct ? `Trailing stop (${fromTop.toFixed(2)}% vanaf top ${fmtPrice(position.highest)}, resultaat ${changePct.toFixed(2)}%)`
-      : risk.takeProfitPct > 0 && changePct >= risk.takeProfitPct ? `Take-profit (${changePct.toFixed(2)}%)` : null;
+      : risk.takeProfitPct > 0 && changePct >= risk.takeProfitPct ? `Take-profit (${changePct.toFixed(2)}%)`
+      : timeUp ? `Tijdslimiet: ${Math.round(heldMin)} min in de positie (resultaat ${changePct.toFixed(2)}%)` : null;
   }
 
   // Regels eerst, daarna eventueel de AI (winst nemen). Geeft true als de positie is gesloten.
