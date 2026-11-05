@@ -74,3 +74,9 @@ test('koopprompt: filtergrenzen instelbaar, ○ voor niet-harde eisen', () => {
   assert.match(p, /Kosten per ronde: 0\.50% = 0\.25R/);
   assert.doesNotMatch(p, /^✗/m);
 });
+
+test('systeemprompt: ○ is geen reden om af te wijzen (soepel)', async () => {
+  const src = (await import('node:fs')).readFileSync(new URL('../src/ai.js', import.meta.url), 'utf8');
+  assert.match(src, /Staat er ○, dan heeft de gebruiker\s+gekozen om ook in een richtingloze markt te handelen/);
+  assert.doesNotMatch(src, /Bij een richtingloze markt \(koers gaat heen en weer\) wijs je af/);
+});

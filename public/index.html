@@ -1746,6 +1746,10 @@ function riskHelp() {
       parts.push(be > 55 ? `<span class="warnc">${txt} Dat is erg veel; zet de take-profit hoger (minstens 2× de stop-loss) of de stop-loss ruimer.</span>` : txt);
     }
   }
+  // ATR-stop op korte candles: de stop komt dan vaak dichter bij dan de kosten van een ronde.
+  if (Number($('r-atr').value) > 0 && ['1m', '5m'].includes(state?.timeframe)) {
+    parts.push(`<span class="warnc">Let op: met ${state.timeframe}-candles beweegt een candle meestal maar 0,1 tot 0,4%. Een ATR-stop van ${String($('r-atr').value).replace('.', ',')}× ligt dan vaak dichter bij je instapkoers dan de kosten van een ronde. De AI wijst zulke trades af (kosten te hoog ten opzichte van het risico), en de stop wordt door ruis geraakt. Zet de ATR-stop hoger, gebruik een vaste stop-loss (bijv. 2,5%) of kies langere candles.</span>`);
+  }
   const trailVal = Number($('r-trail').value);
   if (trailVal > 0 && trailVal < (Number($('r-fee').value) + Number($('r-slip').value)) * 2 * 1.5) {
     parts.push('<span class="warnc">De trailing stop is erg krap ten opzichte van de kosten per ronde: hij verkoopt vaak voordat de fees terugverdiend zijn.</span>');

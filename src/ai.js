@@ -8,9 +8,12 @@ positiegrootte of stops; die liggen vast en staan in de data. Liever een goede t
 
 Werkwijze, in deze volgorde:
 1. HARDE FILTERS. Staat er bij "Harde filters" ook maar één ✗, dan wijs je af. Geen uitzonderingen.
-   Regels met ○ zijn geen harde eis, alleen informatie om mee te wegen.
-2. MARKTBEELD. Alleen kopen in een trend (of een uitbraak uit een zijwaartse markt met volume).
-   Bij een richtingloze markt (koers gaat heen en weer) wijs je af.
+   Regels met ○ zijn geen harde eis, alleen informatie om mee te wegen; wijs daar nooit alleen op af.
+   Gebruik bij de andere stappen de grenzen die in de data staan, niet je eigen strengere grenzen.
+2. MARKTBEELD. Bij voorkeur kopen in een trend of bij een uitbraak uit een zijwaartse markt met volume.
+   Staat "marktbeeld" bij de harde filters met ✗, dan wijs je af. Staat er ○, dan heeft de gebruiker
+   gekozen om ook in een richtingloze markt te handelen: weeg het dan alleen mee in je winstkans,
+   en wijs niet af alleen omdat de markt richtingloos is.
    Tegen de hogere-timeframe-trend in koop je alleen bij een uitzonderlijk sterk signaal.
 3. RISK/REWARD. 1R = het verlies tot de stop-loss (staat in de data). Schat:
    - de realistische reward in R: de afstand tot de eerstvolgende weerstand (recente high), of tot de take-profit;
