@@ -1718,6 +1718,19 @@ function riskHelp() {
       : '<span class="warnc">Stop-loss staat uit: een positie wordt alleen verkocht bij een verkoopsignaal of take-profit.</span>',
   ];
   if (tp === 0) parts.push('<span class="muted">Take-profit staat uit.</span>');
+  else {
+    // Of de verhouding winst/verlies na kosten klopt.
+    const cost = (Number($('r-fee').value) + (state?.mode === 'live' ? 0 : Number($('r-slip').value))) * 2;
+    const be = breakEvenWinrate(Number($('r-atr').value) > 0 ? null : sl, tp, cost);
+    if (be != null) {
+      const txt = `Een winnende trade levert na kosten ± ${(tp - cost).toFixed(2).replace('.', ',')}% op, een verliezende kost ± ${(sl + cost).toFixed(2).replace('.', ',')}%: je moet <b>${Math.round(be)}%</b> van je trades winnen om quitte te spelen.`;
+      parts.push(be > 55 ? `<span class="warnc">${txt} Dat is erg veel; zet de take-profit hoger (minstens 2× de stop-loss) of de stop-loss ruimer.</span>` : txt);
+    }
+  }
+  const trailVal = Number($('r-trail').value);
+  if (trailVal > 0 && trailVal < (Number($('r-fee').value) + Number($('r-slip').value)) * 2 * 1.5) {
+    parts.push('<span class="warnc">De trailing stop is erg krap ten opzichte van de kosten per ronde: hij verkoopt vaak voordat de fees terugverdiend zijn.</span>');
+  }
   if (reinvest > 0) {
     parts.push(`<b>Winst herinvesteren:</b> ${String(reinvest).replace('.', ',')}% van je gerealiseerde winst gaat naar de inzet. ` +
       (profit > 0 ? `Met ${eur2(profit)} winst tot nu toe wordt de volgende trade <b>${eur2(eff)}</b> (${eur2(stake)} + ${eur2(eff - stake)}).`
@@ -1924,10 +1937,10 @@ const PRESETS = [
     risk: { stopLossPct: 2.5, takeProfitPct: 0, cooldownMinutes: 45, trailingStopPct: 2.5, atrStopMult: 2 },
     strategy: { emaFast: 9, emaSlow: 21, rsiPeriod: 14, rsiMaxEntry: 70, trendEma: 200, adxMin: 20, volumeMult: 1.2, btcFilter: 1, maxChasePct: 1, useOpenCandle: 0 } },
   { name: 'Actief', level: 5, freq: 'Meerdere trades per dag',
-    desc: 'Vijfminutencandles en snellere lijnen. Vaste take-profit, minder filters, dus meer ruis en fees.',
+    desc: 'Vijfminutencandles en snellere lijnen. Vaste take-profit van 2× de stop-loss, minder filters, dus meer ruis en fees.',
     who: 'Voor wie veel actie wil en kleine winsten accepteert.',
     schedule: { timeframe: '5m', checkIntervalMinutes: 1 },
-    risk: { stopLossPct: 1.5, takeProfitPct: 3, cooldownMinutes: 15, trailingStopPct: 1.5, atrStopMult: 0 },
+    risk: { stopLossPct: 2, takeProfitPct: 4, cooldownMinutes: 15, trailingStopPct: 2, atrStopMult: 0 },
     strategy: { emaFast: 5, emaSlow: 13, rsiPeriod: 14, rsiMaxEntry: 75, trendEma: 100, adxMin: 15, volumeMult: 0, btcFilter: 0, maxChasePct: 0.8, useOpenCandle: 0 } },
   { name: 'Momentum', level: 6, freq: 'Meerdere trades per dag',
     desc: 'Springt in op plotselinge stijgingen met veel volume, ook als de coin al warm is. Kijkt naar de lopende candle.',
@@ -1936,16 +1949,16 @@ const PRESETS = [
     risk: { stopLossPct: 3, takeProfitPct: 0, cooldownMinutes: 20, trailingStopPct: 2, atrStopMult: 0 },
     strategy: { emaFast: 5, emaSlow: 13, rsiPeriod: 14, rsiMaxEntry: 85, trendEma: 0, adxMin: 25, volumeMult: 2, btcFilter: 0, maxChasePct: 2, useOpenCandle: 1 } },
   { name: 'Scalper', level: 7, freq: 'Tientallen trades per dag',
-    desc: 'Minuutcandles, check elke 20 seconden. Pakt kleine bewegingen met krappe stops. Fees (± 0,5% per ronde) wegen zwaar.',
+    desc: 'Minuutcandles, check elke 20 seconden. Snelle trades, met een take-profit ruim boven de stop zodat de fees (± 0,7% per ronde) terugverdiend worden.',
     who: 'Alleen om te experimenteren, liefst in paper.',
     schedule: { timeframe: '1m', checkIntervalMinutes: 1 / 3 },
-    risk: { stopLossPct: 1, takeProfitPct: 1.5, cooldownMinutes: 5, trailingStopPct: 0.8, atrStopMult: 0 },
+    risk: { stopLossPct: 1.5, takeProfitPct: 3.5, cooldownMinutes: 5, trailingStopPct: 1.5, atrStopMult: 0 },
     strategy: { emaFast: 5, emaSlow: 13, rsiPeriod: 7, rsiMaxEntry: 80, trendEma: 50, adxMin: 0, volumeMult: 1.5, btcFilter: 0, maxChasePct: 0.5, useOpenCandle: 0 } },
   { name: 'Zeer riskant', level: 8, freq: 'Zeer veel trades',
-    desc: 'Alle filters uit, reageert op elke kleine kruising in de lopende minuutcandle, check elke 10 seconden. Vooral fees en valse signalen.',
+    desc: 'Alle filters uit, reageert op elke kleine kruising in de lopende minuutcandle, check elke 10 seconden. Heel veel trades en valse signalen.',
     who: 'Gokken. Grote kans op verlies; niet voor echt geld.',
     schedule: { timeframe: '1m', checkIntervalMinutes: 1 / 6 },
-    risk: { stopLossPct: 2, takeProfitPct: 1, cooldownMinutes: 0, trailingStopPct: 0, atrStopMult: 0 },
+    risk: { stopLossPct: 2.5, takeProfitPct: 5, cooldownMinutes: 0, trailingStopPct: 0, atrStopMult: 0 },
     strategy: { emaFast: 3, emaSlow: 8, rsiPeriod: 7, rsiMaxEntry: 100, trendEma: 0, adxMin: 0, volumeMult: 0, btcFilter: 0, maxChasePct: 0, useOpenCandle: 1 } },
 ];
 const TF_LABEL = { '1m': '1 min', '5m': '5 min', '15m': '15 min', '30m': '30 min', '1h': '1 uur', '2h': '2 uur', '4h': '4 uur', '1d': '1 dag' };
@@ -1953,6 +1966,16 @@ const nl = (n) => String(Math.round(n * 100) / 100).replace('.', ',');
 // Kleur per risiconiveau: groen → geel → rood.
 const levelColor = (l) => (l <= 2 ? 'var(--up)' : l <= 4 ? 'var(--accent)' : l <= 6 ? 'var(--warn)' : 'var(--down)');
 const levelName = (l) => (l <= 2 ? 'Laag risico' : l <= 4 ? 'Gemiddeld risico' : l <= 6 ? 'Hoog risico' : 'Zeer hoog risico');
+// Welk deel van je trades je moet winnen om quitte te spelen, gegeven stop-loss, take-profit en de
+// kosten van een ronde (fee + slippage, kopen en verkopen). null als er geen vaste take-profit is.
+function breakEvenWinrate(stopPct, tpPct, costPct) {
+  if (!(stopPct > 0) || !(tpPct > 0)) return null;
+  const win = tpPct - costPct, loss = stopPct + costPct;
+  if (win <= 0) return 100;
+  return (loss / (win + loss)) * 100;
+}
+const roundCost = () => ((state?.risk?.feePct ?? 0.25) + (state?.mode === 'live' ? 0 : state?.risk?.slippagePct ?? 0.1)) * 2;
+
 function presetDetails(p) {
   const st = p.strategy, r = p.risk;
   const filters = [st.trendEma && `trend-EMA ${st.trendEma}`, st.adxMin && `ADX ${st.adxMin}`, st.volumeMult && `volume ${nl(st.volumeMult)}×`, st.btcFilter && 'BTC-filter'].filter(Boolean);
@@ -1961,7 +1984,8 @@ function presetDetails(p) {
     <li>EMA ${st.emaFast} / ${st.emaSlow}, max RSI ${st.rsiMaxEntry}${st.useOpenCandle ? ', lopende candle' : ''}</li>
     <li>Stop-loss ${nl(r.stopLossPct)}%${r.atrStopMult ? ` of ATR ${nl(r.atrStopMult)}×` : ''}, ${r.takeProfitPct ? `take-profit ${nl(r.takeProfitPct)}%` : 'geen vaste take-profit'}</li>
     <li>${r.trailingStopPct ? `Trailing stop ${nl(r.trailingStopPct)}%` : 'Geen trailing stop'}, afkoelperiode ${r.cooldownMinutes >= 60 ? `${nl(r.cooldownMinutes / 60)} uur` : `${r.cooldownMinutes} min`}</li>
-    <li>Filters: ${filters.length ? filters.join(', ') : 'geen'}${st.maxChasePct ? `; max. ${nl(st.maxChasePct)}% stijging na signaal` : ''}</li></ul>`;
+    <li>Filters: ${filters.length ? filters.join(', ') : 'geen'}${st.maxChasePct ? `; max. ${nl(st.maxChasePct)}% stijging na signaal` : ''}</li>
+    ${(() => { const be = breakEvenWinrate(r.stopLossPct, r.takeProfitPct, roundCost()); return be == null ? '' : `<li>Quitte bij ± ${Math.round(be)}% gewonnen trades (na kosten)</li>`; })()}</ul>`;
 }
 // Welk profiel komt overeen met de huidige instellingen (alle waarden gelijk)?
 function currentPreset() {
