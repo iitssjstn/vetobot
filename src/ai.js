@@ -174,7 +174,7 @@ Vorige high: ${st ? (st.brokeHigh ? 'doorbroken (koers erboven)' : `${fx(st.toHi
 == Momentum en volume ==
 RSI ${fx(ind.rsi, 1)} · EMA fast ${px(ind.emaFast)} / slow ${px(ind.emaSlow)} · ATR ${fx(ind.atrPct)}% per candle
 Volume signaalcandle: ${volumeText(ind.volumeRatio)}
-Volume laatste 3 candles vs. ervoor: ${fx(st?.volTrend, 2)}× · volume op stijgende vs. dalende candles: ${fx(st?.upDownVol, 2)}×
+Volume laatste 3 candles vs. ervoor: ${st?.volTrend == null ? 'onbekend' : `${fx(st.volTrend, 2)}×`} · volume op stijgende vs. dalende candles: ${st?.upDownVol == null ? 'alleen stijgende candles' : `${fx(st.upDownVol, 2)}×`}
 
 == Risk/reward (vast, bepaald door de gebruiker) ==
 ${rr}
