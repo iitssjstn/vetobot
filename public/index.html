@@ -1106,6 +1106,15 @@ function render() {
   if (s.ai.provider !== 'none' && !s.aiKeySet) alerts.push(['', `AI-provider "${esc(s.ai.provider)}" is gekozen, maar er is geen AI-key. Koopsignalen worden afgewezen.`]);
   if (s.risk.stopLossPct === 0) alerts.push(['', 'Stop-loss staat uit. Posities worden alleen verkocht bij een verkoopsignaal of take-profit.']);
   if (s.heartbeatSet && s.lastHeartbeat?.error) alerts.push(['', `De heartbeat kon niet worden verstuurd: ${esc(s.lastHeartbeat.error)}. Je krijgt dan mogelijk een onterechte offline-melding.`]);
+  // Saldo te laag voor een nieuwe aankoop: dan blokkeert de bot elk koopsignaal, wat lijkt op "hij doet niets".
+  const stakeNow = s.stake?.effective ?? s.risk.stakeEur;
+  const freeEur = live ? s.liveBalance?.eurFree : s.balanceEur;
+  if (freeEur != null && freeEur < stakeNow) {
+    alerts.push(['err', `${live ? 'Je vrije EUR-saldo bij Bitvavo' : 'Je paper-saldo'} (${eur2(freeEur)}) is lager dan je inzet per trade (${eur2(stakeNow)}). `
+      + `De bot kan daardoor niets kopen en slaat alle koopsignalen over.`
+      + (s.positions.length ? ` Zodra een van je ${s.positions.length} open posities sluit, komt er weer ruimte.` : '')
+      + (live ? ' Stort geld bij of verlaag je inzet.' : ' Begin paper opnieuw (Instellingen → Paper opnieuw beginnen) of verlaag je inzet.')]);
+  }
   if (s.lastError) alerts.push(['err', `Fout bij laatste check (${esc(s.lastError.pair)}): ${esc(s.lastError.message)}`]);
   $('alerts').innerHTML = alerts.map(([c, t]) => `<div class="alert ${c}">${icon('alert')}<div>${t}</div></div>`).join('');
 
