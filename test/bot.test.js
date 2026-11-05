@@ -537,10 +537,13 @@ import http from 'node:http';
 // Nep-AI (OpenAI-compatibel) die antwoordt met wat er in aiAnswer staat.
 let aiAnswer = 'hold';
 let aiCalls = 0;
+let lastAiPrompt = '';
 const aiServer = http.createServer((req, res) => {
   aiCalls++;
-  req.resume();
+  let body = '';
+  req.on('data', (c) => (body += c));
   req.on('end', () => {
+    try { lastAiPrompt = JSON.parse(body).messages.at(-1).content; } catch {}
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ decision: aiAnswer, reason: aiAnswer === 'sell' ? 'momentum neemt af' : 'stijging zet door' }) } }] }));
   });
@@ -694,4 +697,30 @@ test('limietorders: niet gevulde koop wordt overgeslagen, stop-loss verkoopt alt
   await bot.watchPositions();
   assert.deepEqual(sells[0], {});
   assert.match(bot.store.state.trades[0].exitReason, /^Stop-loss/);
+});
+
+test('AI krijgt stop, kosten, strengheid en eigen strategiegrenzen mee', async () => {
+  const { bot, ex } = setup({});
+  await bot.setRisk({ cooldownMinutes: 0, stopLossPct: 3, feePct: 0.25, slippagePct: 0.1, limitOrders: 0 });
+  await bot.setStrategy({ rsiMaxEntry: 80, aiStrictness: 2, adxMin: 0, volumeMult: 0, btcFilter: 0, maxChasePct: 0 });
+  withAi(bot);
+  aiAnswer = 'reject';
+  lastAiPrompt = '';
+  const seq = [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66, 68]);
+  for (let n = 41; n <= 44; n++) { ex.prices = seq.slice(0, n); await bot.tick(); }
+  assert.ok(lastAiPrompt, 'AI gevraagd');
+  assert.match(lastAiPrompt, /strengheid: soepel/);
+  assert.match(lastAiPrompt, /RSI [\d.]+ \(max\. 80:/, 'max RSI volgt de strategie');
+  assert.match(lastAiPrompt, /ADX [\d.onbekend]+ \(min\. 15:/, 'ADX volgt de strengheid');
+  assert.match(lastAiPrompt, /1R \(verlies tot stop\): 3\.00%/);
+  assert.match(lastAiPrompt, /Kosten per ronde: 0\.70% = 0\.23R/);
+  assert.match(lastAiPrompt, /Minimale verwachte winst: positief/);
+  // Met limietorders rekent hij met de maker-fee (nieuwe bot, want dit signaal is al beoordeeld)
+  const b2 = setup({});
+  await b2.bot.setRisk({ cooldownMinutes: 0, stopLossPct: 3, feePct: 0.25, slippagePct: 0.1, limitOrders: 1, makerFeePct: 0.15 });
+  await b2.bot.setStrategy({ maxChasePct: 0, rsiMaxEntry: 100 });
+  withAi(b2.bot);
+  lastAiPrompt = '';
+  for (let n = 41; n <= 44; n++) { b2.ex.prices = seq.slice(0, n); await b2.bot.tick(); }
+  assert.match(lastAiPrompt, /Kosten per ronde: 0\.50%/);
 });

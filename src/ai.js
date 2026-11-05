@@ -8,6 +8,7 @@ positiegrootte of stops; die liggen vast en staan in de data. Liever een goede t
 
 Werkwijze, in deze volgorde:
 1. HARDE FILTERS. Staat er bij "Harde filters" ook maar één ✗, dan wijs je af. Geen uitzonderingen.
+   Regels met ○ zijn geen harde eis, alleen informatie om mee te wegen.
 2. MARKTBEELD. Alleen kopen in een trend (of een uitbraak uit een zijwaartse markt met volume).
    Bij een richtingloze markt (koers gaat heen en weer) wijs je af.
    Tegen de hogere-timeframe-trend in koop je alleen bij een uitzonderlijk sterk signaal.
@@ -15,7 +16,8 @@ Werkwijze, in deze volgorde:
    - de realistische reward in R: de afstand tot de eerstvolgende weerstand (recente high), of tot de take-profit;
      meer dan 3R verwacht je alleen in een sterke trend met ruimte naar boven;
    - de winstkans: hoe groot de kans is dat die winst eerder geraakt wordt dan de stop.
-   Keur alleen goed als winstkans × reward − (1 − winstkans) × 1R − kosten (in R) duidelijk positief is: minimaal +0,3R.
+   Keur alleen goed als winstkans × reward − (1 − winstkans) × 1R − kosten (in R) minstens de
+   "minimale verwachte winst" uit de data is.
    Ligt een recente high binnen ±1R boven de koers en is die nog niet doorbroken, dan is de reward klein.
 4. MOMENTUM EN VOLUME. Een stijging op dalend of laag volume is zwak. Een kruising na een al grote stijging
    (koers ver boven de EMA's, veel groene candles op rij, RSI hoog) is te laat: je koopt dan de top.
@@ -95,7 +97,7 @@ function volumeText(ratio) {
 function riskOf(risk, atrPct) {
   if (!risk) return null;
   const stopPct = risk.atrStopMult > 0 && atrPct ? risk.atrStopMult * atrPct : risk.stopLossPct > 0 ? risk.stopLossPct : null;
-  const feesPct = (risk.feePct ?? 0) * 2 + (risk.slippagePct ?? 0) * 2;
+  const feesPct = risk.roundCostPct != null ? risk.roundCostPct : (risk.feePct ?? 0) * 2 + (risk.slippagePct ?? 0) * 2;
   return { stopPct, feesPct, feesR: stopPct ? feesPct / stopPct : null };
 }
 
@@ -120,17 +122,20 @@ export function buildPrompt({ pair, timeframe, indicators, recentCandles, extra 
   const isBtc = /^BTC\//.test(pair);
   const distSlowAtr = ind.close && ind.emaSlow && ind.atr ? (ind.close - ind.emaSlow) / ind.atr : null;
 
-  // Harde filters, vooraf uitgerekend zodat het model niet hoeft te rekenen. ✗ = afwijzen.
+  // Harde filters, vooraf uitgerekend zodat het model niet hoeft te rekenen. ✗ = afwijzen, ○ = alleen info.
+  // Grenzen uit extra.filters (AI-strengheid + je eigen strategie-instellingen); anders de strenge standaard.
+  const F = { label: 'streng', adxMin: 20, volMin: 0.8, rsiMax: 72, atrMax: 3, greensMax: 4, costRMax: 0.35, evMinR: 0.3, chopHard: true, btcHard: true, ...(extra.filters ?? {}) };
+  const nl = (v) => String(Math.round(v * 100) / 100).replace('.', ',');
   const filters = [];
-  const add = (ok, text) => filters.push(`${ok == null ? '?' : ok ? '✓' : '✗'} ${text}`);
-  add(ind.adx == null ? null : ind.adx >= 20, `ADX ${fx(ind.adx, 1)} (min. 20: er moet een trend zijn)`);
-  add(ind.volumeRatio == null ? null : ind.volumeRatio >= 0.8, `volume ${fx(ind.volumeRatio, 1)}× gemiddeld (min. 0,8×)`);
-  add(ind.rsi == null ? null : ind.rsi <= 72, `RSI ${fx(ind.rsi, 1)} (max. 72: niet oververhit)`);
-  add(distSlowAtr == null ? null : distSlowAtr <= 3, `koers ${fx(distSlowAtr, 1)} ATR boven EMA slow (max. 3: niet te ver doorgeschoten)`);
-  add(st ? st.greens < 5 : null, `${st?.greens ?? '?'} groene candles op rij (max. 4)`);
-  add(regime === 'onbekend' ? null : regime !== 'richtingloos', `marktbeeld: ${regime}`);
-  if (!isBtc) add(extra.btcTrend ? extra.btcTrend.up : null, `Bitcoin-trend ${extra.btcTrend ? (extra.btcTrend.up ? 'omhoog' : 'omlaag') : 'onbekend'}`);
-  if (rk?.stopPct) add(rk.feesR <= 0.35, `kosten ${fx(rk.feesPct)}% = ${fx(rk.feesR)}R per ronde (max. 0,35R)`);
+  const add = (ok, text, hard = true) => filters.push(`${ok == null ? '?' : !hard ? '○' : ok ? '✓' : '✗'} ${text}`);
+  add(ind.adx == null ? null : ind.adx >= F.adxMin, `ADX ${fx(ind.adx, 1)} (min. ${nl(F.adxMin)}: er moet een trend zijn)`);
+  add(ind.volumeRatio == null ? null : ind.volumeRatio >= F.volMin, `volume ${fx(ind.volumeRatio, 1)}× gemiddeld (min. ${nl(F.volMin)}×)`);
+  add(ind.rsi == null ? null : ind.rsi <= F.rsiMax, `RSI ${fx(ind.rsi, 1)} (max. ${nl(F.rsiMax)}: niet oververhit)`);
+  add(distSlowAtr == null ? null : distSlowAtr <= F.atrMax, `koers ${fx(distSlowAtr, 1)} ATR boven EMA slow (max. ${nl(F.atrMax)}: niet te ver doorgeschoten)`);
+  add(st ? st.greens <= F.greensMax : null, `${st?.greens ?? '?'} groene candles op rij (max. ${F.greensMax})`);
+  add(regime === 'onbekend' ? null : regime !== 'richtingloos', `marktbeeld: ${regime}`, F.chopHard);
+  if (!isBtc) add(extra.btcTrend ? extra.btcTrend.up : null, `Bitcoin-trend ${extra.btcTrend ? (extra.btcTrend.up ? 'omhoog' : 'omlaag') : 'onbekend'}`, F.btcHard);
+  if (rk?.stopPct) add(rk.feesR <= F.costRMax, `kosten ${fx(rk.feesPct)}% = ${fx(rk.feesR)}R per ronde (max. ${nl(F.costRMax)}R)`);
 
   const htf = extra.htfTrend
     ? `${extra.htfTrend.timeframe ?? 'hoger'}: ${extra.htfTrend.up ? 'omhoog' : 'omlaag'}${extra.htfTrend.changePct != null ? ` (${sgn(extra.htfTrend.changePct)}%)` : ''}`
@@ -167,8 +172,9 @@ export function buildPrompt({ pair, timeframe, indicators, recentCandles, extra 
   return `Pair: ${pair} · timeframe ${timeframe} · signaal: KOPEN (EMA fast kruist boven EMA slow)
 Koers: ${px(ind.close)}
 
-== Harde filters (één ✗ = afwijzen) ==
+== Harde filters (één ✗ = afwijzen; ○ = alleen ter info) · strengheid: ${F.label} ==
 ${filters.join('\n')}
+Minimale verwachte winst: ${F.evMinR > 0 ? `+${nl(F.evMinR)}R` : 'positief (meer dan 0)'}
 
 == Markt ==
 Marktbeeld: ${regime} (ADX ${fx(ind.adx, 1)}, rechtheid van de beweging ${fx(st?.er)}: 1 = strakke trend, 0 = heen en weer)

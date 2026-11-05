@@ -748,6 +748,10 @@ export class Bot {
           .map((t) => ({ pnlPct: +t.pnlPct.toFixed(2), exit: t.exitReason, closedAt: t.closedAt })),
         // Zodat de AI kan inschatten of de verwachte winst de kosten en het risico waard is.
         plan: this.#tradePlan(),
+        risk: this.#aiRisk(),
+        filters: this.#aiFilters(),
+        aiHistory: this.#aiHistory(pair),
+        setupStats: this.#setupStats(),
       },
     });
 
@@ -805,6 +809,67 @@ export class Bot {
   entryRisk() {
     const risk = this.risk;
     return { ...risk, stakeEur: this.stakeInfo(risk).effective };
+  }
+
+  // ---------- Gegevens voor de AI ----------
+  // Kosten van een volledige ronde in %, met limietorders en (in paper) slippage.
+  #roundCostPct() {
+    const r = this.risk;
+    const slip = this.mode === 'paper' ? (r.slippagePct ?? 0) : 0;
+    return r.limitOrders ? (r.makerFeePct ?? r.feePct ?? 0) + (r.feePct ?? 0) + slip : ((r.feePct ?? 0) + slip) * 2;
+  }
+
+  // Stop, take-profit en kosten als getallen, zodat de AI exact in R kan rekenen.
+  #aiRisk() {
+    const r = this.risk;
+    return {
+      stopLossPct: r.stopLossPct, atrStopMult: r.atrStopMult, takeProfitPct: r.takeProfitPct,
+      trailingStopPct: r.trailingStopPct, aiExitMinPct: r.aiExitMinPct, roundCostPct: this.#roundCostPct(),
+    };
+  }
+
+  // Grenzen voor de harde filters. Basis volgens de AI-strengheid; wat je zelf bij Strategie
+  // hebt ingesteld (max RSI, min ADX, volumefilter, BTC-filter) gaat daar voor.
+  #aiFilters() {
+    const s = this.strategy;
+    const level = Math.round(Number(s.aiStrictness ?? 1));
+    const base = [
+      { label: 'streng', adxMin: 20, volMin: 0.8, rsiMax: 72, atrMax: 3, greensMax: 4, costRMax: 0.35, evMinR: 0.3, chopHard: true },
+      { label: 'normaal', adxMin: 18, volMin: 0.6, rsiMax: 75, atrMax: 3.5, greensMax: 5, costRMax: 0.5, evMinR: 0.15, chopHard: true },
+      { label: 'soepel', adxMin: 15, volMin: 0.5, rsiMax: 80, atrMax: 4.5, greensMax: 6, costRMax: 0.7, evMinR: 0, chopHard: false },
+    ][Math.min(2, Math.max(0, level))];
+    const f = { ...base };
+    if (s.rsiMaxEntry > 0 && s.rsiMaxEntry < 100) f.rsiMax = s.rsiMaxEntry;
+    if (s.adxMin > 0) f.adxMin = s.adxMin;
+    if (s.volumeMult > 0) f.volMin = s.volumeMult;
+    // Bitcoin als harde eis als je het BTC-filter aan hebt, of bij streng.
+    f.btcHard = Boolean(s.btcFilter) || level === 0;
+    return f;
+  }
+
+  // Eerdere AI-beslissingen in deze coin met hoe het afliep, voor de feedback-lus.
+  #aiHistory(pair) {
+    const trades = this.store.state.trades.filter((t) => t.pair === pair);
+    return this.store.state.decisions
+      .filter((d) => d.pair === pair && (d.outcome === 'approved' || d.outcome === 'vetoed') && !d.aiError)
+      .slice(0, 6)
+      .map((d) => {
+        if (d.outcome !== 'approved') return { decision: 'reject', reason: d.reason };
+        // De trade die na deze goedkeuring geopend werd.
+        const t = trades.find((x) => x.openedAt && Date.parse(x.openedAt) >= Date.parse(d.at) - 60000 && Date.parse(x.openedAt) - Date.parse(d.at) < 10 * 60000);
+        const open = this.store.state.positions[pair];
+        const outcome = t ? (t.pnlEur > 0 ? 'winst' : 'verlies') : open && Date.parse(open.openedAt) >= Date.parse(d.at) - 60000 ? 'staat nog open' : 'niet gekocht';
+        return { decision: 'approve', reason: d.reason, outcome, resultPct: t ? t.pnlPct : null };
+      });
+  }
+
+  // Winrate en gemiddelde R van de strategie over alle coins (laatste 50 trades).
+  #setupStats() {
+    const t = this.store.state.trades.slice(0, 50).filter((x) => Number.isFinite(x.pnlPct));
+    if (t.length < 5) return null;
+    const stop = this.risk.stopLossPct > 0 ? this.risk.stopLossPct : null;
+    const avgPct = t.reduce((a, x) => a + x.pnlPct, 0) / t.length;
+    return { trades: t.length, winRate: (t.filter((x) => x.pnlPct > 0).length / t.length) * 100, avgR: stop ? avgPct / stop : null };
   }
 
   // Korte omschrijving van fees, stops en uitstap, voor de AI.
@@ -943,7 +1008,7 @@ export class Bot {
     const candles = await fetchClosedCandles(this.ex, pair, timeframe, 60, { includeOpen: true }).catch(() => []);
     const ind = candles.length ? evaluate(candles, this.strategy, 1).indicators : null;
     if (this.tickStats) this.tickStats.aiCalls++;
-    const r = await askExitChain(chain, { pair, timeframe, position, price, indicators: ind, recentCandles: candles.slice(-12), feePct: risk.feePct });
+    const r = await askExitChain(chain, { pair, timeframe, position, price, indicators: ind, recentCandles: candles.slice(-12), feePct: risk.feePct, risk: this.#aiRisk() });
     if (r.error) {
       this.#event('warn', pair, `AI-winstcheck mislukt, de regels blijven gelden: ${r.reason}`);
       return null;

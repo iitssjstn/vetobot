@@ -61,3 +61,16 @@ test('winstcheck: zwaktesignalen en teruggegeven winst', () => {
   assert.match(e, /= \+0\.65R \(1R = 2\.00%\)/);
   assert.doesNotMatch(e, /NaN|undefined/);
 });
+
+test('koopprompt: filtergrenzen instelbaar, ○ voor niet-harde eisen', () => {
+  const p = buildPrompt({ pair: 'ADA/EUR', timeframe: '5m', recentCandles: trend(),
+    indicators: { close: 104.8, emaFast: 104.4, emaSlow: 103.9, rsi: 78, adx: 16, atr: 0.6, atrPct: 0.57, volumeRatio: 0.55, change24: 4 },
+    extra: { btcTrend: { up: false }, risk: { stopLossPct: 2, roundCostPct: 0.5 },
+      filters: { label: 'soepel', adxMin: 15, volMin: 0.5, rsiMax: 80, atrMax: 4.5, greensMax: 6, costRMax: 0.7, evMinR: 0, chopHard: false, btcHard: false } } });
+  assert.match(p, /strengheid: soepel/);
+  assert.match(p, /✓ ADX 16\.0 \(min\. 15/);
+  assert.match(p, /✓ RSI 78\.0 \(max\. 80/);
+  assert.match(p, /○ Bitcoin-trend omlaag/);
+  assert.match(p, /Kosten per ronde: 0\.50% = 0\.25R/);
+  assert.doesNotMatch(p, /^✗/m);
+});

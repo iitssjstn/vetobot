@@ -640,6 +640,7 @@
             <div><label for="st-chase">Max. stijging na signaal (%)</label><input id="st-chase" type="number" min="0" max="50" step="any" required></div>
             <div><label for="st-confirm">Verkoopsignaal bevestigen (candles)</label><input id="st-confirm" type="number" min="1" max="20" step="1" required></div>
             <div><label for="st-hold">Minimaal in positie (candles, 0 = uit)</label><input id="st-hold" type="number" min="0" max="500" step="1" required></div>
+            <div><label for="st-strict">AI-strengheid</label><select id="st-strict"><option value="0">Streng: weinig, sterke trades</option><option value="1">Normaal</option><option value="2">Soepel: meer trades</option></select></div>
             <div><label for="st-open">Lopende candle meenemen</label><select id="st-open"><option value="0">Nee (aanbevolen)</option><option value="1">Ja, sneller</option></select></div>
             <div id="st-pass-wrap"><label for="st-pass">Je wachtwoord (verplicht in live)</label><input id="st-pass" type="password" autocomplete="current-password"></div>
           </div>
@@ -1370,6 +1371,7 @@ function renderSettings() {
     $('st-chase').value = s.strategy.maxChasePct ?? 0;
     $('st-open').value = String(s.strategy.useOpenCandle ?? 0);
     $('st-confirm').value = s.strategy.sellConfirmCandles || 1;
+    $('st-strict').value = String(s.strategy.aiStrictness ?? 1);
     $('st-hold').value = s.strategy.minHoldCandles ?? 0;
   }
   if (!document.activeElement?.closest('#risk-form') && !riskDirty) {
@@ -1885,6 +1887,7 @@ const HELP = {
   'st-adx': 'De ADX (0–100) meet hoe sterk een trend is, ongeacht de richting. Onder de 20 beweegt de markt meestal zijwaarts, en dan kruisen de lijnen vaak heen en weer zonder echte beweging. <b>Gebruikelijk:</b> 20 tot 25. 0 = uit.',
   'st-vol': 'Koop alleen als het volume op de kruising zoveel keer hoger is dan normaal (gemiddelde van de 20 candles ervoor). Een kruising zonder volume is vaak loos. <b>Gebruikelijk:</b> 1,2 tot 2. 0 = uit. Te hoog en er komen bijna geen signalen meer.',
   'st-chase': 'Een koopsignaal is gebaseerd op de slotkoers van een candle. Is de koers sindsdien al flink gestegen, dan koop je duurder dan het signaal bedoelde en is een deel van de stijging al voorbij. Met deze waarde slaat de bot de aankoop over als de koers nu meer dan zoveel procent boven die slotkoers ligt. <b>Gebruikelijk:</b> 0,5 tot 2. 0 = uit.',
+  'st-strict': 'Hoe kritisch de AI een koopsignaal beoordeelt. De AI rekent eerst harde eisen na (trendsterkte, volume, RSI, niet te ver doorgeschoten, kosten ten opzichte van je stop-loss) en keurt daarna alleen goed als de verwachte winst na kosten groot genoeg is.<br><b>Streng:</b> trendsterkte (ADX) minimaal 20, volume minimaal 0,8×, RSI maximaal 72, kosten maximaal 35% van je risico, verwachte winst minimaal 0,3× je risico, Bitcoin moet stijgen.<br><b>Normaal:</b> ADX 18, volume 0,6×, RSI 75, kosten maximaal 50% van je risico, verwachte winst minimaal 0,15× je risico.<br><b>Soepel:</b> ADX 15, volume 0,5×, RSI 80, kosten maximaal 70% van je risico, verwachte winst alleen positief; een richtingloze markt en dalende Bitcoin tellen alleen nog mee in de afweging.<br>Wat je zelf hierboven instelt (max RSI, minimale ADX, volumefilter, BTC-filter) gaat altijd voor. Soepeler = meer trades, maar ook meer verliezers; kijk bij Trades in de resultaatanalyse of het loont.',
   'st-confirm': 'Bij korte candles kruisen de lijnen vaak heen en weer door ruis. De bot koopt dan en verkoopt een paar minuten later met verlies, vooral door de fees (whipsaw). Met deze waarde verkoopt de bot op het verkoopsignaal pas als EMA fast zoveel candles <b>op rij</b> onder EMA slow ligt. Herstelt de koers binnen die tijd, dan blijft de positie staan. Stop-loss, trailing stop, take-profit en de AI-winstcheck werken altijd direct. <b>Gebruikelijk:</b> 2 of 3. 1 = direct verkopen.',
   'st-hold': 'Hoeveel candles een positie minimaal open blijft voordat het verkoopsignaal mag verkopen. Geeft een nieuwe positie de tijd om te bewegen. Stop-loss, trailing stop, take-profit en de AI-winstcheck werken altijd direct, dus je verlies blijft begrensd. <b>Gebruikelijk:</b> 3 tot 6. 0 = uit.',
   'st-open': 'Normaal kijkt de bot alleen naar gesloten candles, zodat een signaal vaststaat. Met <b>Ja</b> telt ook de candle die nog loopt mee: je ziet een kruising tot een hele candle eerder, maar hij kan binnen die candle ook weer verdwijnen, waardoor je vaker te vroeg koopt. Vooral nuttig bij lange candles (1 uur of meer). Een kortere candle-tijd bij Planning is meestal de betere manier om sneller te zijn.',
@@ -2063,7 +2066,7 @@ $('strat-form').onsubmit = async (e) => {
   const strategy = { emaFast: $('st-fast').value, emaSlow: $('st-slow').value, rsiPeriod: $('st-rsi').value, rsiMaxEntry: $('st-rsimax').value,
     trendEma: $('st-trend').value, adxMin: $('st-adx').value, volumeMult: $('st-vol').value, btcFilter: $('st-btc').value,
     maxChasePct: $('st-chase').value, useOpenCandle: $('st-open').value,
-    sellConfirmCandles: $('st-confirm').value, minHoldCandles: $('st-hold').value };
+    sellConfirmCandles: $('st-confirm').value, minHoldCandles: $('st-hold').value, aiStrictness: $('st-strict').value };
   if (state.mode === 'live' && !$('st-pass').value) { $('strat-msg').className = 'msg err'; $('strat-msg').textContent = 'Vul je wachtwoord in'; return; }
   try {
     await api('api/settings/strategy', { strategy, password: $('st-pass').value });

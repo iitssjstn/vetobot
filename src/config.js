@@ -44,6 +44,8 @@ export const config = {
     // onder EMA slow ligt, en pas na zoveel candles in de positie. Stops werken altijd direct.
     sellConfirmCandles: num('SELL_CONFIRM_CANDLES', 2),
     minHoldCandles: num('MIN_HOLD_CANDLES', 3),
+    // Hoe streng de AI keurt: 0 = streng, 1 = normaal, 2 = soepel.
+    aiStrictness: num('AI_STRICTNESS', 1),
   },
 
   // Harde limieten. De AI kan hier nooit aan komen.

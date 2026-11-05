@@ -46,6 +46,7 @@ export const STRATEGY_LIMITS = {
   useOpenCandle: [0, 1],
   sellConfirmCandles: [0, 20],
   minHoldCandles: [0, 500],
+  aiStrictness: [0, 2],
 };
 export const AI_FAIL_MODES = ['reject', 'approve'];
 const NOTIFY_DEFAULTS = {
@@ -74,6 +75,7 @@ const RISK_LABELS = {
   watchSeconds: 'Posities bewaken elke',
   sellConfirmCandles: 'Verkoopsignaal bevestigen',
   minHoldCandles: 'Minimaal in positie',
+  aiStrictness: 'AI-strengheid',
   aiExitMinPct: 'AI winst nemen vanaf',
   aiExitEveryMin: 'AI winstcheck elke',
   reinvestPct: 'Winst herinvesteren',
@@ -199,7 +201,7 @@ export class Settings {
   }
 
   setStrategy(values) {
-    const next = validated({ ...this.data.strategy, ...values }, STRATEGY_LIMITS, ['emaFast', 'emaSlow', 'rsiPeriod', 'trendEma', 'btcFilter', 'useOpenCandle', 'sellConfirmCandles', 'minHoldCandles']);
+    const next = validated({ ...this.data.strategy, ...values }, STRATEGY_LIMITS, ['emaFast', 'emaSlow', 'rsiPeriod', 'trendEma', 'btcFilter', 'useOpenCandle', 'sellConfirmCandles', 'minHoldCandles', 'aiStrictness']);
     if (next.emaFast >= next.emaSlow) throw new Error('EMA fast moet kleiner zijn dan EMA slow');
     this.data.strategy = next;
     this.#save();
