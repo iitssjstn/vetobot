@@ -2,50 +2,190 @@
 // Positiegrootte en stops worden nooit door de AI bepaald. Optioneel mag de AI bij een
 // positie in de winst adviseren om eerder te verkopen (winst nemen), zie askExitChain.
 
-const SYSTEM_PROMPT = `Je bent een ervaren crypto daytrader die op winst handelt.
-Een regelgebaseerde strategie heeft een koopsignaal gegeven. Jij beslist of deze trade
-waarschijnlijk winst oplevert NA fees. Je bepaalt geen bedragen.
+const SYSTEM_PROMPT = `Je bent een gedisciplineerde crypto daytrader die alleen trades neemt met een duidelijk positieve verwachting.
+Een regelgebaseerde strategie geeft een koopsignaal. Jij beslist of de bot instapt. Je bepaalt NOOIT bedragen,
+positiegrootte of stops; die liggen vast en staan in de data. Liever een goede trade missen dan een slechte nemen.
 
-Zo denk je:
-- Keur goed als de kans op een stijging die groter is dan de fees en de stop-loss reëel is:
-  een opbouwende trend, momentum dat aantrekt, volume dat meegaat, ruimte naar boven.
-- Wijs af als de verwachte beweging te klein is om de fees terug te verdienen, als de coin al
-  te ver is doorgeschoten (koop niet op de top), in een zijwaartse markt zonder richting,
-  of als de bredere markt (Bitcoin) tegenzit.
-- Weeg verwachte winst tegen het risico tot de stop-loss. Een trade is goed als de winstkans
-  het risico duidelijk waard is, niet alleen als het risico klein is.
-- Leer van de laatste trades in deze coin: verloor de bot hier steeds, wees dan strenger.
+Werkwijze, in deze volgorde:
+1. HARDE FILTERS. Staat er bij "Harde filters" ook maar één ✗, dan wijs je af. Geen uitzonderingen.
+2. MARKTREGIME. Alleen kopen in een trend (of een uitbraak uit een range met volume). In "chop" wijs je af.
+   Tegen de hogere-timeframe-trend in koop je alleen bij een uitzonderlijk sterk signaal.
+3. RISK/REWARD. 1R = het verlies tot de stop-loss (staat in de data). Schat:
+   - de realistische reward in R: de afstand tot de eerstvolgende weerstand (recente high), of tot de take-profit;
+     meer dan 3R verwacht je alleen in een sterke trend met ruimte naar boven;
+   - de kans p (0-1) dat die reward eerder geraakt wordt dan de stop.
+   Keur alleen goed als p × reward − (1 − p) × 1R − kosten (in R) duidelijk positief is: minimaal +0,3R.
+   Ligt een recente high binnen ±1R boven de koers en is die nog niet doorbroken, dan is de reward klein.
+4. MOMENTUM EN VOLUME. Een stijging op dalend of laag volume is zwak. Een kruising na een al grote stijging
+   (koers ver boven de EMA's, veel groene candles op rij, RSI hoog) is te laat: je koopt dan de top.
+5. FEEDBACK. Kijk naar de eerdere AI-beslissingen en trades in deze coin. Verloor deze setup recent
+   (winrate laag of gemiddelde R negatief), dan wees je extra streng. Herhaal geen fout die er al staat.
 
-Antwoord uitsluitend met JSON in deze vorm:
-{"decision": "approve" | "reject", "reason": "korte uitleg in het Nederlands: waarom wel of geen winst"}`;
+Antwoord uitsluitend met JSON, zonder tekst eromheen:
+{"decision": "approve" | "reject", "reason": "Nederlands, max. 2 zinnen: regime, geschatte reward in R en kans p, en de doorslaggevende reden"}`;
 
+// ---------- Hulpfuncties voor de prompts (alleen rekenwerk, geen beslissingen) ----------
+const fx = (v, d = 2) => (v == null || !Number.isFinite(Number(v)) ? 'onbekend' : Number(v).toFixed(d));
+// Prijzen met 6 significante cijfers (werkt voor BTC én voor PEPE).
+const px = (v) => (v == null || !Number.isFinite(Number(v)) ? 'onbekend' : String(parseFloat(Number(v).toPrecision(6))));
+const sgn = (v, d = 2) => (v == null || !Number.isFinite(v) ? 'onbekend' : `${v > 0 ? '+' : ''}${v.toFixed(d)}`);
+
+// Candles samengevat: richting, efficiëntie (trend vs. ruis), highs/lows, volumeverloop.
+function candleStats(candles, close, atrPct) {
+  const c = (candles ?? []).filter((x) => Array.isArray(x) && x.length >= 6);
+  if (c.length < 4) return null;
+  const closes = c.map((x) => x[4]);
+  const last = close ?? closes.at(-1);
+  // Efficiency ratio (Kaufman): netto beweging ÷ totale beweging. ~1 = strakke trend, ~0 = heen en weer.
+  let path = 0;
+  for (let i = 1; i < closes.length; i++) path += Math.abs(closes[i] - closes[i - 1]);
+  const er = path ? Math.abs(closes.at(-1) - closes[0]) / path : 0;
+  // Vorige high/low: zonder de laatste candle, zodat die zelf niet als "weerstand" telt.
+  const hi = Math.max(...c.slice(0, -1).map((x) => x[2]));
+  const lo = Math.min(...c.slice(0, -1).map((x) => x[3]));
+  const pct = (a, b) => ((a - b) / b) * 100;
+  const atrUnits = (p) => (atrPct ? p / atrPct : null);
+  // Groene candles op rij aan het eind, en hoe groot die stijging samen is.
+  let greens = 0;
+  for (let i = c.length - 1; i >= 0 && c[i][4] > c[i][1]; i--) greens++;
+  const half = Math.floor(c.length / 2);
+  const avgVol = (a) => a.reduce((s, x) => s + x[5], 0) / (a.length || 1);
+  const volTrend = avgVol(c.slice(-3)) / (avgVol(c.slice(0, -3)) || 1);
+  const upVol = c.filter((x) => x[4] >= x[1]).reduce((s, x) => s + x[5], 0);
+  const downVol = c.filter((x) => x[4] < x[1]).reduce((s, x) => s + x[5], 0);
+  // Hogere highs/lows in de tweede helft t.o.v. de eerste helft.
+  const h1 = Math.max(...c.slice(0, half).map((x) => x[2])), h2 = Math.max(...c.slice(half).map((x) => x[2]));
+  const l1 = Math.min(...c.slice(0, half).map((x) => x[3])), l2 = Math.min(...c.slice(half).map((x) => x[3]));
+  return {
+    n: c.length, er, hi, lo,
+    toHighPct: pct(hi, last), fromLowPct: pct(last, lo),
+    toHighAtr: atrUnits(pct(hi, last)), fromLowAtr: atrUnits(pct(last, lo)),
+    rangePct: pct(hi, lo),
+    netPct: pct(closes.at(-1), closes[0]),
+    last3Pct: closes.length > 3 ? pct(closes.at(-1), closes.at(-4)) : null,
+    greens,
+    volTrend, upDownVol: downVol ? upVol / downVol : null,
+    structure: h2 > h1 && l2 > l1 ? 'hogere highs en hogere lows' : h2 < h1 && l2 < l1 ? 'lagere highs en lagere lows' : 'gemengd',
+    brokeHigh: last > hi,
+  };
+}
+
+// Regime uit ADX en efficiency ratio. Bewust grof: het model krijgt ook de onderliggende cijfers.
+function regimeOf(adx, er) {
+  if (adx == null || er == null) return 'onbekend';
+  if (adx >= 25 && er >= 0.35) return 'trend';
+  if (er < 0.2 || adx < 18) return 'chop';
+  return 'range';
+}
+
+function volumeText(ratio) {
+  if (ratio == null) return 'onbekend';
+  const label = ratio < 0.7 ? 'droog (weinig interesse)' : ratio < 1.2 ? 'normaal' : ratio < 2 ? 'sterk (echte interesse)' : 'uitzonderlijk (mogelijk uitbraak of piek)';
+  return `${fx(ratio, 1)}× gemiddeld: ${label}`;
+}
+
+// Risico in procenten tot de stop, en de kosten van een volledige ronde.
+function riskOf(risk, atrPct) {
+  if (!risk) return null;
+  const stopPct = risk.atrStopMult > 0 && atrPct ? risk.atrStopMult * atrPct : risk.stopLossPct > 0 ? risk.stopLossPct : null;
+  const feesPct = (risk.feePct ?? 0) * 2 + (risk.slippagePct ?? 0) * 2;
+  return { stopPct, feesPct, feesR: stopPct ? feesPct / stopPct : null };
+}
+
+// Winrate en gemiddelde R van eerdere trades (pnlPct gedeeld door het stop-percentage).
+function perfOf(trades, stopPct) {
+  const t = (trades ?? []).filter((x) => Number.isFinite(x.pnlPct));
+  if (!t.length) return null;
+  const wins = t.filter((x) => x.pnlPct > 0).length;
+  const avgPct = t.reduce((s, x) => s + x.pnlPct, 0) / t.length;
+  return { n: t.length, winRate: (wins / t.length) * 100, avgPct, avgR: stopPct ? avgPct / stopPct : null };
+}
+
+// Context voor de koopbeslissing. Alle velden in extra zijn optioneel; ontbreekt iets, dan staat er "onbekend".
+// extra: { btcTrend, recentTrades, plan, risk: { stopLossPct, atrStopMult, takeProfitPct, trailingStopPct,
+//   feePct, slippagePct }, htfTrend: { timeframe, up, close, ema, changePct }, setupStats: { trades, winRate, avgR },
+//   aiHistory: [{ at, decision, reason, resultPct, outcome }] }
 export function buildPrompt({ pair, timeframe, indicators, recentCandles, extra = {} }) {
-  const n = (v, d = 2) => (v == null ? 'onbekend' : Number(v).toFixed(d));
-  const candles = recentCandles
-    .map((c) => `${new Date(c[0]).toISOString()} O:${c[1]} H:${c[2]} L:${c[3]} C:${c[4]} V:${c[5]}`)
-    .join('\n');
-  const btc = extra.btcTrend ? `${extra.btcTrend.up ? 'omhoog' : 'omlaag'} (koers ${n(extra.btcTrend.close, 0)} vs EMA50 ${n(extra.btcTrend.ema50, 0)})` : 'niet bekeken';
-  const trades = extra.recentTrades?.length
-    ? extra.recentTrades.map((t) => `${n(t.pnlPct)}% (${t.exit})`).join(', ')
-    : 'nog geen trades in deze coin';
-  return `Pair: ${pair}
-Timeframe: ${timeframe}
-Signaal: KOPEN (EMA-crossover omhoog)
-Slotkoers: ${indicators.close}
-EMA fast: ${n(indicators.emaFast, 4)}
-EMA slow: ${n(indicators.emaSlow, 4)}
-Trend-EMA (lang): ${indicators.emaTrend == null ? 'uit' : n(indicators.emaTrend, 4)}
-RSI: ${n(indicators.rsi, 1)}
-ADX (trendsterkte, <20 = zijwaarts): ${n(indicators.adx, 1)}
-ATR (beweeglijkheid per candle): ${n(indicators.atrPct)}% van de koers
-Volume laatste candle: ${indicators.volumeRatio == null ? 'onbekend' : `${n(indicators.volumeRatio, 1)}× het gemiddelde`}
-Verandering laatste 24 candles: ${indicators.change24 == null ? 'onbekend' : n(indicators.change24) + '%'}
-Bitcoin-trend: ${btc}
-Laatste trades van deze bot in ${pair}: ${trades}
-${extra.plan ? `Plan van de bot: ${extra.plan}` : ''}
+  const ind = indicators ?? {};
+  const st = candleStats(recentCandles, ind.close, ind.atrPct);
+  const rk = riskOf(extra.risk, ind.atrPct);
+  const regime = regimeOf(ind.adx, st?.er);
+  const isBtc = /^BTC\//.test(pair);
+  const distSlowAtr = ind.close && ind.emaSlow && ind.atr ? (ind.close - ind.emaSlow) / ind.atr : null;
 
-Laatste candles:
-${candles}`;
+  // Harde filters, vooraf uitgerekend zodat het model niet hoeft te rekenen. ✗ = afwijzen.
+  const filters = [];
+  const add = (ok, text) => filters.push(`${ok == null ? '?' : ok ? '✓' : '✗'} ${text}`);
+  add(ind.adx == null ? null : ind.adx >= 20, `ADX ${fx(ind.adx, 1)} (min. 20: er moet een trend zijn)`);
+  add(ind.volumeRatio == null ? null : ind.volumeRatio >= 0.8, `volume ${fx(ind.volumeRatio, 1)}× gemiddeld (min. 0,8×)`);
+  add(ind.rsi == null ? null : ind.rsi <= 72, `RSI ${fx(ind.rsi, 1)} (max. 72: niet oververhit)`);
+  add(distSlowAtr == null ? null : distSlowAtr <= 3, `koers ${fx(distSlowAtr, 1)} ATR boven EMA slow (max. 3: niet te ver doorgeschoten)`);
+  add(st ? st.greens < 5 : null, `${st?.greens ?? '?'} groene candles op rij (max. 4)`);
+  add(regime === 'onbekend' ? null : regime !== 'chop', `regime: ${regime}`);
+  if (!isBtc) add(extra.btcTrend ? extra.btcTrend.up : null, `Bitcoin-trend ${extra.btcTrend ? (extra.btcTrend.up ? 'omhoog' : 'omlaag') : 'onbekend'}`);
+  if (rk?.stopPct) add(rk.feesR <= 0.35, `kosten ${fx(rk.feesPct)}% = ${fx(rk.feesR)}R per ronde (max. 0,35R)`);
+
+  const htf = extra.htfTrend
+    ? `${extra.htfTrend.timeframe ?? 'hoger'}: ${extra.htfTrend.up ? 'omhoog' : 'omlaag'}${extra.htfTrend.changePct != null ? ` (${sgn(extra.htfTrend.changePct)}%)` : ''}`
+    : ind.emaTrend != null ? `koers ${ind.close > ind.emaTrend ? 'boven' : 'onder'} de lange trend-EMA (${fx(((ind.close - ind.emaTrend) / ind.emaTrend) * 100)}%)` : 'onbekend';
+
+  const rr = rk?.stopPct
+    ? [`1R (verlies tot stop): ${fx(rk.stopPct)}%${extra.risk?.atrStopMult > 0 ? ` (${extra.risk.atrStopMult}× ATR)` : ''}`,
+      `Kosten per ronde: ${fx(rk.feesPct)}% = ${fx(rk.feesR)}R`,
+      st ? (st.brokeHigh ? `Koers staat boven de vorige high (uitbraak): geen directe weerstand binnen dit venster` : `Ruimte tot vorige high (weerstand): ${fx(st.toHighPct)}% = ${fx(st.toHighPct / rk.stopPct)}R`) : null,
+      extra.risk?.takeProfitPct > 0 ? `Take-profit: +${fx(extra.risk.takeProfitPct)}% = ${fx(extra.risk.takeProfitPct / rk.stopPct)}R` : 'Geen vaste take-profit',
+      extra.risk?.trailingStopPct > 0 ? `Trailing stop: ${fx(extra.risk.trailingStopPct)}% onder de top` : null,
+    ].filter(Boolean).join('\n')
+    : extra.plan ? `Plan: ${extra.plan}` : 'Stop en kosten onbekend: wees voorzichtig met de risk/reward.';
+
+  const perf = perfOf(extra.recentTrades, rk?.stopPct);
+  const perfTxt = perf
+    ? `${perf.n} trades: winrate ${fx(perf.winRate, 0)}%, gemiddeld ${sgn(perf.avgPct)}%${perf.avgR != null ? ` = ${sgn(perf.avgR)}R` : ''}. Laatste: ${extra.recentTrades.slice(0, 5).map((t) => `${sgn(t.pnlPct, 1)}% (${String(t.exit ?? '').split(/[:(]/)[0].trim()})`).join(', ')}`
+    : 'nog geen trades in deze coin';
+  const setup = extra.setupStats
+    ? `\nDeze strategie over alle coins: ${extra.setupStats.trades} trades, winrate ${fx(extra.setupStats.winRate, 0)}%, gemiddeld ${sgn(extra.setupStats.avgR)}R`
+    : '';
+  const history = extra.aiHistory?.length
+    ? extra.aiHistory.slice(0, 6).map((h) => `- ${h.decision === 'approve' ? 'goedgekeurd' : 'afgewezen'}${h.outcome ? ` → ${h.outcome}` : ''}${h.resultPct != null ? ` (${sgn(h.resultPct, 1)}%)` : ''}: ${String(h.reason ?? '').slice(0, 120)}`).join('\n')
+    : 'geen';
+
+  // Laatste candles compact: verandering t.o.v. de vorige slotkoers, bereik en volume t.o.v. gemiddeld.
+  const c = (recentCandles ?? []).slice(-10);
+  const avgV = c.reduce((a, x) => a + x[5], 0) / (c.length || 1);
+  const rows = c.map((x, i) => {
+    const prev = i ? c[i - 1][4] : x[1];
+    return `${sgn(((x[4] - prev) / prev) * 100)}% ${x[4] >= x[1] ? 'groen' : 'rood'}, bereik ${fx(((x[2] - x[3]) / x[3]) * 100)}%, vol ${fx(avgV ? x[5] / avgV : null, 1)}×`;
+  }).join('\n');
+
+  return `Pair: ${pair} · timeframe ${timeframe} · signaal: KOPEN (EMA fast kruist boven EMA slow)
+Koers: ${px(ind.close)}
+
+== Harde filters (één ✗ = afwijzen) ==
+${filters.join('\n')}
+
+== Markt ==
+Regime: ${regime} (ADX ${fx(ind.adx, 1)}, efficiëntie ${fx(st?.er)}: 1 = strakke trend, 0 = heen en weer)
+Hogere timeframe: ${htf}
+Bitcoin: ${isBtc ? 'dit is BTC zelf' : extra.btcTrend ? `${extra.btcTrend.up ? 'omhoog' : 'omlaag'} (koers ${fx(extra.btcTrend.close, 0)} vs EMA50 ${fx(extra.btcTrend.ema50, 0)})` : 'onbekend'}
+Structuur laatste ${st?.n ?? '?'} candles: ${st?.structure ?? 'onbekend'}, netto ${sgn(st?.netPct)}%, laatste 3 candles ${sgn(st?.last3Pct)}%
+Vorige high: ${st ? (st.brokeHigh ? 'doorbroken (koers erboven)' : `${fx(st.toHighPct)}% boven de koers (${fx(st.toHighAtr, 1)} ATR)`) : 'onbekend'} · vorige low: ${st ? `${fx(st.fromLowPct)}% eronder (${fx(st.fromLowAtr, 1)} ATR)` : 'onbekend'}
+24 candles: ${sgn(ind.change24)}%
+
+== Momentum en volume ==
+RSI ${fx(ind.rsi, 1)} · EMA fast ${px(ind.emaFast)} / slow ${px(ind.emaSlow)} · ATR ${fx(ind.atrPct)}% per candle
+Volume signaalcandle: ${volumeText(ind.volumeRatio)}
+Volume laatste 3 candles vs. ervoor: ${fx(st?.volTrend, 2)}× · volume op stijgende vs. dalende candles: ${fx(st?.upDownVol, 2)}×
+
+== Risk/reward (vast, bepaald door de gebruiker) ==
+${rr}
+
+== Feedback ==
+Deze coin: ${perfTxt}${setup}
+Eerdere AI-beslissingen in deze coin (nieuwste eerst):
+${history}
+
+== Laatste candles (oud → nieuw) ==
+${rows || 'geen'}`;
 }
 
 // Haalt het JSON-object uit een AI-antwoord. Robuust voor:
@@ -322,34 +462,77 @@ const callModel = (cfg, prompt, opts) => (cfg.provider === 'gemini' ? askGemini(
 // ---------- Winst nemen ----------
 // Bij een open positie in de winst mag de AI adviseren om nu te verkopen. Hij kan alleen
 // eerder verkopen dan de regels; stop-loss en trailing stop blijven altijd gelden.
-const EXIT_PROMPT = `Je bewaakt een open positie van een crypto trading bot. De positie staat in de winst.
-Beslis of de bot de winst NU moet nemen (verkopen) of nog even moet vasthouden.
-Verkoop als het momentum afneemt, de koers terugvalt vanaf de top, de RSI oververhit raakt,
-het volume opdroogt of de korte trend keert. Houd alleen vast als de stijging duidelijk doorzet.
-Bij twijfel neem je de winst: een zekere kleine winst is beter dan een winst die verdampt.
-Antwoord uitsluitend met JSON in deze vorm:
-{"decision": "sell" | "hold", "reason": "korte uitleg in het Nederlands"}`;
+const EXIT_PROMPT = `Je beheert een open, winstgevende positie van een crypto trading bot. Beslis: winst NU nemen (sell) of vasthouden (hold).
+Je bepaalt geen bedragen of stops; stop-loss en trailing stop blijven altijd actief, los van jou.
 
-export function buildExitPrompt({ pair, timeframe, position, price, indicators, recentCandles, feePct = 0.25 }) {
-  const n = (v, d = 2) => (v == null ? 'onbekend' : Number(v).toFixed(d));
+Verkoop (sell) als één van deze geldt:
+- Twee of meer zwaktesignalen bij "Momentum" staan op ⚠ (lagere highs, kleinere candles, lange bovenwieken,
+  dalend volume, rode candles op rij, RSI boven 70 en draaiend).
+- De koers heeft al 40% of meer van de hoogste winst teruggegeven.
+- De koers staat vlak onder een recente high (binnen 0,5 ATR) en het momentum zwakt af: daar keert hij vaak.
+- De winst is minstens 1,5R en er is geen duidelijk nieuw momentum meer.
+Houd vast (hold) alleen als de stijging aantoonbaar doorzet: nieuwe highs, groene candles met stijgend volume,
+geen zwaktesignalen. Twijfel je, verkoop dan: een zekere winst na fees is beter dan een winst die verdampt.
+
+Antwoord uitsluitend met JSON, zonder tekst eromheen:
+{"decision": "sell" | "hold", "reason": "Nederlands, max. 2 zinnen: welke signalen de doorslag gaven"}`;
+
+// Context voor de winstcheck. risk is optioneel (zelfde vorm als bij buildPrompt).
+export function buildExitPrompt({ pair, timeframe, position, price, indicators, recentCandles, feePct = 0.25, risk = null }) {
+  const ind = indicators ?? {};
   const change = ((price - position.entryPrice) / position.entryPrice) * 100;
-  const top = position.highest ?? position.entryPrice;
+  const top = Math.max(position.highest ?? position.entryPrice, price);
+  const peakGain = ((top - position.entryPrice) / position.entryPrice) * 100;
+  const gaveBack = peakGain > 0 ? ((peakGain - change) / peakGain) * 100 : 0;
   const minutes = position.openedAt ? Math.round((Date.now() - Date.parse(position.openedAt)) / 60000) : null;
-  const candles = (recentCandles ?? []).map((c) => `${new Date(c[0]).toISOString()} O:${c[1]} H:${c[2]} L:${c[3]} C:${c[4]} V:${c[5]}`).join('\n');
-  return `Pair: ${pair}
-Timeframe: ${timeframe}
-Instapkoers: ${position.entryPrice}
-Huidige koers: ${price}
-Resultaat nu: ${n(change)}% (na fees ongeveer ${n(change - 2 * feePct)}%)
-Hoogste koers sinds aankoop: ${top} (nu ${n(((price - top) / top) * 100)}% daaronder)
-Positie open sinds: ${minutes == null ? 'onbekend' : `${minutes} minuten`}
-RSI: ${n(indicators?.rsi, 1)}
-EMA fast / slow: ${n(indicators?.emaFast, 4)} / ${n(indicators?.emaSlow, 4)} (${indicators && indicators.emaFast > indicators.emaSlow ? 'trend omhoog' : 'trend omlaag'})
-ADX: ${n(indicators?.adx, 1)}
-Volume laatste candle: ${indicators?.volumeRatio == null ? 'onbekend' : `${n(indicators.volumeRatio, 1)}× het gemiddelde`}
+  const rk = riskOf(risk ?? { feePct }, ind.atrPct);
+  const feesPct = rk?.feesPct ?? feePct * 2;
+  const stopPct = rk?.stopPct ?? null;
+  const st = candleStats(recentCandles, price, ind.atrPct);
 
-Laatste candles (de laatste loopt nog):
-${candles}`;
+  // Zwaktesignalen uit de laatste candles (de laatste loopt nog).
+  const c = (recentCandles ?? []).slice(-6);
+  const signals = [];
+  const add = (weak, text) => signals.push(`${weak == null ? '?' : weak ? '⚠' : '✓'} ${text}`);
+  if (c.length >= 4) {
+    const highs = c.map((x) => x[2]);
+    const lowerHighs = highs.at(-1) < highs.at(-2) && highs.at(-2) < highs.at(-3);
+    const body = (x) => Math.abs(x[4] - x[1]);
+    const bodiesShrink = body(c.at(-1)) < body(c.at(-2)) && body(c.at(-2)) < body(c.at(-3));
+    const wick = (x) => (x[2] - Math.max(x[1], x[4])) / ((x[2] - x[3]) || 1);
+    const longWicks = c.slice(-3).filter((x) => wick(x) > 0.5).length >= 2;
+    let reds = 0;
+    for (let i = c.length - 1; i >= 0 && c[i][4] < c[i][1]; i--) reds++;
+    const volFalling = c.at(-1)[5] < c.at(-2)[5] && c.at(-2)[5] < c.at(-3)[5];
+    add(lowerHighs, 'lagere highs in de laatste 3 candles');
+    add(bodiesShrink, 'candles worden kleiner (momentum zwakt af)');
+    add(longWicks, 'lange bovenwieken (verkopers drukken de koers terug)');
+    add(reds >= 2, `${reds} rode candle(s) op rij`);
+    add(volFalling, 'volume daalt 3 candles op rij');
+  }
+  add(ind.rsi == null ? null : ind.rsi >= 70, `RSI ${fx(ind.rsi, 1)} (≥ 70 = oververhit)`);
+  add(ind.emaFast == null || ind.emaSlow == null ? null : ind.emaFast < ind.emaSlow, `EMA fast ${ind.emaFast > ind.emaSlow ? 'boven' : 'onder'} EMA slow`);
+  const weakCount = signals.filter((x) => x.startsWith('⚠')).length;
+
+  const avgV6 = c.reduce((a, x) => a + x[5], 0) / (c.length || 1);
+  const rows = c.map((x, i) => {
+    const prev = i ? c[i - 1][4] : x[1];
+    return `${sgn(((x[4] - prev) / prev) * 100)}% ${x[4] >= x[1] ? 'groen' : 'rood'}, bovenwiek ${fx(Math.max(0, ((x[2] - Math.max(x[1], x[4])) / x[4]) * 100))}%, vol ${fx(avgV6 ? x[5] / avgV6 : null, 1)}×`;
+  }).join('\n');
+
+  return `Pair: ${pair} · timeframe ${timeframe} · open sinds ${minutes == null ? 'onbekend' : `${minutes} min`}
+
+== Positie ==
+Instap ${px(position.entryPrice)} · nu ${px(price)} · resultaat ${sgn(change)}% (na kosten ± ${sgn(change - feesPct)}%)${stopPct ? ` = ${sgn(change / stopPct)}R (1R = ${fx(stopPct)}%)` : ''}
+Hoogste winst ${sgn(peakGain)}% · daarvan teruggegeven: ${fx(gaveBack, 0)}%
+${st ? (st.brokeHigh ? 'Koers staat boven de vorige high: geen directe weerstand' : `Vorige high (weerstand) ${fx(st.toHighPct)}% boven de koers (${fx(st.toHighAtr, 1)} ATR)${st.toHighAtr != null && st.toHighAtr <= 0.5 ? ' ⚠ vlak eronder' : ''}`) : ''}
+
+== Momentum (${weakCount} ${weakCount === 1 ? 'zwaktesignaal' : 'zwaktesignalen'}) ==
+${signals.join('\n')}
+ADX ${fx(ind.adx, 1)} · volume laatste candle ${volumeText(ind.volumeRatio)}
+
+== Laatste candles (oud → nieuw, de laatste loopt nog) ==
+${rows || 'geen'}`;
 }
 
 export function parseExit(text) {
