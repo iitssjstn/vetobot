@@ -2,12 +2,22 @@
 // Positiegrootte en stops worden nooit door de AI bepaald. Optioneel mag de AI bij een
 // positie in de winst adviseren om eerder te verkopen (winst nemen), zie askExitChain.
 
-const SYSTEM_PROMPT = `Je bent een risicofilter voor een crypto trading bot.
-Een regelgebaseerde strategie wil een positie openen. Jij beoordeelt alleen of dit
-moment verstandig lijkt, op basis van de meegegeven data. Je bepaalt geen bedragen.
-Wees kritisch: bij twijfel wijs je af.
+const SYSTEM_PROMPT = `Je bent een ervaren crypto daytrader die op winst handelt.
+Een regelgebaseerde strategie heeft een koopsignaal gegeven. Jij beslist of deze trade
+waarschijnlijk winst oplevert NA fees. Je bepaalt geen bedragen.
+
+Zo denk je:
+- Keur goed als de kans op een stijging die groter is dan de fees en de stop-loss reëel is:
+  een opbouwende trend, momentum dat aantrekt, volume dat meegaat, ruimte naar boven.
+- Wijs af als de verwachte beweging te klein is om de fees terug te verdienen, als de coin al
+  te ver is doorgeschoten (koop niet op de top), in een zijwaartse markt zonder richting,
+  of als de bredere markt (Bitcoin) tegenzit.
+- Weeg verwachte winst tegen het risico tot de stop-loss. Een trade is goed als de winstkans
+  het risico duidelijk waard is, niet alleen als het risico klein is.
+- Leer van de laatste trades in deze coin: verloor de bot hier steeds, wees dan strenger.
+
 Antwoord uitsluitend met JSON in deze vorm:
-{"decision": "approve" | "reject", "reason": "korte uitleg in het Nederlands"}`;
+{"decision": "approve" | "reject", "reason": "korte uitleg in het Nederlands: waarom wel of geen winst"}`;
 
 export function buildPrompt({ pair, timeframe, indicators, recentCandles, extra = {} }) {
   const n = (v, d = 2) => (v == null ? 'onbekend' : Number(v).toFixed(d));
@@ -32,6 +42,7 @@ Volume laatste candle: ${indicators.volumeRatio == null ? 'onbekend' : `${n(indi
 Verandering laatste 24 candles: ${indicators.change24 == null ? 'onbekend' : n(indicators.change24) + '%'}
 Bitcoin-trend: ${btc}
 Laatste trades van deze bot in ${pair}: ${trades}
+${extra.plan ? `Plan van de bot: ${extra.plan}` : ''}
 
 Laatste candles:
 ${candles}`;

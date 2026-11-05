@@ -13,7 +13,7 @@ Elke check (standaard elke 15 minuten, instelbaar in het dashboard) loopt de bot
 3. Komt het signaal daardoor, dan krijgt de **AI** de indicatoren en de laatste candles, en antwoordt met `approve` of `reject` plus een reden.
 4. Alles wordt gelogd en is te zien in het dashboard.
 
-De AI bepaalt nooit bedragen of stop-losses. Wel kan hij optioneel een positie die in de winst staat eerder laten verkopen (zie **Sneller winst nemen** hieronder). Reageert de AI niet, geeft hij onzin terug of is er geen AI-key, dan wordt de trade afgewezen (`AI_FAIL_MODE=reject`).
+De AI denkt als een winstgerichte trader: hij keurt een koopsignaal goed als de verwachte winst na fees het risico tot de stop-loss waard is, en wijst af als de beweging te klein is, de coin al op een top staat of de markt tegenzit. Hij krijgt daarvoor je fees, stop-loss, take-profit en trailing stop mee. De AI bepaalt nooit bedragen of stop-losses. Wel kan hij optioneel een positie die in de winst staat eerder laten verkopen (zie **Sneller winst nemen** hieronder). Reageert de AI niet, geeft hij onzin terug of is er geen AI-key, dan wordt de trade afgewezen (`AI_FAIL_MODE=reject`).
 
 De strategie kijkt alleen naar **gesloten** candles, en elke candle wordt maar één keer beoordeeld.
 

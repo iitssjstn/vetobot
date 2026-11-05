@@ -746,6 +746,8 @@ export class Bot {
         // Hoe de laatste trades van de bot in deze coin afliepen.
         recentTrades: this.store.state.trades.filter((t) => t.pair === pair).slice(0, 5)
           .map((t) => ({ pnlPct: +t.pnlPct.toFixed(2), exit: t.exitReason, closedAt: t.closedAt })),
+        // Zodat de AI kan inschatten of de verwachte winst de kosten en het risico waard is.
+        plan: this.#tradePlan(),
       },
     });
 
@@ -803,6 +805,19 @@ export class Bot {
   entryRisk() {
     const risk = this.risk;
     return { ...risk, stakeEur: this.stakeInfo(risk).effective };
+  }
+
+  // Korte omschrijving van fees, stops en uitstap, voor de AI.
+  #tradePlan() {
+    const r = this.risk;
+    const pctTxt = (v) => `${parseFloat(Number(v).toFixed(2))}%`;
+    const fees = (r.feePct ?? 0) * 2 + (this.mode === 'paper' ? (r.slippagePct ?? 0) * 2 : 0);
+    const parts = [`kosten per ronde (kopen + verkopen) ± ${pctTxt(fees)}`];
+    parts.push(r.atrStopMult > 0 ? `stop-loss ${r.atrStopMult}× ATR` : r.stopLossPct > 0 ? `stop-loss −${pctTxt(r.stopLossPct)}` : 'geen stop-loss');
+    if (r.takeProfitPct > 0) parts.push(`take-profit +${pctTxt(r.takeProfitPct)}`);
+    if (r.trailingStopPct > 0) parts.push(`trailing stop ${pctTxt(r.trailingStopPct)} onder de top`);
+    if (r.aiExitMinPct > 0) parts.push(`winst nemen vanaf ± +${pctTxt(r.aiExitMinPct)} als het momentum afneemt`);
+    return parts.join(', ');
   }
 
   async #open(pair, reason, indicators = null) {
