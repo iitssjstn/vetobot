@@ -151,7 +151,7 @@ def search_insights(results, need, n_scored):
         if abs(al - ash) > 0.15:
             lines.append(('Trades langer laten lopen' if al > ash else 'Snel winst pakken') +
                          f' werkt beter ({pct(max(al, ash))} tegen {pct(min(al, ash))} per trade).')
-    lines.append(f"Ik heb nu {n_scored} {'strategie' if n_scored == 1 else 'strategieën'} beoordeeld; daarom eis ik minstens {pct(need)} per trade beter dan zomaar kopen '
+    lines.append(f"Ik heb nu {n_scored} {'strategie' if n_scored == 1 else 'strategieën'} beoordeeld; daarom eis ik minstens {pct(need)} per trade beter dan zomaar kopen "
                  "(hoe meer ik probeer, hoe groter de kans dat iets door geluk goed lijkt).")
     return ' '.join(lines)
 
