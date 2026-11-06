@@ -542,9 +542,10 @@
         <form class="panel-b" id="ag-form" style="border-top:1px solid var(--line)">
           <div class="fields">
             <div><label for="ag-on">Leren</label><select id="ag-on"><option value="1">Aan: doorlopend leren</option><option value="0">Uit</option></select></div>
+            <div><label for="ag-pool">Coins</label><select id="ag-pool"><option value="top">Zelf kiezen: mijn coins + de 20 grootste</option><option value="eigen">Alleen mijn coins</option></select></div>
             <div><label for="ag-stop">Noodstop (%)</label><input id="ag-stop" type="number" min="2" max="30" step="any"></div>
             <div><label for="ag-pause">Pauze tussen rondes (min)</label><input id="ag-pause" type="number" min="0" max="720" step="1"></div>
-            <div><label>Candle-tijden om op te leren</label><div class="chips" id="ag-tfs" style="margin:0"><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="5m"> 5m</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="15m"> 15m</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="30m"> 30m</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="1h"> 1h</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="2h"> 2h</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="4h"> 4h</label></div></div>
+            <div><label>Candle-tijden die hij mag proberen</label><div class="chips" id="ag-tfs" style="margin:0"><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="5m"> 5m</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="15m"> 15m</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="30m"> 30m</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="1h"> 1h</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="2h"> 2h</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="4h"> 4h</label></div></div>
           </div>
           <div class="row-actions"><button class="btn primary" type="submit">Opslaan</button><span class="msg" id="ag-msg"></span></div>
         </form>
@@ -1885,6 +1886,7 @@ function agentFields() {
 $('st-agent')?.addEventListener('change', agentFields);
 let agDirty = false;
 const AG_STAGE = { bewezen: ['ok', 'bewezen: mag ook live'], getest: ['wait', 'getest: handelt in paper'], oefenen: ['soft', 'oefent: nog geen winst in de test'] };
+const RC_STATUS = { betrouwbaar: 'ok', veelbelovend: 'wait', oefenen: 'soft', afgevallen: 'bad' };
 function renderAgent(t, nl) {
   const a = t?.agent;
   $('tr-agent-panel').hidden = !a;
@@ -1892,42 +1894,44 @@ function renderAgent(t, nl) {
   const sign = (v) => v == null ? '–' : `${v > 0 ? '+' : ''}${nl(v, 2)}%`;
   const pub = a.published;
   const st = AG_STAGE[a.stage];
-  $('ag-hint').innerHTML = !a.enabled ? 'uit' : a.busy ? 'leert…' : `${a.rounds} leerrondes`;
-  const lv = pub ? a.live?.[pub.timeframe] : null;
+  $('ag-hint').innerHTML = !a.enabled ? 'uit' : a.busy ? 'leert…' : `${a.rounds} rondes · ${a.tried} van ${a.possible} recepten geprobeerd`;
+  const cur = pub && (a.recipes ?? []).find((r) => r.key === pub.key);
+  const lv = cur?.live;
   const bot = state?.agent;
   const botOn = Number(state?.strategy?.agentMode ?? 0) === 1;
-  $('ag-body').innerHTML = `<p class="muted" style="margin:0 0 10px;font-size:13.5px">De AI-trader leert zelf wanneer kopen en wanneer verkopen loont: geen vaste winstdoelen, stops of strategieën. Zijn enige beloning is de winst na kosten. Hij oefent in een simulator op de echte koersgeschiedenis, wordt getest op een periode die hij nooit zag, en leert daarna verder van zijn eigen trades. Hij draait doorlopend: elke ronde een candle-tijd opnieuw, met de nieuwste koersen, en de beste wordt gebruikt.</p>`
+  $('ag-body').innerHTML = `<p class="muted" style="margin:0 0 10px;font-size:13.5px">De AI-trader zoekt zelf de beste manier van traden. Elke ronde probeert hij een <b>recept</b>: op welke candle-tijd, hoe lang hij hooguit vasthoudt, hoe uitgebreid zijn model is en hoe ver hij vooruitkijkt. Per recept leert hij zelf wanneer kopen en verkopen loont, kiest hij zelf de coins en hoe kieskeurig hij is, en wordt hij eerlijk getest op een periode die hij nooit zag. Hij vertrouwt een recept pas als het <b>in meerdere rondes</b> standhoudt, en weegt <b>verlies beperken</b> zwaar mee: liever iets minder winst dan diepe dalen.</p>`
     + (a.busy && a.progress ? `<p style="margin:0 0 8px"><b>Bezig:</b> ${esc(a.progress.text ?? '')}</p>` : a.enabled && a.nextAt ? `<p style="margin:0 0 8px">Volgende leerronde: <b>${whenAt(a.nextAt)}</b></p>` : '')
-    + (pub ? `<div class="alert ${a.stage === 'oefenen' ? '' : 'ok'}" style="margin:0 0 10px">${icon('target')}<div><b>In gebruik:</b> ${esc(pub.timeframe)}-candles · <span class="badge ${st?.[0] ?? 'soft'}">${esc(st?.[1] ?? a.stage ?? '')}</span>`
-      + (lv?.n ? ` · in de praktijk: ${lv.n} trades, gemiddeld ${sign(lv.sum / lv.n)} (bewezen na ${a.provenMin} trades met ≥ ${nl(a.provenAvg, 1)}%)` : ` · nog geen trades in de praktijk`)
+    + (cur ? `<div class="alert ${a.stage === 'oefenen' ? '' : 'ok'}" style="margin:0 0 10px">${icon('target')}<div><b>In gebruik:</b> ${esc(cur.text)} · <span class="badge ${st?.[0] ?? 'soft'}">${esc(st?.[1] ?? a.stage ?? '')}</span>`
+      + `<br>Coins: ${esc((a.coins ?? []).join(', ') || '–')}`
+      + `<br>${lv?.n ? `In de praktijk: ${lv.n} trades, gemiddeld ${sign(lv.sum / lv.n)} (bewezen na ${a.provenMin} trades met ≥ ${nl(a.provenAvg, 1)}%)` : 'Nog geen trades in de praktijk'}`
       + `<br><span class="muted">Bot: ${botOn ? (bot ? (bot.allowed ? 'handelt met de AI-trader' : 'AI-trader staat aan, maar handelt nog niet in deze modus (live pas na bewijs)') : 'AI-trader staat aan, nog niet opgehaald') : 'AI-trader staat uit bij Instellingen → Strategie'}</span></div></div>`
-      : '<p class="muted" style="margin:0 0 10px">Nog geen AI-trader getraind. Na de eerste leerronde verschijnt hier het resultaat.</p>');
-  const rows = Object.values(a.byTf ?? {}).sort((x, y) => (y.test?.avgPct ?? -99) - (x.test?.avgPct ?? -99));
-  const hold = (r) => r.test?.avgHeld != null ? (() => { const m = r.test.avgHeld * ({ '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120, '4h': 240 }[r.timeframe] ?? 15); return m >= 60 ? `${nl(m / 60, 1)} uur` : `${Math.round(m)} min`; })() : '–';
+      : '<p class="muted" style="margin:0 0 10px">Nog geen recept getraind. Na de eerste leerronde verschijnt hier het resultaat.</p>');
+  const rows = a.recipes ?? [];
   $('ag-table').innerHTML = rows.length ? table(rows, [
-    ['Candles', (r) => `${esc(r.timeframe)}${pub?.timeframe === r.timeframe ? ' <span class="badge ok">in gebruik</span>' : ''}`],
-    ['Eindtest', (r) => r.test ? `<span class="${(r.test.avgPct ?? 0) > 0 ? 'up' : 'down'}">${sign(r.test.avgPct)}</span> per trade <span class="muted">· ${r.test.trades} trades · ${nl(r.test.winRate ?? 0, 0)}% winst · ${r.testDays} dagen</span>` : `<span class="muted">${esc(r.reason ?? '–')}</span>`],
-    ['Vasthouden', (r) => hold(r), 'r'],
-    ['Kopen en vasthouden', (r) => r.test ? sign(r.test.buyHoldPct) : '–', 'r'],
-    ['Validatie', (r) => r.validation ? `${sign(r.validation.avgPct)} <span class="muted">(${r.validation.trades})</span>` : '–', 'r'],
-    ['Oordeel', (r) => `<span class="badge ${r.ok ? 'ok' : 'soft'}">${r.ok ? 'goed genoeg' : 'nog niet'}</span>`],
-    ['Geleerd', (r) => r.at ? time(r.at) : '–'],
+    ['Recept', (r) => `${esc(r.text)}${pub?.key === r.key ? ' <span class="badge ok">in gebruik</span>' : ''}`],
+    ['Rondes', (r) => `<span class="num">${r.score.tested}</span>`, 'r'],
+    ['Gemiddeld (eindtests)', (r) => r.score.avg != null ? `<span class="${r.score.avg > 0 ? 'up' : 'down'}">${sign(r.score.avg)}</span> per trade <span class="muted">· ${r.score.trades} trades</span>` : `<span class="muted">${esc(r.last?.reason ?? '–')}</span>`],
+    ['Grootste terugval', (r) => r.score.drawdown != null ? `<span class="num">${sign(-r.score.drawdown)}</span>` : '–', 'r'],
+    ['Laatste ronde', (r) => r.last?.test ? `${sign(r.last.test.avgPct)} <span class="muted">(${r.last.test.trades}) · kopen en vasthouden ${sign(r.last.test.buyHoldPct)}</span>` : '–'],
+    ['Coins', (r) => `<span class="num">${r.last?.coins?.length ?? '–'}</span>`, 'r'],
+    ['Status', (r) => `<span class="badge ${RC_STATUS[r.status] ?? 'soft'}">${esc(r.status)}</span>`],
   ], '', 'pulse') : '';
   if (!agDirty) {
     $('ag-on').value = a.enabled ? '1' : '0';
     $('ag-stop').value = a.config?.safetyStopPct ?? 10;
     $('ag-pause').value = a.config?.pauseMinutes ?? 1;
+    $('ag-pool').value = a.config?.coinPool === 'eigen' ? 'eigen' : 'top';
     const tfs = a.config?.timeframes?.length ? a.config.timeframes : ['15m', '30m', '1h', '5m'];
     document.querySelectorAll('#ag-tfs input').forEach((el) => { el.checked = tfs.includes(el.value); });
   }
 }
-['ag-on', 'ag-stop', 'ag-pause'].forEach((id) => $(id).addEventListener('input', () => { agDirty = true; }));
+['ag-on', 'ag-stop', 'ag-pause', 'ag-pool'].forEach((id) => $(id).addEventListener('input', () => { agDirty = true; }));
 $('ag-tfs').addEventListener('change', () => { agDirty = true; });
 $('ag-form').onsubmit = async (e) => {
   e.preventDefault();
   const msg = (t2, c2) => { $('ag-msg').className = `msg ${c2 ?? ''}`; $('ag-msg').textContent = t2; };
   try {
-    await api('api/admin/trainer/agent', { enabled: $('ag-on').value === '1', safetyStopPct: Number($('ag-stop').value), pauseMinutes: Number($('ag-pause').value),
+    await api('api/admin/trainer/agent', { enabled: $('ag-on').value === '1', safetyStopPct: Number($('ag-stop').value), pauseMinutes: Number($('ag-pause').value), coinPool: $('ag-pool').value,
       timeframes: [...document.querySelectorAll('#ag-tfs input:checked')].map((el) => el.value) });
     agDirty = false;
     msg('Opgeslagen.', 'ok');

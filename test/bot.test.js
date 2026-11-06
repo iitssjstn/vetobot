@@ -1027,3 +1027,20 @@ test('AI-trader: koopt en verkoopt zelf, uitkomst naar de trainer; live pas na b
   const proven = await run({ ...mkAgent('getest', false), live: { n: 25, sum: 5, wins: 15 } }, 'live');
   assert.ok(proven.bot.agentAllowed({ ...mkAgent('getest', false), live: { n: 25, sum: 5, wins: 15 } }));
 });
+
+test('AI-trader: handelt alleen de coins die hij zelf gekozen heeft, ook buiten je eigen lijst', async () => {
+  const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
+  const { bot, ex } = setup({});
+  await bot.setRisk({ cooldownMinutes: 0 });
+  await bot.setStrategy({ maxChasePct: 0, agentMode: 1 });
+  const agent = { ...fx.agent, stage: 'getest', recipeKey: '15m|1|4|200|5', coins: ['ETH/EUR'], entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 } };
+  bot.getAgent = () => agent;
+  withAi(bot);
+  aiAnswer = 'approve';
+  ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+  await bot.tick();
+  assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
+  assert.match(bot.pairStatus['BTC/EUR'].reason, /handelt deze coin niet/);
+  assert.ok(bot.store.state.positions['ETH/EUR'], 'zelf gekozen coin, niet in de eigen lijst');
+  assert.equal(bot.store.state.positions['ETH/EUR'].agent.recipe, '15m|1|4|200|5');
+});

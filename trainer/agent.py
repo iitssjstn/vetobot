@@ -39,9 +39,9 @@ def max_hold_candles(tf):
     return int(min(240, max(24, 2 * 1440 // TF_MIN.get(tf, 15))))
 
 
-def _fit(X, y, w=None, seed=7):
+def _fit(X, y, w=None, seed=7, depth=4, leaf=200, iters=120):
     from sklearn.ensemble import HistGradientBoostingRegressor
-    m = HistGradientBoostingRegressor(max_iter=120, max_depth=4, learning_rate=0.08, min_samples_leaf=200,
+    m = HistGradientBoostingRegressor(max_iter=iters, max_depth=depth, learning_rate=0.08, min_samples_leaf=leaf,
                                       l2_regularization=1.0, random_state=seed)
     m.fit(X, y, sample_weight=w)
     return m
@@ -123,7 +123,7 @@ def _split(n):
     return (WARMUP, a), (a, b), (b, n)
 
 
-def learn_exit(markets, H, rnd, say, iters=5, per_entry=6, step=3):
+def learn_exit(markets, H, rnd, say, iters=5, per_entry=6, step=3, fit_kw=None):
     """Stap 1: de waarde van vasthouden leren (fitted Q-iteration).
     Elk voorbeeld: positie geopend op candle i, nu h candles later."""
     S, S2, R, last = [], [], [], []
@@ -157,7 +157,7 @@ def learn_exit(markets, H, rnd, say, iters=5, per_entry=6, step=3):
     model = None
     for k in range(iters):
         y = R + np.where(last, 0.0, np.maximum(q2, 0.0))
-        model = _fit(S, y, seed=7 + k)
+        model = _fit(S, y, seed=7 + k, **(fit_kw or {}))
         q2 = model.predict(S2)
         say(k)
     return model, med
@@ -204,7 +204,7 @@ def simulate_exits(mk, idx, exit_model, exit_med, H, safety_stop):
     return out
 
 
-def learn_entry(markets, exit_model, exit_med, H, cost, safety_stop, step=2, extra=None):
+def learn_entry(markets, exit_model, exit_med, H, cost, safety_stop, step=2, extra=None, fit_kw=None):
     """Stap 2: de waarde van "nu kopen" leren: nagespeeld met het eigen verkoopgedrag, na kosten."""
     X, y, w = [], [], []
     for mk in markets:
@@ -225,7 +225,7 @@ def learn_entry(markets, exit_model, exit_med, H, cost, safety_stop, step=2, ext
         return None, None
     X = np.array(X, dtype=float)
     med = _medians(X)
-    return _fit(_impute(X, med), np.array(y), np.array(w)), med
+    return _fit(_impute(X, med), np.array(y), np.array(w), **(fit_kw or {})), med
 
 
 def _part_outcomes(mk, part, entry_model, entry_med, exit_model, exit_med, H, safety_stop):
@@ -270,18 +270,46 @@ def backtest(markets, part, entry_model, entry_med, exit_model, exit_med, H, cos
                     i += 1
         n = len(trades)
         total = sum(t['ret'] for t in trades)
+        # Risico: grootste terugval van het opgetelde resultaat (in tijdsvolgorde) en slechtste trade.
+        cum = peak = dd = 0.0
+        for t in sorted(trades, key=lambda x: x['i']):
+            cum += t['ret']
+            peak = max(peak, cum)
+            dd = max(dd, peak - cum)
         out[thr] = {
+            'maxDrawdownPct': dd, 'worstPct': min((t['ret'] for t in trades), default=None),
             'trades': n, 'avgPct': total / n if n else None, 'totalPct': total,
             'winRate': sum(1 for t in trades if t['ret'] > 0) / n * 100 if n else None,
             'avgHeld': sum(t['held'] for t in trades) / n if n else None,
             'buyHoldPct': sum(bh) / len(bh) if bh else None,
             'exits': {k: sum(1 for t in trades if t['why'] == k) for k in ('zelf verkocht', 'veiligheidsstop', 'maximale duur', 'einde data')},
+            'byPair': {p: {'trades': sum(1 for t in trades if t['pair'] == p), 'totalPct': sum(t['ret'] for t in trades if t['pair'] == p)}
+                       for p in {t['pair'] for t in trades}},
         }
     return out
 
 
-def train_agent(cfg, tf, fetch, pairs, log=print, think=None, progress=None, extra=None, seed=1):
-    """Train een agent op candle-tijd tf. Geeft (agent_json_of_None, rapport)."""
+RECIPE_DEFAULT = {'timeframe': '15m', 'holdDays': 2, 'depth': 4, 'leaf': 200, 'look': 5}
+MIN_TEST_AVG = 0.1     # gemiddeld minstens zoveel % per trade in de eindtest
+MIN_TEST_TRADES = 30   # en minstens zoveel trades, anders kan het toeval zijn
+
+
+def recipe_text(r):
+    """Een recept in gewone taal."""
+    import thoughts as T
+    depth = {3: 'eenvoudig', 4: 'gemiddeld', 6: 'uitgebreid'}.get(r['depth'], str(r['depth']))
+    return (f"{r['timeframe']}-candles, hooguit {T.hold(int(r['holdDays'] * 1440))} vasthouden, {depth} model, "
+            f"{r['look']} stappen vooruitkijken")
+
+
+def train_agent(cfg, recipe, fetch, pairs, log=print, think=None, progress=None, extra=None, seed=1):
+    """Train een AI-trader volgens een recept (candle-tijd, maximale duur, modelgrootte, hoe ver
+    vooruitkijken). Kiest zelf de koopdrempel én de coins (op de validatie), en test daarna eerlijk.
+    Geeft (agent_json_of_None, rapport)."""
+    if isinstance(recipe, str):
+        recipe = {**RECIPE_DEFAULT, 'timeframe': recipe}
+    recipe = {**RECIPE_DEFAULT, **recipe}
+    tf = recipe['timeframe']
     say = think or (lambda *a, **k: None)
     step = progress or (lambda *a: None)
     import thoughts as T
@@ -289,10 +317,8 @@ def train_agent(cfg, tf, fetch, pairs, log=print, think=None, progress=None, ext
     rnd = random.Random(seed)
     cost = float(cfg['costPct'])
     safety = float((cfg.get('agent') or {}).get('safetyStopPct') or 10)
-    H = max_hold_candles(tf)
-    say(f"Ik ga zelf leren traden op {tf}-candles. Niemand vertelt me een winstdoel of stop: ik leer zelf wanneer kopen "
-        f"en wanneer verkopen loont, met als enige beloning de winst na {T.pct(cost, 2, False)} kosten. "
-        f"Ik mag een positie hooguit {T.hold(H * TF_MIN.get(tf, 15))} houden; als vangnet geldt een noodstop van {T.pct(-safety, 0)}.", kind='doing')
+    H = int(min(400, max(12, recipe['holdDays'] * 1440 // TF_MIN.get(tf, 15))))
+    fit_kw = {'depth': recipe['depth'], 'leaf': recipe['leaf']}
     step('agent', 0, 5, f'AI-trader {tf}: koersen klaarzetten')
     try:
         ctx = context(fetch('BTC/EUR', tf, int(cfg['days'])))
@@ -310,17 +336,19 @@ def train_agent(cfg, tf, fetch, pairs, log=print, think=None, progress=None, ext
         mk = Market(pair, c, ctx)
         mk.split = _split(len(c))
         markets.append(mk)
+    base = {'timeframe': tf, 'recipe': recipe, 'ok': False}
     if len(markets) < 1:
-        return None, {'timeframe': tf, 'ok': False, 'reason': 'Te weinig koersen'}
+        return None, {**base, 'reason': 'Te weinig koersen voor dit recept'}
     step('agent', 1, 5, f'AI-trader {tf}: leren wanneer verkopen')
-    exit_model, exit_med = learn_exit(markets, H, rnd, lambda k: step('agent', 1, 5, f'AI-trader {tf}: verkopen leren, ronde {k + 1}/5'))
+    exit_model, exit_med = learn_exit(markets, H, rnd, lambda k: step('agent', 1, 5, f"AI-trader {tf}: verkopen leren, stap {k + 1}/{recipe['look']}"),
+                                      iters=recipe['look'], fit_kw=fit_kw)
     if exit_model is None:
-        return None, {'timeframe': tf, 'ok': False, 'reason': 'Te weinig voorbeelden om verkopen te leren'}
+        return None, {**base, 'reason': 'Te weinig voorbeelden om verkopen te leren'}
     step('agent', 2, 5, f'AI-trader {tf}: leren wanneer kopen')
-    entry_model, entry_med = learn_entry(markets, exit_model, exit_med, H, cost, safety, extra=extra)
+    entry_model, entry_med = learn_entry(markets, exit_model, exit_med, H, cost, safety, extra=extra, fit_kw=fit_kw)
     if entry_model is None:
-        return None, {'timeframe': tf, 'ok': False, 'reason': 'Te weinig voorbeelden om kopen te leren'}
-    step('agent', 3, 5, f'AI-trader {tf}: koopdrempel kiezen')
+        return None, {**base, 'reason': 'Te weinig voorbeelden om kopen te leren'}
+    step('agent', 3, 5, f'AI-trader {tf}: koopdrempel en coins kiezen')
     # Koopdrempel kiezen op de validatieperiode (niet op de eindtest).
     best = None
     vals = backtest(markets, 1, entry_model, entry_med, exit_model, exit_med, H, cost, safety, (0.0, 0.1, 0.2, 0.3, 0.5, 0.8, 1.2))
@@ -328,23 +356,27 @@ def train_agent(cfg, tf, fetch, pairs, log=print, think=None, progress=None, ext
         if v['trades'] >= max(10, len(markets) * 2) and (best is None or v['totalPct'] > best[1]['totalPct']):
             best = (thr, v)
     if best is None:
-        return None, {'timeframe': tf, 'ok': False, 'reason': 'Op de validatie vond hij geen drempel met genoeg trades'}
+        return None, {**base, 'reason': 'Op de validatie vond hij geen drempel met genoeg trades'}
     thr, val = best
+    # Coins kiezen, ook op de validatie: alleen coins waar hij daar winst maakte.
+    bp = val.get('byPair', {})
+    coins = [m.pair for m in markets if bp.get(m.pair, {}).get('trades', 0) >= 2 and bp[m.pair]['totalPct'] > 0]
+    if not coins:
+        coins = [m.pair for m in markets]
+    chosen = [m for m in markets if m.pair in coins]
     step('agent', 4, 5, f'AI-trader {tf}: eindtest')
-    test = backtest(markets, 2, entry_model, entry_med, exit_model, exit_med, H, cost, safety, (thr,))[thr]
-    days_test = sum((mk.split[2][1] - mk.split[2][0]) for mk in markets) / len(markets) * TF_MIN.get(tf, 15) / 1440
-    ok = bool(val['totalPct'] > 0 and test['trades'] >= 10 and (test['avgPct'] or 0) > 0)
-    report = {'timeframe': tf, 'ok': ok, 'threshold': thr, 'validation': val, 'test': test, 'testDays': round(days_test, 1),
-              'pairs': [m.pair for m in markets], 'maxHold': H, 'seconds': round(time.time() - started)}
-    # Waar let hij op?
+    test = backtest(chosen, 2, entry_model, entry_med, exit_model, exit_med, H, cost, safety, (thr,))[thr]
+    days_test = sum((mk.split[2][1] - mk.split[2][0]) for mk in chosen) / len(chosen) * TF_MIN.get(tf, 15) / 1440
+    ok = bool(val['totalPct'] > 0 and test['trades'] >= MIN_TEST_TRADES and (test['avgPct'] or 0) >= MIN_TEST_AVG)
+    report = {**base, 'ok': ok, 'threshold': thr, 'validation': val, 'test': test, 'testDays': round(days_test, 1),
+              'pairs': [m.pair for m in markets], 'coins': coins, 'maxHold': H, 'seconds': round(time.time() - started)}
     try:
-        imp = _importance(exit_model, FEATURES + POS_FEATURES, markets, exit_med, H)
-        report['exitFocus'] = imp
+        report['exitFocus'] = _importance(exit_model, FEATURES + POS_FEATURES, markets, exit_med, H)
     except Exception:
         pass
     agent = {
         'version': 2, 'kind': 'agent', 'timeframe': tf, 'threshold': thr, 'maxHoldCandles': H, 'safetyStopPct': safety,
-        'costPct': cost, 'entry': export_reg(entry_model, FEATURES, entry_med),
+        'costPct': cost, 'coins': coins, 'recipe': recipe, 'entry': export_reg(entry_model, FEATURES, entry_med),
         'exit': export_reg(exit_model, FEATURES + POS_FEATURES, exit_med),
         'meta': {'trainedAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'report': report},
     }

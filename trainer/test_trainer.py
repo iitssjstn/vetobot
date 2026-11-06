@@ -489,8 +489,8 @@ class AgentTrader(unittest.TestCase):
         pairs = ['A/EUR', 'B/EUR', 'C/EUR']
         good = {p: market(9000, i, momentum=0.6) for i, p in enumerate(pairs)}
         good['BTC/EUR'] = market(9000, 99, momentum=0.3)
-        s.write_json('agents.json', {'byTf': {}, 'published': None, 'live': {}, 'round': 0})
-        s.write_json('config.json', {'pairs': pairs, 'costPct': 0.2, 'agent': {'enabled': True, 'timeframes': ['15m']}})
+        s.write_json('agents.json', {'recipes': {}, 'published': None, 'live': {}, 'round': 0})
+        s.write_json('config.json', {'pairs': pairs, 'costPct': 0.2, 'agent': {'enabled': True, 'timeframes': ['15m'], 'coinPool': 'eigen'}})
         orig = s.trainer.fetch_candles
         s.trainer.fetch_candles = lambda p, tf, d, cache_dir=None, **k: good[p]
         said = []
@@ -504,15 +504,58 @@ class AgentTrader(unittest.TestCase):
         pub = s.read_json('agent.json', None)
         self.assertIsNotNone(pub)
         self.assertEqual(pub['timeframe'], '15m')
-        self.assertEqual(pub['stage'], 'getest')
-        self.assertTrue(any('Klaar met leren op 15m' in t for t in said), said)
-        self.assertTrue(any('Mijn beste manier van traden is nu op 15m' in t for t in said))
+        self.assertIn(pub['stage'], ('getest', 'oefenen'))
+        self.assertTrue(pub['coins'])
+        self.assertTrue(any(t.startswith('Ik probeer nu: 15m-candles') for t in said), said)
+        self.assertTrue(any(t.startswith('Resultaat 15m-candles') for t in said), said)
+        self.assertTrue(any('Mijn beste manier van traden is nu' in t for t in said))
         info = s.agent_info()
         self.assertEqual(info['published']['timeframe'], '15m')
-        # Echte trades: na 20 met winst is hij bewezen
-        s.add_agent_trades([{'timeframe': '15m', 'pct': 0.5, 'features': {'rsi14': 40}} for _ in range(20)])
-        self.assertEqual(s.load_agents()['live']['15m']['n'], 20)
+        self.assertEqual(len(info['recipes']), 1)
+        self.assertEqual(info['recipes'][0]['score']['tested'], 1)
+        # Echte trades: tellen per recept
+        s.add_agent_trades([{'timeframe': '15m', 'recipe': pub['recipeKey'], 'pct': 0.5, 'features': {'rsi14': 40}} for _ in range(20)])
+        self.assertEqual(s.load_agents()['live'][pub['recipeKey']]['n'], 20)
         self.assertEqual(len(s.agent_extra('15m')), 20)
+
+
+class RecipeSearch(unittest.TestCase):
+    def test_status_needs_repeated_success(self):
+        import agent_search as A
+        r = {'timeframe': '15m', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
+        recipes = {}
+        good = {'ok': True, 'test': {'trades': 50, 'avgPct': 0.3, 'totalPct': 15, 'winRate': 55}}
+        e = A.add_round(recipes, r, good)
+        self.assertEqual(e['status'], 'veelbelovend', 'één goede ronde is nog geen bewijs')
+        e = A.add_round(recipes, r, good)
+        self.assertEqual(e['status'], 'betrouwbaar')
+        bad = {'ok': False, 'test': {'trades': 50, 'avgPct': -0.6, 'totalPct': -30, 'winRate': 30}}
+        e = A.add_round(recipes, r, bad)
+        self.assertNotEqual(e['status'], 'betrouwbaar', 'laatste ronde slecht: niet meer betrouwbaar')
+        for _ in range(2):
+            e = A.add_round(recipes, r, bad)
+        self.assertEqual(e['status'], 'afgevallen')
+
+    def test_pick_retests_builds_on_best_and_learns_timeframes(self):
+        import agent_search as A
+        recipes = {}
+        good_r = {'timeframe': '30m', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
+        A.add_round(recipes, good_r, {'ok': True, 'test': {'trades': 60, 'avgPct': 0.4, 'totalPct': 24, 'winRate': 55}})
+        rec, why = A.pick(recipes, ['5m', '15m', '30m', '1h', '2h'], rnd=random.Random(1), now=time.time() + 3600)
+        self.assertEqual((A.key_of(rec), why), (A.key_of(good_r), 'retest'), 'beste eerst nog eens bewijzen')
+        A.add_round(recipes, good_r, {'ok': True, 'test': {'trades': 60, 'avgPct': 0.4, 'totalPct': 24, 'winRate': 55}})
+        A.add_round(recipes, good_r, {'ok': True, 'test': {'trades': 60, 'avgPct': 0.4, 'totalPct': 24, 'winRate': 55}})
+        # 5m: alles verlies
+        for i, r in enumerate(A.all_recipes(['5m'])[:6]):
+            A.add_round(recipes, r, {'ok': False, 'test': {'trades': 40, 'avgPct': -0.5, 'totalPct': -20, 'winRate': 30}})
+        self.assertEqual(A.tf_weight(recipes, '5m'), 0.1)
+        whys, tfs = [], []
+        for seed in range(40):
+            rec, why = A.pick(recipes, ['5m', '15m', '30m', '1h', '2h'], rnd=random.Random(seed), now=time.time() + 60)
+            whys.append(why)
+            tfs.append(rec['timeframe'])
+        self.assertGreater(whys.count('near'), 10, 'bouwt verder op het beste recept')
+        self.assertLess(tfs.count('5m'), 4, '5m (alles verlies) bijna niet meer')
 
 
 class Arms(unittest.TestCase):

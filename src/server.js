@@ -478,7 +478,8 @@ export function createApp({ users, manager, log = console }) {
   app.post('/api/admin/trainer/agent', adminOnly, wrap(async (req) => {
     const b = req.body ?? {};
     const agent = { enabled: Boolean(b.enabled), timeframes: Array.isArray(b.timeframes) ? b.timeframes.map(String) : [],
-      safetyStopPct: Number(b.safetyStopPct) || 10, pauseMinutes: Number.isFinite(Number(b.pauseMinutes)) ? Number(b.pauseMinutes) : 1 };
+      safetyStopPct: Number(b.safetyStopPct) || 10, pauseMinutes: Number.isFinite(Number(b.pauseMinutes)) ? Number(b.pauseMinutes) : 1,
+      coinPool: b.coinPool === 'eigen' ? 'eigen' : 'top' };
     const r = await manager.trainerRequest('/config', { method: 'POST', body: { agent } });
     log.info(`AI-trader gewijzigd door ${req.user.username}: ${JSON.stringify(agent)}`);
     return { ok: true, config: r.data.config };

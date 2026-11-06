@@ -664,7 +664,9 @@ export class Bot {
       await this.#updateBtcTrend();
       // Gevolgde coins plus coins waarin nog een positie open staat, zodat een positie
       // altijd bewaakt blijft, ook als de coin uit de lijst is gehaald.
-      const pairs = [...new Set([...this.pairs, ...Object.keys(this.store.state.positions)])];
+      // Met de AI-trader aan: ook de coins die hij zelf gekozen heeft (hij zoekt uit waar hij het best handelt).
+      const agentCoins = this.strategy.agentMode && !this.following ? (this.getAgent?.()?.coins ?? []) : [];
+      const pairs = [...new Set([...this.pairs, ...agentCoins, ...Object.keys(this.store.state.positions)])];
       await this.#prefetch(pairs);
       for (const pair of pairs) {
         try {
@@ -1057,6 +1059,11 @@ export class Bot {
     const q = predictRaw(agent.entry, x.f);
     const nl = (v, d = 2) => `${v >= 0 ? '+' : ''}${v.toFixed(d).replace('.', ',')}`;
     this.agentReason ??= {};
+    if (Array.isArray(agent.coins) && agent.coins.length && !agent.coins.includes(pair)) {
+      const reason = 'AI-trader handelt deze coin niet: in zijn test verloor hij hier geld';
+      this.agentReason[pair] = reason;
+      return { buy: false, reason };
+    }
     if (q <= agent.threshold) {
       const reason = `AI-trader (${tf}): verwacht ${nl(q)}% na kosten, ik koop pas boven ${nl(agent.threshold)}%`;
       this.agentReason[pair] = reason;
@@ -1077,7 +1084,7 @@ export class Bot {
     return {
       buy: true, why, regime: regimeOf(x.f),
       reason: `AI-trader (${tf}): verwacht ${nl(q)}% na kosten (drempel ${nl(agent.threshold)}%)`,
-      plan: { timeframe: tf, expectedPct: +q.toFixed(3), version: agent.meta?.trainedAt ?? null, safetyStopPct: agent.safetyStopPct,
+      plan: { timeframe: tf, recipe: agent.recipeKey ?? null, expectedPct: +q.toFixed(3), version: agent.meta?.trainedAt ?? null, safetyStopPct: agent.safetyStopPct,
         maxHoldMinutes: agent.maxHoldCandles * tfMs / 60000, entryClose: x.close },
     };
   }
@@ -1348,7 +1355,7 @@ export class Bot {
     // AI-trader: hij beslist zelf wanneer hij verkoopt; alleen de noodstop en maximale duur als vangnet.
     if (indicators?.agent) {
       const g = indicators.agent;
-      this.store.state.positions[pair].agent = { timeframe: g.timeframe, version: g.version, expectedPct: g.expectedPct };
+      this.store.state.positions[pair].agent = { timeframe: g.timeframe, version: g.version, expectedPct: g.expectedPct, recipe: g.recipe ?? null };
       this.store.state.positions[pair].plan = { key: null, stopLossPct: g.safetyStopPct, takeProfitPct: 0, maxHoldMinutes: g.maxHoldMinutes };
     }
     // Zelflerend gekozen strategie: eigen stop, doel en duur voor deze trade.
@@ -1549,7 +1556,7 @@ export class Bot {
     if (pos.agent && !/^Handmatig/.test(reason)) {
       const pct = (pnlEur / pos.costEur) * 100;
       try {
-        this.onFeedback?.({ kind: 'agentTrade', pair, timeframe: pos.agent.timeframe, pct, version: pos.agent.version,
+        this.onFeedback?.({ kind: 'agentTrade', pair, timeframe: pos.agent.timeframe, recipe: pos.agent.recipe ?? null, pct, version: pos.agent.version,
           features: pos.ml?.features ?? null, mode: this.broker.mode });
       } catch { /* extraatje */ }
       this.think(`Trade ${pair} afgesloten met ${pct >= 0 ? '+' : ''}${pct.toFixed(2).replace('.', ',')}% (verwacht bij aankoop: ` +

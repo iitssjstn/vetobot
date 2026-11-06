@@ -13,6 +13,7 @@
 import hashlib
 import hmac
 import json
+import random
 import math
 import os
 import secrets
@@ -23,6 +24,7 @@ from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import agent as agent_mod
+import agent_search
 import micro as micro_mod
 import search as searcher
 import thoughts
@@ -45,7 +47,7 @@ DEFAULTS = {'timeframe': '5m', 'days': 60, 'targetPct': 3.0, 'stopPct': 2.0, 'ho
             # Orderboek en transacties opnemen (elke minuut); useMicro wordt door het experiment gezet.
             'micro': {'enabled': True}, 'useMicro': False,
             # De AI-trader: leert zelf wanneer kopen en verkopen (zie agent.py). Draait doorlopend.
-            'agent': {'enabled': True, 'timeframes': [], 'safetyStopPct': 10, 'pauseMinutes': 1}}
+            'agent': {'enabled': True, 'timeframes': [], 'safetyStopPct': 10, 'pauseMinutes': 1, 'coinPool': 'top'}}
 LIMITS = {'days': (7, 365), 'targetPct': (0.2, 50), 'stopPct': (0.2, 50), 'horizon': (3, 2000),
           'costPct': (0, 5), 'topN': (1, 50), 'maxSamples': (20_000, 2_000_000), 'halfLifeDays': (0, 365)}
 
@@ -197,7 +199,8 @@ def validate_config(body):
         if not 2 <= stop <= 30:
             raise ValueError('Noodstop moet tussen 2% en 30% liggen')
         cfg['agent'] = {'enabled': bool(a.get('enabled')), 'timeframes': tfs, 'safetyStopPct': stop,
-                        'pauseMinutes': max(0, min(720, int(a.get('pauseMinutes') or 0)))}
+                        'pauseMinutes': max(0, min(720, int(a.get('pauseMinutes') or 0))),
+                        'coinPool': 'eigen' if a.get('coinPool') == 'eigen' else 'top'}
     if isinstance(body.get('micro'), dict):
         cfg['micro'] = {'enabled': bool(body['micro'].get('enabled', cfg['micro']['enabled']))}
     # Zelf andere strategie-instellingen gekozen: dan is het niet meer de strategie van de zoeker.
@@ -715,16 +718,10 @@ AGENT_PROVEN_AVG = 0.1   # gemiddeld minstens zoveel % per trade
 
 
 def load_agents():
-    return read_json('agents.json', {'byTf': {}, 'published': None, 'live': {}, 'round': 0})
-
-
-def agent_rank(r):
-    """Hoe goed is een getrainde AI-trader: rendement per dag in de eindtest (alleen als hij
-    daar en op de validatie winst maakte)."""
-    t = r.get('test') or {}
-    if not r.get('ok') or not t.get('trades'):
-        return None
-    return t['totalPct'] / max(1.0, r.get('testDays') or 1) / max(1, len(r.get('pairs') or [1]))
+    d = read_json('agents.json', {})
+    # Oudere versie bewaarde per candle-tijd ('byTf'); recepten beginnen dan opnieuw.
+    return {'recipes': d.get('recipes') or {}, 'published': d.get('published') if d.get('recipes') else None,
+            'live': d.get('live') or {}, 'round': d.get('round', 0)}
 
 
 def agent_extra(tf):
@@ -743,7 +740,7 @@ def add_agent_trades(items):
     clean = []
     for t in items:
         try:
-            clean.append({'timeframe': str(t['timeframe']), 'pct': float(t['pct']), 'version': str(t.get('version') or ''),
+            clean.append({'timeframe': str(t['timeframe']), 'recipe': str(t.get('recipe') or ''), 'pct': float(t['pct']), 'version': str(t.get('version') or ''),
                           'features': {k: float(v) for k, v in (t.get('features') or {}).items() if isinstance(v, (int, float))},
                           'mode': str(t.get('mode') or ''), 'pair': str(t.get('pair') or ''), 'at': datetime.now().isoformat(timespec='seconds')})
         except (KeyError, TypeError, ValueError):
@@ -755,7 +752,7 @@ def add_agent_trades(items):
         write_json('agent_trades.json', rows)
     data = load_agents()
     for t in clean:
-        lv = data['live'].setdefault(t['timeframe'], {'n': 0, 'sum': 0.0, 'wins': 0})
+        lv = data['live'].setdefault(t.get('recipe') or t['timeframe'], {'n': 0, 'sum': 0.0, 'wins': 0})
         lv['n'] += 1
         lv['sum'] += t['pct']
         lv['wins'] += t['pct'] > 0
@@ -768,82 +765,115 @@ def add_agent_trades(items):
     return len(clean)
 
 
+def agent_pairs(cfg):
+    """Op welke coins hij leert: je eigen coins, of (standaard) ook de grootste coins van Bitvavo,
+    zodat hij zelf kan uitzoeken waar hij het best handelt."""
+    own = list(cfg.get('pairs') or [])
+    if cfg['agent'].get('coinPool') == 'eigen' and own:
+        return own
+    try:
+        top = trainer.top_markets(20)
+    except Exception:
+        top = []
+    return list(dict.fromkeys(own + top))[:24] or own
+
+
+WHY_RECIPE = {
+    'retest': 'mijn beste recept tot nu toe opnieuw, op de nieuwste koersen: houdt het stand?',
+    'near': 'een variatie op mijn beste recept, misschien werkt dit nog beter',
+    'fresh': 'iets nieuws dat ik nog niet geprobeerd heb',
+    'old': 'een recept van een tijd geleden opnieuw, de markt kan veranderd zijn',
+}
+
+
 def agent_round():
-    """Eén leerronde van de AI-trader: één candle-tijd (opnieuw) trainen op de nieuwste koersen,
-    dan de beste kiezen."""
+    """Eén leerronde: zelf een recept kiezen, trainen, testen, en de beste manier van traden kiezen."""
     cfg = config()
     tfs = cfg['agent']['timeframes'] or agent_mod.DEFAULT_TIMEFRAMES
     data = load_agents()
-    tf = tfs[data.get('round', 0) % len(tfs)]
+    recipe, why = agent_search.pick(data['recipes'], tfs, rnd=random.Random(data.get('round', 0) + int(time.time())))
+    key = agent_search.key_of(recipe)
     cache = os.path.join(DATA, 'candles')
     fetch = lambda pair, t, days: trainer.fetch_candles(pair, t, days, cache_dir=cache)
+    pairs = agent_pairs(cfg)
+    think(f"Ik probeer nu: {agent_mod.recipe_text(recipe)}, op {len(pairs)} coins. Waarom: {WHY_RECIPE.get(why, why)}", kind='doing')
     with work_lock:
         state['agentBusy'] = True
-        state['agentProgress'] = {'startedAt': datetime.now().isoformat(timespec='seconds'), 'phase': 'agent', 'done': 0, 'total': 5, 'text': f'AI-trader {tf}: starten'}
+        state['agentProgress'] = {'startedAt': datetime.now().isoformat(timespec='seconds'), 'phase': 'agent', 'done': 0, 'total': 5,
+                                  'text': f'Recept {agent_mod.recipe_text(recipe)}: starten'}
         try:
-            pairs = cfg.get('pairs') or trainer.top_markets(int(cfg.get('topN', 15)))
             def prog(phase, done, total, text):
                 state['agentProgress'] = {**state['agentProgress'], 'done': done, 'total': total, 'text': text}
-            agent, report = agent_mod.train_agent({**cfg, 'agent': cfg['agent']}, tf, fetch, pairs, log=log, think=think,
-                                                  progress=prog, extra=agent_extra(tf), seed=data.get('round', 0) + 1)
+            agent, report = agent_mod.train_agent({**cfg, 'agent': cfg['agent']}, recipe, fetch, pairs, log=log, think=think,
+                                                  progress=prog, extra=agent_extra(recipe['timeframe']), seed=data.get('round', 0) + 1)
         finally:
             state['agentBusy'] = False
     data = load_agents()
     data['round'] = data.get('round', 0) + 1
     report['at'] = datetime.now().isoformat(timespec='seconds')
-    data['byTf'][tf] = report
+    entry = agent_search.add_round(data['recipes'], recipe, report)
     os.makedirs(path('agents'), exist_ok=True)
     if agent:
-        write_json(os.path.join('agents', f'{tf}.json'), agent)
-    think(agent_mod_say(report), kind='result' if report.get('ok') else 'warn')
-    # Beste kiezen: hoogste rendement per dag in de eindtest; anders de minst slechte om mee te oefenen.
-    ranked = sorted(((agent_rank(r), t) for t, r in data['byTf'].items() if agent_rank(r) is not None), reverse=True)
+        write_json(os.path.join('agents', key.replace('|', '_') + '.json'), agent)
+    think(agent_mod_say(report, entry), kind='result' if report.get('ok') else 'warn')
+    # De beste manier van traden kiezen: hoogste status, dan gemiddelde over de rondes.
+    board = [e for e in agent_search.leaderboard(data['recipes'], 50)
+             if os.path.exists(path(os.path.join('agents', e['key'].replace('|', '_') + '.json')))]
     prev = data.get('published')
-    if ranked:
-        best_tf = ranked[0][1]
-        stage = 'getest'
-    else:
-        cand = [(r['test']['avgPct'], t) for t, r in data['byTf'].items() if (r.get('test') or {}).get('avgPct') is not None]
-        best_tf = max(cand)[1] if cand else None
-        stage = 'oefenen'
-    if best_tf and os.path.exists(path(os.path.join('agents', f'{best_tf}.json'))):
-        a = read_json(os.path.join('agents', f'{best_tf}.json'), None)
-        lv = data['live'].get(best_tf) or {}
+    if board:
+        best = board[0]
+        st = agent_search.status(best)
+        a = read_json(os.path.join('agents', best['key'].replace('|', '_') + '.json'), None)
+        lv = data['live'].get(best['key']) or {}
         proven = lv.get('n', 0) >= AGENT_PROVEN_MIN and lv['sum'] / lv['n'] >= AGENT_PROVEN_AVG
-        a['stage'] = 'bewezen' if (proven and stage == 'getest') else stage
+        a['stage'] = ('bewezen' if proven else 'getest') if st in ('betrouwbaar', 'veelbelovend') else 'oefenen'
+        a['recipeKey'] = best['key']
+        a['recipeStatus'] = st
         a['live'] = lv
         write_json('agent.json', a)
-        data['published'] = {'timeframe': best_tf, 'stage': a['stage'], 'at': report['at']}
-        if not prev or prev.get('timeframe') != best_tf or prev.get('stage') != a['stage']:
-            r = data['byTf'][best_tf]
-            think((f"Mijn beste manier van traden is nu op {best_tf}-candles " +
-                   (f"(eindtest: {thoughts.pct((r.get('test') or {}).get('avgPct'))} per trade over {(r.get('test') or {}).get('trades')} trades). " if r.get('test') else '') +
-                   {'getest': 'Die gaat de bot gebruiken (in paper; live pas als ik me in de praktijk bewezen heb).',
-                    'bewezen': 'Ik heb me ook in de praktijk bewezen, dus ik mag ook live handelen.',
-                    'oefenen': 'Hij maakt in de test nog geen winst, dus de bot oefent er alleen mee in paper (als je dat toestaat) om ervan te leren.'}[a['stage']]),
+        data['published'] = {'key': best['key'], 'timeframe': a['timeframe'], 'stage': a['stage'], 'status': st, 'at': report['at']}
+        if not prev or prev.get('key') != best['key'] or prev.get('stage') != a['stage']:
+            sc = agent_search.score(best)
+            coins = a.get('coins') or []
+            think(f"Mijn beste manier van traden is nu: {agent_mod.recipe_text(best['recipe'])} ({st}; gemiddeld "
+                  f"{thoughts.pct(sc['avg'])} per trade over {sc['trades']} testtrades in {sc['tested']} ronde{'' if sc['tested'] == 1 else 's'}). "
+                  f"Ik handel {len(coins)} coin{'' if len(coins) == 1 else 's'}: {', '.join(coins[:8])}{' …' if len(coins) > 8 else ''}. " +
+                  {'getest': 'De bot gebruikt hem in paper; live pas als ik me in de praktijk bewezen heb.',
+                   'bewezen': 'Ik heb me ook in de praktijk bewezen, dus ik mag ook live handelen.',
+                   'oefenen': 'Hij maakt in de test nog niet genoeg winst, dus de bot oefent er alleen mee in paper (als je dat toestaat).'}[a['stage']],
                   kind='result' if a['stage'] != 'oefenen' else 'insight')
     write_json('agents.json', data)
 
 
-def agent_mod_say(r):
+def agent_mod_say(r, entry=None):
     tf = r.get('timeframe')
+    rec = agent_mod.recipe_text(r.get('recipe') or {'timeframe': tf, **agent_mod.RECIPE_DEFAULT})
     if not r.get('test'):
-        return f"AI-trader {tf}: {r.get('reason') or 'geen resultaat'}."
-    v, t = r['validation'], r['test']
+        return f"Recept {rec}: {r.get('reason') or 'geen resultaat'}."
+    t = r['test']
     f = thoughts.pct
     held = (t.get('avgHeld') or 0) * agent_mod.TF_MIN.get(tf, 15)
-    s = (f"Klaar met leren op {tf}: in de eindtest (de laatste {str(r.get('testDays')).replace('.', ',')} dagen, die ik nooit gezien had) "
+    s = (f"Resultaat {rec}: in de eindtest (de laatste {str(r.get('testDays')).replace('.', ',')} dagen, die ik nooit gezien had) "
          f"deed ik {t['trades']} trades, gemiddeld {f(t['avgPct'])} per trade, {t['winRate']:.0f}% met winst, "
-         f"gemiddeld {thoughts.hold(int(held))} vastgehouden. Kopen en vasthouden had {f(t.get('buyHoldPct'))} opgeleverd. ")
-    ex = t.get('exits') or {}
-    if ex.get('zelf verkocht'):
-        s += f"{ex['zelf verkocht']} keer verkocht ik zelf, {ex.get('veiligheidsstop', 0)} keer greep de noodstop in. "
+         f"gemiddeld {thoughts.hold(int(held))} vastgehouden. Kopen en vasthouden had {f(t.get('buyHoldPct'))} opgeleverd. "
+         f"Mijn grootste terugval was {f(-(t.get('maxDrawdownPct') or 0))}, mijn slechtste trade {f(t.get('worstPct'))}. ")
+    coins, pairs = r.get('coins') or [], r.get('pairs') or []
+    if len(coins) < len(pairs):
+        s += f"Ik koos {len(coins)} van de {len(pairs)} coins om te handelen (op de andere verloor ik in de validatie). "
     focus = r.get('exitFocus') or []
     if focus:
         names = [thoughts.LABELS.get(k, {'posPnlPct': 'mijn winst of verlies', 'posCandles': 'hoe lang ik al in de trade zit',
                                          'posMaxPct': 'de hoogste winst tot nu toe', 'posDrawPct': 'hoeveel ik terugzakte vanaf de top'}.get(k, k)) for k, _ in focus[:3]]
         s += f"Bij verkopen let ik vooral op: {', '.join(names)}. "
-    s += 'Dat is goed genoeg om mee te handelen.' if r.get('ok') else 'Dat is nog niet goed genoeg; ik blijf leren.'
+    if entry:
+        sc = agent_search.score(entry)
+        st = agent_search.status(entry)
+        if sc['tested'] > 1:
+            s += f"Over {sc['tested']} rondes met dit recept: gemiddeld {f(sc['avg'])} per trade ({sc['trades']} trades). "
+        s += {'betrouwbaar': 'Dit recept houdt stand: betrouwbaar.',
+              'veelbelovend': 'Veelbelovend, maar het moet zich nog herhalen voordat ik het vertrouw.',
+              'oefenen': 'Nog niet goed genoeg.',
+              'afgevallen': 'Dit recept verliest steeds; ik laat het vallen.'}[st]
     return s
 
 
@@ -873,9 +903,16 @@ def agent_info():
     cfg = config()
     data = load_agents()
     pub = read_json('agent.json', None)
+    board = []
+    for e in agent_search.leaderboard(data.get('recipes', {}), 12):
+        last = e['rounds'][-1] if e.get('rounds') else {}
+        board.append({'key': e['key'], 'recipe': e['recipe'], 'text': agent_mod.recipe_text(e['recipe']), 'status': agent_search.status(e),
+                      'score': agent_search.score(e), 'last': last, 'live': data.get('live', {}).get(e['key'])})
     return {'enabled': cfg['agent']['enabled'], 'config': cfg['agent'], 'busy': state.get('agentBusy', False),
             'progress': state.get('agentProgress') if state.get('agentBusy') else None, 'nextAt': state.get('nextAgentAt'),
-            'byTf': data.get('byTf', {}), 'published': data.get('published'), 'live': data.get('live', {}),
+            'recipes': board, 'tried': len(data.get('recipes', {})),
+            'possible': len(agent_search.all_recipes(cfg['agent']['timeframes'] or agent_mod.DEFAULT_TIMEFRAMES)),
+            'published': data.get('published'), 'coins': (pub or {}).get('coins'),
             'stage': (pub or {}).get('stage'), 'rounds': data.get('round', 0),
             'provenMin': AGENT_PROVEN_MIN, 'provenAvg': AGENT_PROVEN_AVG}
 
@@ -945,7 +982,7 @@ class Handler(BaseHTTPRequestHandler):
             a = read_json('agent.json', None)
             if not a:
                 return self.send(404, {'error': 'Nog geen AI-trader'})
-            a['live'] = load_agents().get('live', {}).get(a['timeframe'], {})
+            a['live'] = load_agents().get('live', {}).get(a.get('recipeKey') or a['timeframe'], {})
             data = json.dumps(a).encode()
             etag = '"' + hashlib.sha1(data).hexdigest()[:16] + '"'
             if self.headers.get('If-None-Match') == etag:
