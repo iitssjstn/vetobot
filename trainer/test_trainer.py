@@ -138,3 +138,65 @@ class Server(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class Schedule(unittest.TestCase):
+    def setUp(self):
+        import server
+        self.s = server
+        self.now = __import__('datetime').datetime(2026, 11, 6, 14, 30)
+
+    def test_fixed_hours(self):
+        nr = self.s.next_run(self.now, {'mode': 'times', 'hours': [3, 15], 'everyHours': 6, 'pauseMinutes': 30}, None)
+        self.assertEqual((nr.day, nr.hour), (6, 15))
+        nr = self.s.next_run(self.now.replace(hour=16), {'mode': 'times', 'hours': [3, 15], 'everyHours': 6, 'pauseMinutes': 30}, None)
+        self.assertEqual((nr.day, nr.hour), (7, 3))
+
+    def test_interval_and_continuous(self):
+        from datetime import timedelta
+        last = self.now - timedelta(hours=1)
+        nr = self.s.next_run(self.now, {'mode': 'interval', 'hours': [3], 'everyHours': 4, 'pauseMinutes': 30}, last)
+        self.assertEqual(nr, last + timedelta(hours=4))
+        nr = self.s.next_run(self.now, {'mode': 'continuous', 'hours': [3], 'everyHours': 4, 'pauseMinutes': 30}, self.now - timedelta(minutes=10))
+        self.assertEqual(nr, self.now + timedelta(minutes=20))
+        nr = self.s.next_run(self.now, {'mode': 'continuous', 'hours': [3], 'everyHours': 4, 'pauseMinutes': 30}, self.now - timedelta(hours=2))
+        self.assertEqual(nr, self.now, 'pauze voorbij: meteen')
+
+    def test_validation(self):
+        cur = self.s.DEFAULTS['schedule']
+        self.assertEqual(self.s.validate_schedule({'mode': 'times', 'hours': [15, 3, 3]}, cur)['hours'], [3, 15])
+        for bad in ({'mode': 'times', 'hours': [25]}, {'mode': 'x'}, {'mode': 'interval', 'everyHours': 0.5}, {'mode': 'continuous', 'pauseMinutes': 5}):
+            with self.assertRaises(ValueError):
+                self.s.validate_schedule(bad, cur)
+
+
+class CandleCache(unittest.TestCase):
+    def test_only_new_and_missing_older_candles_are_fetched(self):
+        cache = tempfile.mkdtemp()
+        H = 3_600_000
+        calls = []
+        def fake(pair, tf, start, end):
+            calls.append((start, end))
+            first = (start // H + 1) * H
+            return [[t, 1, 1, 1, 1, 1] for t in range(first, end, H)]
+        now = 1_000 * H + 10
+        c1 = train.fetch_candles('A/EUR', '1h', 10, cache_dir=cache, now_ms=now, fetch=fake)
+        self.assertEqual(len(calls), 1)
+        self.assertAlmostEqual(len(c1), 240, delta=2)
+        # 5 uur later, zelfde periode: alleen het nieuwe stuk ophalen
+        calls.clear()
+        c2 = train.fetch_candles('A/EUR', '1h', 10, cache_dir=cache, now_ms=now + 5 * H, fetch=fake)
+        self.assertEqual(len(calls), 1)
+        self.assertGreaterEqual(calls[0][0], now - 3 * H, 'alleen recent stuk (plus één candle overlap)')
+        self.assertEqual(c2[-1][0], c1[-1][0] + 5 * H)
+        # Meer dagen gevraagd: alleen het oudere stuk aanvullen
+        calls.clear()
+        c3 = train.fetch_candles('A/EUR', '1h', 20, cache_dir=cache, now_ms=now + 5 * H, fetch=fake)
+        self.assertEqual(len(calls), 2)
+        self.assertLess(calls[0][1], c1[0][0], 'ouder stuk')
+        self.assertAlmostEqual(len(c3), 480, delta=3)
+
+    def test_max_samples_spreads_over_the_period(self):
+        fake = {p: market(9000, i, momentum=0.6) for i, p in enumerate(CFG['pairs'])}
+        _, report = train.train({**CFG, 'maxSamples': 20_000}, log=lambda *_: None, fetch=lambda p, tf, d: fake[p], markets=lambda n: CFG['pairs'])
+        self.assertLessEqual(report['trainSamples'] + report['testSamples'], 3 * 4500)

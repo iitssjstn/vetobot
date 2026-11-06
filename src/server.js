@@ -450,7 +450,9 @@ export function createApp({ users, manager, log = console }) {
       // Hoe lang een trade mag duren: je maximale tijd in positie, anders ongeveer 3 uur.
       horizon: Math.max(6, Math.round((r.maxHoldMinutes > 0 ? r.maxHoldMinutes : 180) / tfMin)),
       pairs: settings.pairs,
-      days: Math.min(365, Math.max(14, Number(req.body?.days) || 60)),
+      // Hoeveel dagen geschiedenis: alleen meesturen als je het hier opgeeft; anders blijft de
+      // keuze op de pagina Trainer staan.
+      ...(req.body?.days ? { days: Math.min(365, Math.max(14, Number(req.body.days))) } : {}),
     };
     await manager.trainerRequest('/config', { method: 'POST', body: cfg });
     const started = await manager.trainerRequest('/train', { method: 'POST', body: {} }).then(() => true).catch((err) => {
@@ -478,6 +480,24 @@ export function createApp({ users, manager, log = console }) {
     } catch (err) {
       return { ...base, trainerError: err.message };
     }
+  }));
+
+  // Wanneer trainen en hoeveel geschiedenis (pagina Trainer).
+  app.post('/api/admin/trainer/schedule', adminOnly, wrap(async (req) => {
+    const b = req.body ?? {};
+    const body = {
+      schedule: {
+        mode: String(b.mode ?? 'times'),
+        hours: Array.isArray(b.hours) ? b.hours.map(Number) : undefined,
+        everyHours: b.everyHours != null ? Number(b.everyHours) : undefined,
+        pauseMinutes: b.pauseMinutes != null ? Number(b.pauseMinutes) : undefined,
+      },
+      ...(b.days ? { days: Number(b.days) } : {}),
+      ...(b.maxSamples ? { maxSamples: Number(b.maxSamples) } : {}),
+    };
+    const r = await manager.trainerRequest('/config', { method: 'POST', body });
+    log.info(`Trainingsschema gewijzigd door ${req.user.username}: ${JSON.stringify(body)}`);
+    return { ok: true, config: r.data.config };
   }));
 
   app.post('/api/admin/trainer/fetch', adminOnly, wrap(async () => {

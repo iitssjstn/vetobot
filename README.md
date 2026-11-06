@@ -186,7 +186,8 @@ Naast de AI kan vetobot een **eigen voorspelmodel** gebruiken. Dat wordt getrain
 
 - De trainer haalt maanden koersgeschiedenis op bij Bitvavo (publieke data, geen keys nodig) en bepaalt voor elk moment of een aankoop daar eerst je winstdoel of eerst je stop had geraakt, na kosten.
 - Daarop traint hij een gradient-boosting-model en test het op de laatste 20% van de periode, die het model niet gezien heeft. **Alleen als het model daar echt winst na kosten maakt en duidelijk beter is dan zomaar kopen, wordt het gepubliceerd.** Anders blijft het vorige model in gebruik.
-- Elke nacht (standaard om 03:00) traint hij opnieuw met de nieuwste koersen.
+- Wanneer hij traint stel je in op de pagina **Trainer** → **Wanneer trainen**: op vaste tijden (standaard 03:00), elke paar uur, of doorlopend (na elke training opnieuw, met een pauze). Daar kies je ook hoeveel dagen geschiedenis hij gebruikt (7 tot 365).
+- De trainer **bewaart de opgehaalde koersen** (tot 400 dagen). Bij een volgende training haalt hij alleen de nieuwe candles op, en als je meer dagen kiest alleen het ontbrekende oudere stuk. Om trainen snel te houden gebruikt hij maximaal 300.000 voorbeelden (instelbaar), gespreid over de hele periode.
 - vetobot haalt elk half uur het nieuwste model op. Bij een koopsignaal rekent hij de **winstkans** uit (in JavaScript, zonder extra software). Die kans krijgt de AI als extra argument, en met **Minimale modelkans** (bij Strategie) kun je er ook op filteren. Is de VPS onbereikbaar, dan blijft het vorige model gewoon werken.
 
 **Op de VPS** (apart, klein compose-bestand):

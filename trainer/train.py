@@ -10,6 +10,7 @@
 """
 import json
 import math
+import os
 import time
 import urllib.request
 
@@ -34,13 +35,9 @@ def top_markets(n):
     return [r['market'].replace('-', '/') for r in eur[:n]]
 
 
-def fetch_candles(pair, timeframe, days, log=print):
-    """Candles van de afgelopen `days` dagen, oud -> nieuw, alleen gesloten candles."""
+def fetch_range(pair, timeframe, start, end):
+    """Candles tussen start en end (ms), oud -> nieuw. Bladert terug in stappen van 1440."""
     market = pair.replace('/', '-')
-    step = TF_MS[timeframe]
-    now = int(time.time() * 1000)
-    start = now - days * 86_400_000
-    end = now
     out = {}
     while end > start:
         rows = _get(f'{BITVAVO}/{market}/candles?interval={timeframe}&limit=1440&start={start}&end={end}')
@@ -54,12 +51,54 @@ def fetch_candles(pair, timeframe, days, log=print):
             break
         end = oldest - 1
         time.sleep(0.15)  # netjes binnen de rate limit van Bitvavo blijven
-    candles = [out[k] for k in sorted(out)]
-    return [c for c in candles if c[0] + step <= now]
+    return [out[k] for k in sorted(out)]
+
+
+def fetch_candles(pair, timeframe, days, cache_dir=None, now_ms=None, fetch=fetch_range):
+    """Candles van de afgelopen `days` dagen, oud -> nieuw, alleen gesloten candles.
+
+    Met cache_dir worden de koersen bewaard: een volgende keer worden alleen de nieuwe candles
+    opgehaald, en als je meer dagen wilt alleen het ontbrekende oudere stuk. Zo groeit de
+    geschiedenis zonder elke keer alles opnieuw te downloaden.
+    """
+    step = TF_MS[timeframe]
+    now = now_ms or int(time.time() * 1000)
+    start = now - int(days) * 86_400_000
+    cached = []
+    file = None
+    if cache_dir:
+        os.makedirs(cache_dir, exist_ok=True)
+        file = os.path.join(cache_dir, f"{pair.replace('/', '-')}_{timeframe}.json")
+        try:
+            with open(file) as f:
+                cached = json.load(f)
+        except (OSError, ValueError):
+            cached = []
+    by_ts = {c[0]: c for c in cached}
+    if cached:
+        oldest, newest = cached[0][0], cached[-1][0]
+        if oldest > start + step:  # meer geschiedenis gevraagd: alleen het oudere stuk aanvullen
+            for c in fetch(pair, timeframe, start, oldest - 1):
+                by_ts[c[0]] = c
+        for c in fetch(pair, timeframe, newest - step, now):  # alleen nieuwe candles
+            by_ts[c[0]] = c
+    else:
+        for c in fetch(pair, timeframe, start, now):
+            by_ts[c[0]] = c
+    candles = [by_ts[k] for k in sorted(by_ts) if by_ts[k][0] + step <= now]
+    if file:
+        # Bewaren tot maximaal 400 dagen, zodat de cache niet eindeloos groeit.
+        keep_from = now - 400 * 86_400_000
+        tmp = file + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump([c for c in candles if c[0] >= keep_from], f)
+        os.replace(tmp, file)
+    return [c for c in candles if c[0] >= start]
 
 
 def build_dataset(candles, cfg, step=2):
-    """Kenmerken, labels en rendementen per moment. step=2: elke tweede candle (minder overlap)."""
+    """Kenmerken, labels en rendementen per moment. step=2: elke tweede candle (minder overlap).
+    Een grotere step neemt een gespreide selectie, zodat lange periodes niet eindeloos duren."""
     s = series(candles)
     X, y, ret, ts = [], [], [], []
     horizon = int(cfg['horizon'])
@@ -158,6 +197,9 @@ def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=Non
     pairs = cfg.get('pairs') or markets(int(cfg.get('topN', 15)))
     tr_X, tr_y, te_X, te_y, te_ret = [], [], [], [], []
     used = []
+    # Maximaal zoveel voorbeelden in totaal; daarboven een gespreide selectie over de hele periode.
+    max_samples = int(cfg.get('maxSamples') or 300_000)
+    per_pair = max(5_000, max_samples // max(1, len(pairs)))
     for n, pair in enumerate(pairs):
         step('fetch', n, len(pairs), f'Koersen ophalen: {pair}')
         try:
@@ -168,7 +210,8 @@ def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=Non
         if len(candles) < WARMUP + int(cfg['horizon']) + 200:
             log(f'{pair}: te weinig candles ({len(candles)}), overgeslagen')
             continue
-        X, y, ret, _ = build_dataset(candles, cfg)
+        sample_step = max(2, math.ceil(len(candles) / per_pair))
+        X, y, ret, _ = build_dataset(candles, cfg, step=sample_step)
         # Tijdsplitsing per coin: oudste 80% trainen, nieuwste 20% testen (nooit door elkaar).
         cut = int(len(X) * 0.8)
         gap = int(cfg['horizon'])  # geen overlap tussen de laatste trainings- en eerste testuitkomst

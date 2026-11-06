@@ -196,6 +196,7 @@
   .tr-steps span { font-size: 12px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
   .tr-steps span.done { color: var(--up); border-color: color-mix(in srgb, var(--up) 40%, var(--line)); }
   .tr-steps span.now { color: var(--accent); border-color: var(--accent); font-weight: 600; }
+  [data-ts][hidden] { display: none; }
   .tr-log { margin: 0; padding: 12px 16px; max-height: 360px; overflow: auto; font: 12.5px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); white-space: pre-wrap; background: var(--panel-2); }
   .kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; font-size: 13.5px; }
   .kv dt { color: var(--muted); }
@@ -518,6 +519,23 @@
         <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Huidig model</h2></div><div class="panel-b" id="tr-model"></div></div>
         <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-gear"/></svg>Instellingen van de trainer</h2></div><div class="panel-b" id="tr-config"></div></div>
       </div>
+      <div class="panel gap" id="tr-sched-panel">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-history"/></svg>Wanneer trainen</h2><span class="hint" id="tr-next"></span></div>
+        <form class="panel-b" id="tr-sched">
+          <div class="fields">
+            <div><label for="ts-mode">Schema</label>
+              <select id="ts-mode"><option value="times">Op vaste tijden</option><option value="interval">Elke paar uur</option><option value="continuous">Doorlopend (na elke training opnieuw)</option></select></div>
+            <div data-ts="times"><label for="ts-hours">Uren (bijv. 3, 15)</label><input id="ts-hours" placeholder="3, 15"></div>
+            <div data-ts="interval"><label for="ts-every">Elke … uur</label><input id="ts-every" type="number" min="1" max="168" step="any"></div>
+            <div data-ts="continuous"><label for="ts-pause">Pauze tussen trainingen (min)</label><input id="ts-pause" type="number" min="15" max="1440" step="1"></div>
+            <div><label for="ts-days">Dagen geschiedenis</label><input id="ts-days" type="number" min="7" max="365" step="1"></div>
+            <div><label for="ts-max">Max. voorbeelden</label><input id="ts-max" type="number" min="20000" max="2000000" step="10000"></div>
+          </div>
+          <div class="help" id="ts-help"></div>
+          <div class="row-actions"><button class="btn primary" type="submit">Opslaan</button><span class="msg" id="ts-msg"></span></div>
+        </form>
+      </div>
+
       <div class="panel gap">
         <div class="panel-h"><h2><svg class="i"><use href="#i-list"/></svg>Logboek</h2><span class="hint">live, nieuwste onderaan</span></div>
         <pre class="tr-log" id="tr-log"></pre>
@@ -768,7 +786,6 @@
                 <input id="ml-url" type="password" autocomplete="off" placeholder="https://trainer.jouwdomein.nl (leeg = niet wijzigen)"></div>
               <div><label for="ml-token">Code van de trainer <span class="kstate" id="st-trainerToken"></span></label>
                 <input id="ml-token" type="password" autocomplete="off" placeholder="staat in de logs van de trainer (leeg = niet wijzigen)"></div>
-              <div><label for="ml-days">Dagen geschiedenis om op te trainen</label><input id="ml-days" type="number" min="14" max="365" step="1" value="60"></div>
             </div>
             <div class="row-actions">
               <button class="btn" type="submit">Opslaan</button>
@@ -1621,7 +1638,7 @@ $('ml-form').onsubmit = async (e) => {
 $('ml-train').onclick = async () => {
   mlMsg('Instellingen naar de trainer sturen…');
   try {
-    const r = await api('api/admin/trainer/train', { days: Number($('ml-days').value) || 60 });
+    const r = await api('api/admin/trainer/train', {});
     mlMsg(r.started ? `Training gestart (${r.config.timeframe}, doel +${r.config.targetPct}% / stop −${r.config.stopPct}%). Dit duurt een paar minuten.` : 'Er loopt al een training; de nieuwe instellingen gelden voor de volgende.', 'ok');
     setTimeout(loadModel, 1500);
   } catch (err) { mlMsg(err.message, 'err'); }
@@ -1671,12 +1688,12 @@ function renderTrainer() {
   } else {
     const last = t.history?.[0];
     $('tr-badge').innerHTML = '<span class="badge ok">wacht</span>';
-    $('tr-now').innerHTML = `<p style="margin:0 0 4px">De trainer staat klaar. Volgende nachtelijke training: <b>${when(t.nextRunAt)}</b>.</p>
+    $('tr-now').innerHTML = `<p style="margin:0 0 4px">De trainer staat klaar. Volgende training: <b>${when(t.nextRunAt)}</b>.</p>
       ${last ? `<p class="muted" style="margin:0;font-size:13.5px">Laatste training ${when(last.finishedAt ?? last.startedAt)}: ${last.published ? '<span class="up">nieuw model gepubliceerd</span>' : `<span class="warnc">geen nieuw model</span> — ${esc(last.reason ?? '')}`}</p>` : ''}
       <div class="row-actions"><button class="btn primary" type="button" id="tr-train">Nu trainen met mijn instellingen</button><span class="msg" id="tr-msg"></span></div>`;
     $('tr-train').onclick = async () => {
       $('tr-msg').className = 'msg'; $('tr-msg').textContent = 'Starten…';
-      try { await api('api/admin/trainer/train', { days: Number($('ml-days')?.value) || 60 }); setTimeout(loadTrainer, 800); }
+      try { await api('api/admin/trainer/train', {}); setTimeout(loadTrainer, 800); }
       catch (err) { $('tr-msg').className = 'msg err'; $('tr-msg').textContent = err.message; }
     };
   }
@@ -1696,6 +1713,20 @@ function renderTrainer() {
     </dl><div class="help">Alle cijfers per drempel staan bij <a href="#" data-go="settings">Instellingen → Eigen model</a>.</div>`
     : '<p class="muted" style="margin:0">Nog geen model. Na de eerste geslaagde training verschijnt het hier.</p>';
 
+  // Schema (niet overschrijven terwijl je aan het typen bent)
+  const sc = t?.config?.schedule;
+  $('tr-sched-panel').hidden = !t;
+  if (sc && !trSchedDirty) {
+    $('ts-mode').value = sc.mode;
+    $('ts-hours').value = (sc.hours ?? []).join(', ');
+    $('ts-every').value = sc.everyHours;
+    $('ts-pause').value = sc.pauseMinutes;
+    $('ts-days').value = t.config.days;
+    $('ts-max').value = t.config.maxSamples ?? 300000;
+    trSchedShow();
+  }
+  $('tr-next').textContent = t?.running ? 'training loopt' : t?.nextRunAt ? `volgende: ${String(t.nextRunAt).replace('T', ' ')}` : '';
+
   // Instellingen die de trainer gebruikt
   const c = t?.config;
   $('tr-config').innerHTML = c ? `<dl class="kv">
@@ -1704,7 +1735,10 @@ function renderTrainer() {
       <dt>Maximale duur</dt><dd>${c.horizon} candles</dd>
       <dt>Kosten per ronde</dt><dd>${nl(c.costPct, 2)}%</dd>
       <dt>Coins</dt><dd>${c.pairs?.length ? c.pairs.map((p) => esc(p.replace('/EUR', ''))).join(', ') : `automatisch: top ${c.topN} op volume`}</dd>
-      <dt>Elke nacht om</dt><dd>${String(t.trainHour ?? 3).padStart(2, '0')}:00</dd>
+      <dt>Schema</dt><dd>${c.schedule?.mode === 'interval' ? `elke ${nl(c.schedule.everyHours, 0)} uur` : c.schedule?.mode === 'continuous' ? `doorlopend, ${c.schedule.pauseMinutes} min pauze` : `om ${(c.schedule?.hours ?? [t.trainHour ?? 3]).map((h) => `${String(h).padStart(2, '0')}:00`).join(', ')}`}</dd>
+      <dt>Bewaarde koersen</dt><dd>${(t.cache ?? []).filter((x) => x.timeframe === c.timeframe).length
+        ? (t.cache ?? []).filter((x) => x.timeframe === c.timeframe).map((x) => `${esc(x.pair.replace('/EUR', ''))} ${nl(x.days, 0)} d`).join(', ')
+        : '<span class="muted">nog niets (na de eerste training)</span>'}</dd>
     </dl><div class="help">Deze komen van je bot. Wijzig je strategie of risico, klik dan op "Nu trainen met mijn instellingen".</div>` : '';
 
   // Logboek: nieuwste onderaan; alleen meescrollen als je al onderaan stond.
@@ -1725,6 +1759,36 @@ function renderTrainer() {
     ['Resultaat', (h) => h.published ? '<span class="badge ok">gepubliceerd</span>' : `<span class="badge soft">niet gebruikt</span> <span class="muted" style="font-size:12.5px">${esc(h.reason ?? '')}</span>`],
   ], 'Nog geen trainingen.', 'history');
 }
+let trSchedDirty = false;
+function trSchedShow() {
+  const mode = $('ts-mode').value;
+  document.querySelectorAll('[data-ts]').forEach((el) => { el.hidden = el.dataset.ts !== mode; });
+  const days = Number($('ts-days').value) || 60;
+  const tf = trData?.trainer?.config?.timeframe ?? state?.timeframe ?? '5m';
+  const perDay = { '1m': 1440, '5m': 288, '15m': 96, '30m': 48, '1h': 24, '2h': 12, '4h': 6, '1d': 1 }[tf] ?? 288;
+  const coins = trData?.trainer?.config?.pairs?.length || trData?.trainer?.config?.topN || 8;
+  const candles = days * perDay * coins;
+  $('ts-help').innerHTML = `${days} dagen ${esc(tf)}-candles van ${coins} coins = ± ${candles.toLocaleString('nl-NL')} candles. `
+    + `De trainer bewaart de koersen: daarna haalt hij alleen nieuwe candles op, en kies je meer dagen dan haalt hij alleen het ontbrekende oudere stuk. `
+    + `Hij gebruikt maximaal ${(Number($('ts-max').value) || 300000).toLocaleString('nl-NL')} voorbeelden, gespreid over de hele periode, zodat trainen niet uren duurt.`
+    + (mode === 'continuous' ? ' <span class="warnc">Doorlopend trainen leert vooral opnieuw van dezelfde data; elke paar uur is meestal genoeg.</span>' : '');
+}
+['ts-mode', 'ts-hours', 'ts-every', 'ts-pause', 'ts-days', 'ts-max'].forEach((id) => {
+  $(id).addEventListener('input', () => { trSchedDirty = true; trSchedShow(); });
+  $(id).addEventListener('change', () => { trSchedDirty = true; trSchedShow(); });
+});
+$('tr-sched').onsubmit = async (e) => {
+  e.preventDefault();
+  const msg = (t2, c2) => { $('ts-msg').className = `msg ${c2 ?? ''}`; $('ts-msg').textContent = t2; };
+  const hours = $('ts-hours').value.split(/[^0-9]+/).filter(Boolean).map(Number);
+  try {
+    await api('api/admin/trainer/schedule', { mode: $('ts-mode').value, hours, everyHours: Number($('ts-every').value), pauseMinutes: Number($('ts-pause').value),
+      days: Number($('ts-days').value), maxSamples: Number($('ts-max').value) });
+    trSchedDirty = false;
+    msg('Opgeslagen.', 'ok');
+    loadTrainer();
+  } catch (err) { msg(err.message, 'err'); }
+};
 document.addEventListener('click', (e) => {
   const a = e.target.closest('[data-go]');
   if (!a) return;

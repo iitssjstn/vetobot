@@ -28,12 +28,16 @@ PORT = int(os.environ.get('PORT', '8787'))
 TRAIN_HOUR = int(os.environ.get('TRAIN_HOUR', '3'))  # elke nacht om dit uur (tijdzone via TZ)
 
 DEFAULTS = {'timeframe': '5m', 'days': 60, 'targetPct': 3.0, 'stopPct': 2.0, 'horizon': 36,
-            'costPct': 0.5, 'pairs': [], 'topN': 15}
+            'costPct': 0.5, 'pairs': [], 'topN': 15, 'maxSamples': 300_000,
+            # Wanneer trainen: 'times' = vaste uren, 'interval' = elke X uur, 'continuous' = na elke
+            # training opnieuw (met een pauze van pauseMinutes).
+            'schedule': {'mode': 'times', 'hours': [TRAIN_HOUR], 'everyHours': 6, 'pauseMinutes': 30}}
 LIMITS = {'days': (7, 365), 'targetPct': (0.2, 50), 'stopPct': (0.2, 50), 'horizon': (3, 2000),
-          'costPct': (0, 5), 'topN': (1, 50)}
+          'costPct': (0, 5), 'topN': (1, 50), 'maxSamples': (20_000, 2_000_000)}
 
 os.makedirs(DATA, exist_ok=True)
-state = {'running': False, 'history': [], 'log': [], 'progress': None}
+state = {'running': False, 'history': [], 'log': [], 'progress': None, 'lastFinished': None}
+wake = threading.Event()  # maakt de planner wakker als het schema verandert
 lock = threading.Lock()
 
 
@@ -78,7 +82,26 @@ def set_progress(phase, done, total, text):
 
 
 def config():
-    return {**DEFAULTS, **read_json('config.json', {})}
+    saved = read_json('config.json', {})
+    cfg = {**DEFAULTS, **saved}
+    cfg['schedule'] = {**DEFAULTS['schedule'], **(saved.get('schedule') or {})}
+    return cfg
+
+
+def validate_schedule(s, current):
+    s = {**current, **(s or {})}
+    if s['mode'] not in ('times', 'interval', 'continuous'):
+        raise ValueError('Onbekend schema')
+    hours = sorted({int(h) for h in s.get('hours') or []})
+    if s['mode'] == 'times' and (not hours or any(h < 0 or h > 23 for h in hours) or len(hours) > 24):
+        raise ValueError('Kies minstens één uur tussen 0 en 23')
+    every = float(s.get('everyHours') or 6)
+    if not 1 <= every <= 168:
+        raise ValueError('Elke 1 tot 168 uur')
+    pause = int(s.get('pauseMinutes') or 30)
+    if not 15 <= pause <= 1440:
+        raise ValueError('Pauze tussen trainingen: 15 tot 1440 minuten')
+    return {'mode': s['mode'], 'hours': hours or [TRAIN_HOUR], 'everyHours': every, 'pauseMinutes': pause}
 
 
 def validate_config(body):
@@ -98,6 +121,8 @@ def validate_config(body):
         if len(pairs) > 50 or any(not p.endswith('/EUR') for p in pairs):
             raise ValueError('Maximaal 50 coins, allemaal tegen EUR')
         cfg['pairs'] = pairs
+    if 'schedule' in body:
+        cfg['schedule'] = validate_schedule(body['schedule'], cfg['schedule'])
     if cfg['targetPct'] <= cfg['costPct']:
         raise ValueError('Het winstdoel moet groter zijn dan de kosten per ronde')
     return cfg
@@ -114,7 +139,9 @@ def run_training(reason):
         try:
             cfg = config()
             log(f'Training gestart ({reason}): {cfg["timeframe"]}, {cfg["days"]} dagen, doel +{cfg["targetPct"]}% / stop -{cfg["stopPct"]}%')
-            model, report = trainer.train(cfg, log=log, progress=set_progress)
+            cache = os.path.join(DATA, 'candles')
+            fetch = lambda pair, tf, days: trainer.fetch_candles(pair, tf, days, cache_dir=cache)
+            model, report = trainer.train(cfg, log=log, progress=set_progress, fetch=fetch)
             report['startedAt'] = started
             report['finishedAt'] = datetime.now().isoformat(timespec='seconds')
             if model:
@@ -130,23 +157,71 @@ def run_training(reason):
             state['history'] = ([{'startedAt': started, 'published': False, 'reason': f'Fout: {e}'}] + state['history'])[:10]
         finally:
             state['running'] = False
+            state['lastFinished'] = datetime.now()
+            state['cache'] = cache_info()
+            wake.set()
     threading.Thread(target=job, daemon=True).start()
     return True
 
 
-def next_run():
-    now = datetime.now()
-    t = now.replace(hour=TRAIN_HOUR, minute=0, second=0, microsecond=0)
-    return t if t > now else t + timedelta(days=1)
+def next_run(now=None, schedule=None, last_finished=None):
+    """Wanneer de volgende geplande training is, volgens het schema."""
+    now = now or datetime.now()
+    s = schedule or config()['schedule']
+    last = last_finished if last_finished is not None else state.get('lastFinished')
+    if s['mode'] == 'interval':
+        if not last:
+            return now + timedelta(minutes=1)
+        return max(now, last + timedelta(hours=float(s['everyHours'])))
+    if s['mode'] == 'continuous':
+        if not last:
+            return now + timedelta(minutes=1)
+        return max(now, last + timedelta(minutes=int(s['pauseMinutes'])))
+    for add in range(0, 2):
+        day = (now + timedelta(days=add)).date()
+        for h in sorted(s['hours']):
+            t = datetime.combine(day, datetime.min.time()).replace(hour=int(h))
+            if t > now:
+                return t
+    return now + timedelta(days=1)
+
+
+SCHEDULE_REASON = {'times': 'geplande training', 'interval': 'training volgens interval', 'continuous': 'doorlopende training'}
 
 
 def scheduler():
     if not os.path.exists(path('model.json')):
         run_training('eerste start')
     while True:
-        wait = (next_run() - datetime.now()).total_seconds()
-        time.sleep(max(30, wait))
-        run_training('nachtelijke training')
+        due = next_run()
+        wake.clear()
+        # Slapen tot het tijd is, maar wakker worden als het schema verandert of een training klaar is.
+        wake.wait(timeout=max(5, (due - datetime.now()).total_seconds()))
+        if state['running'] or datetime.now() < next_run():
+            continue
+        run_training(SCHEDULE_REASON.get(config()['schedule']['mode'], 'geplande training'))
+
+
+def cache_info():
+    """Hoeveel koersgeschiedenis er bewaard is, per coin."""
+    d = os.path.join(DATA, 'candles')
+    out = []
+    try:
+        for name in sorted(os.listdir(d)):
+            if not name.endswith('.json'):
+                continue
+            try:
+                with open(os.path.join(d, name)) as f:
+                    rows = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if rows:
+                pair, tf = name[:-5].rsplit('_', 1)
+                out.append({'pair': pair.replace('-', '/'), 'timeframe': tf, 'candles': len(rows),
+                            'days': round((rows[-1][0] - rows[0][0]) / 86_400_000, 1)})
+    except OSError:
+        pass
+    return out
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -196,7 +271,8 @@ class Handler(BaseHTTPRequestHandler):
             model = read_json('model.json', None)
             return self.send(200, {
                 'running': state['running'], 'progress': state['progress'] if state['running'] else None,
-                'config': config(), 'nextRunAt': next_run().isoformat(timespec='minutes'), 'trainHour': TRAIN_HOUR,
+                'config': config(), 'nextRunAt': None if state['running'] else next_run().isoformat(timespec='minutes'), 'trainHour': TRAIN_HOUR,
+                'cache': state.get('cache', []),
                 'model': model and model.get('meta'), 'history': state['history'], 'log': state['log'][-150:],
             })
         self.send(404, {'error': 'Niet gevonden'})
@@ -216,6 +292,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(400, {'error': str(e)})
             write_json('config.json', cfg)
             log('Instellingen bijgewerkt door vetobot')
+            wake.set()
             return self.send(200, {'ok': True, 'config': cfg})
         if self.path == '/train':
             started = run_training('handmatig vanuit vetobot')
@@ -225,11 +302,12 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     state['history'] = read_json('history.json', [])
+    state['cache'] = cache_info()
     t = token()
     print('=' * 70, flush=True)
     print(' vetobot-trainer', flush=True)
     print(f' Code voor het dashboard (Instellingen -> Eigen model): {t}', flush=True)
-    print(f' Volgende nachtelijke training: {next_run():%Y-%m-%d %H:%M}', flush=True)
+    print(f' Volgende training: {next_run():%Y-%m-%d %H:%M}', flush=True)
     print('=' * 70, flush=True)
     threading.Thread(target=scheduler, daemon=True).start()
     ThreadingHTTPServer(('0.0.0.0', PORT), Handler).serve_forever()
