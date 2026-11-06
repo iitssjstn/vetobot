@@ -1885,7 +1885,7 @@ function agentFields() {
 }
 $('st-agent')?.addEventListener('change', agentFields);
 let agDirty = false;
-const AG_STAGE = { bewezen: ['ok', 'bewezen: mag ook live'], getest: ['wait', 'getest: handelt in paper'], oefenen: ['soft', 'oefent: nog geen winst in de test'] };
+const AG_STAGE = { bewezen: ['ok', 'bewezen: mag ook live'], getest: ['wait', 'getest: handelt in paper'], oefenen: ['soft', 'oefent in paper: nog geen recept met genoeg winst in de test'] };
 const RC_STATUS = { betrouwbaar: 'ok', veelbelovend: 'wait', oefenen: 'soft', afgevallen: 'bad' };
 function renderAgent(t, nl) {
   const a = t?.agent;
@@ -1900,15 +1900,15 @@ function renderAgent(t, nl) {
   const bot = state?.agent;
   const botOn = Number(state?.strategy?.agentMode ?? 0) === 1;
   $('ag-body').innerHTML = `<p class="muted" style="margin:0 0 10px;font-size:13.5px">De AI-trader zoekt zelf de beste manier van traden. Elke ronde probeert hij een <b>recept</b>: op welke candle-tijd, hoe lang hij hooguit vasthoudt, hoe uitgebreid zijn model is en hoe ver hij vooruitkijkt. Per recept leert hij zelf wanneer kopen en verkopen loont, kiest hij zelf de coins en hoe kieskeurig hij is, en wordt hij eerlijk getest op een periode die hij nooit zag. Hij vertrouwt een recept pas als het <b>in meerdere rondes</b> standhoudt, en weegt <b>verlies beperken</b> zwaar mee: liever iets minder winst dan diepe dalen.</p>`
-    + (a.busy && a.progress ? `<p style="margin:0 0 8px"><b>Bezig:</b> ${esc(a.progress.text ?? '')}</p>` : a.enabled && a.nextAt ? `<p style="margin:0 0 8px">Volgende leerronde: <b>${whenAt(a.nextAt)}</b></p>` : '')
-    + (cur ? `<div class="alert ${a.stage === 'oefenen' ? '' : 'ok'}" style="margin:0 0 10px">${icon('target')}<div><b>In gebruik:</b> ${esc(cur.text)} · <span class="badge ${st?.[0] ?? 'soft'}">${esc(st?.[1] ?? a.stage ?? '')}</span>`
+    + (a.busy && a.progress ? `<p style="margin:0 0 8px"><b>Nu aan het leren:</b> ${esc(a.progress.text ?? '')}</p>` : a.enabled && a.nextAt ? `<p style="margin:0 0 8px">Volgende leerronde: <b>${whenAt(a.nextAt)}</b></p>` : '')
+    + (cur ? `<div class="alert ${a.stage === 'oefenen' ? '' : 'ok'}" style="margin:0 0 10px">${icon('target')}<div><b>De bot handelt nu met:</b> ${esc(cur.text)} · <span class="badge ${st?.[0] ?? 'soft'}">${esc(st?.[1] ?? a.stage ?? '')}</span>`
       + `<br>Coins: ${esc((a.coins ?? []).join(', ') || '–')}`
       + `<br>${lv?.n ? `In de praktijk: ${lv.n} trades, gemiddeld ${sign(lv.sum / lv.n)} (bewezen na ${a.provenMin} trades met ≥ ${nl(a.provenAvg, 1)}%)` : 'Nog geen trades in de praktijk'}`
       + `<br><span class="muted">Bot: ${botOn ? (bot ? (bot.allowed ? 'handelt met de AI-trader' : 'AI-trader staat aan, maar handelt nog niet in deze modus (live pas na bewijs)') : 'AI-trader staat aan, nog niet opgehaald') : 'AI-trader staat uit bij Instellingen → Strategie'}</span></div></div>`
       : '<p class="muted" style="margin:0 0 10px">Nog geen recept getraind. Na de eerste leerronde verschijnt hier het resultaat.</p>');
   const rows = a.recipes ?? [];
   $('ag-table').innerHTML = rows.length ? table(rows, [
-    ['Recept', (r) => `${esc(r.text)}${pub?.key === r.key ? ' <span class="badge ok">in gebruik</span>' : ''}`],
+    ['Recept', (r) => `${esc(r.text)}${pub?.key === r.key ? ' <span class="badge ok">bot handelt hiermee</span>' : ''}`],
     ['Rondes', (r) => `<span class="num">${r.score.tested}</span>`, 'r'],
     ['Gemiddeld (eindtests)', (r) => r.score.avg != null ? `<span class="${r.score.avg > 0 ? 'up' : 'down'}">${sign(r.score.avg)}</span> per trade <span class="muted">· ${r.score.trades} trades</span>` : `<span class="muted">${esc(r.last?.reason ?? '–')}</span>`],
     ['Grootste terugval', (r) => r.score.drawdown != null ? `<span class="num">${sign(-r.score.drawdown)}</span>` : '–', 'r'],
