@@ -125,6 +125,8 @@ export class Settings {
         model: saved.ai?.model ?? defaults.ai.model,
         baseUrl: saved.ai?.baseUrl ?? defaults.ai.baseUrl,
         failMode: saved.ai?.failMode ?? defaults.ai.failMode ?? 'reject',
+        // Eén model of het team van drie; moet bij een herstart behouden blijven.
+        mode: saved.ai?.mode === 'team' ? 'team' : 'single',
         fallbacks: Array.isArray(saved.ai?.fallbacks) ? saved.ai.fallbacks : [],
       },
       strategy: Object.fromEntries(Object.keys(STRATEGY_LIMITS).map((k) => [k, saved.strategy?.[k] ?? defaults.strategy?.[k] ?? 0])),
