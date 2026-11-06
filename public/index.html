@@ -711,6 +711,8 @@
             <div><label for="r-fee">Fee per order (%)</label><input id="r-fee" type="number" min="0" max="5" step="any" required></div>
             <div><label for="r-cool">Afkoelperiode na verkoop (min, 0 = uit)</label><input id="r-cool" type="number" min="0" max="10080" step="1" required></div>
             <div><label for="r-slip">Slippage in paper (%)</label><input id="r-slip" type="number" min="0" max="5" step="any" required></div>
+            <div><label for="r-spread">Max verschil bied/laat (%, 0 = uit)</label><input id="r-spread" type="number" min="0" max="10" step="any" required></div>
+            <div><label for="r-bookcost">Max kosten in het orderboek (%, 0 = uit)</label><input id="r-bookcost" type="number" min="0" max="10" step="any" required></div>
             <div><label for="r-budget">Live budgetplafond (€, 0 = uit)</label><input id="r-budget" type="number" min="0" step="any" required></div>
             <div><label for="r-trail">Trailing stop (% vanaf top, 0 = uit)</label><input id="r-trail" type="number" min="0" max="100" step="any" required></div>
             <div><label for="r-atr">ATR-stop (× ATR, 0 = uit)</label><input id="r-atr" type="number" min="0" max="20" step="any" required></div>
@@ -1549,6 +1551,8 @@ function renderSettings() {
     $('r-fee').value = s.risk.feePct;
     $('r-cool').value = s.risk.cooldownMinutes ?? 0;
     $('r-slip').value = s.risk.slippagePct ?? 0;
+    $('r-spread').value = s.risk.maxSpreadPct ?? 0;
+    $('r-bookcost').value = s.risk.maxBookCostPct ?? 0;
     $('r-budget').value = s.risk.liveBudgetEur ?? 0;
     $('r-trail').value = s.risk.trailingStopPct ?? 0;
     $('r-atr').value = s.risk.atrStopMult ?? 0;
@@ -2385,7 +2389,7 @@ $('risk-form').onsubmit = async (e) => {
     watchSeconds: $('r-watch').value, aiExitMinPct: $('r-aiexit').value, aiExitEveryMin: $('r-aievery').value,
     reinvestPct: $('r-reinvest').value, maxStakeEur: $('r-maxstake').value,
     limitOrders: $('r-limit').value, limitWaitSec: $('r-limitwait').value, makerFeePct: $('r-maker').value,
-    maxHoldMinutes: $('r-maxhold').value };
+    maxHoldMinutes: $('r-maxhold').value, maxSpreadPct: $('r-spread').value, maxBookCostPct: $('r-bookcost').value };
   if (state.mode === 'live' && !$('r-pass').value) { $('risk-msg').className = 'msg err'; $('risk-msg').textContent = 'Vul je wachtwoord in'; return; }
   try {
     await api('api/settings/risk', { risk, password: $('r-pass').value });
@@ -2480,7 +2484,9 @@ const HELP = {
   'r-fee': 'De fee die Bitvavo per order rekent, voor paper trading en de P/L-berekening. Bij Bitvavo ligt dit rond 0,15 tot 0,25%, afhankelijk van je handelsvolume. Een volledige ronde (kopen en verkopen) kost dus twee keer de fee.',
   'r-cool': 'Na een verkoop koopt de bot dezelfde coin zoveel minuten niet opnieuw. Voorkomt dat hij bij schommelingen steeds in en uit stapt en dubbel fee betaalt. 0 = uit. <b>Vuistregel:</b> een paar candles lang, bijv. 30 min bij 5m-candles.',
   'r-budget': 'Alleen voor live. De bot zet nooit meer dan dit bedrag tegelijk in open posities, ook als er meer geld op je Bitvavo-account staat of als je later per ongeluk de inzet verhoogt. Gerealiseerde winst of verlies telt niet mee; het gaat om wat er op dat moment in de markt zit. 0 = uit. <b>Voorbeeld:</b> € 25 met € 5 per trade = maximaal 5 trades tegelijk.',
-  'r-slip': 'Alleen voor paper. Live koop je iets duurder en verkoop je iets goedkoper dan de laatste koers (de spread). Met slippage doet paper dat ook na, zodat je resultaten eerlijker zijn. Grote coins: 0,05 tot 0,1%. Kleine coins: soms 0,3% of meer.',
+  'r-spread': 'Orderboek-check bij het kopen. Het verschil tussen de hoogste bieding (kopers) en de laagste laat (verkopers). Is dat groter dan dit, dan koopt de bot niet: je zou meteen dit percentage achterstaan. Grote coins: meestal onder 0,1%. Dunne coins soms 0,5% of meer. Werkt ook in paper, want het orderboek is openbaar. 0 = uit.',
+  'r-bookcost': 'Orderboek-check bij het kopen. De bot rekent uit tegen welke prijs je inzet écht gevuld wordt als hij door het orderboek loopt, en hoeveel dat boven de middenprijs ligt (halve spread plus wat je "opeet" van het boek). Is dat meer dan dit, dan koopt hij niet. Ook paper-trades worden nu tegen deze echte vulprijs gedaan, zodat paper eerlijker is. 0 = uit.',
+  'r-slip': 'Alleen voor paper, als het orderboek niet bereikbaar is (anders vult paper tegen de echte prijzen in het boek). Live koop je iets duurder en verkoop je iets goedkoper dan de laatste koers (de spread). Met slippage doet paper dat ook na, zodat je resultaten eerlijker zijn. Grote coins: 0,05 tot 0,1%. Kleine coins: soms 0,3% of meer.',
   'st-fast': 'Aantal candles voor de snelle gemiddelde lijn. <b>Lager</b> = reageert sneller op koersbewegingen, maar geeft meer valse signalen. Gebruikelijk: 5 tot 12.',
   'st-slow': 'Aantal candles voor de trage gemiddelde lijn, die de grote trend laat zien. Moet groter zijn dan de EMA fast. Gebruikelijk: 2 tot 3× de EMA fast, bijv. 21 of 26.',
   'st-rsi': 'Over hoeveel candles de RSI wordt berekend. 14 is de standaard. Lager = gevoeliger, hoger = rustiger.',

@@ -902,3 +902,32 @@ test('zelflerend kiezen: strategieën op elke candle-tijd bepalen zelf de aankoo
   assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
   assert.equal(bot.bandit.stats('15m|2|1|240').trades, 1, 'handmatig sluiten telt niet als beloning');
 });
+
+test('orderboek-check: te groot verschil bied/laat → niet kopen; info gaat naar de AI', async () => {
+  const fixture = JSON.parse(fs.readFileSync(new URL('./fixtures/ml-parity.json', import.meta.url), 'utf8'));
+  const run = async (spread) => {
+    const { bot, ex } = setup({});
+    await bot.setRisk({ cooldownMinutes: 0, maxSpreadPct: 0.5, maxBookCostPct: 0.3 });
+    await bot.setStrategy({ mlMinProb: 0, maxChasePct: 0, mlBandit: 1 });
+    bot.getArms = () => [{ key: '15m|2|1|240', timeframe: '15m', targetPct: 2, stopPct: 1, holdMinutes: 240, minProb: 0.5,
+      model: { ...fixture.model, init: fixture.model.init + 10, meta: { timeframe: '15m' } } }];
+    ex.fetchOrderBook = async () => {
+      const p = ex.prices.at(-1);
+      return { bids: [[p * (1 - spread / 200), 1000], [p * 0.98, 1000]], asks: [[p * (1 + spread / 200), 1000], [p * 1.02, 1000]] };
+    };
+    withAi(bot);
+    aiAnswer = 'approve';
+    lastAiPrompt = '';
+    ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+    await bot.tick();
+    return bot;
+  };
+  const wide = await run(2);
+  assert.equal(wide.store.state.positions['BTC/EUR'], undefined);
+  assert.match(wide.store.state.decisions[0].reason, /verschil tussen bied en laat is 2.00% \(max 0.5%\)/);
+  assert.equal(lastAiPrompt, '', 'geen AI-vraag nodig');
+  const ok = await run(0.1);
+  assert.ok(ok.store.state.positions['BTC/EUR']);
+  assert.match(lastAiPrompt, /Orderboek nu: verschil bied\/laat 0.10%, deze aankoop wordt ~0.05% boven de middenprijs gevuld, binnen 1% van de prijs 50% kopers/);
+  assert.equal(ok.store.state.decisions[0].indicators.book.spreadPct, 0.1);
+});

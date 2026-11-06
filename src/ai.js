@@ -181,6 +181,11 @@ export function buildPrompt({ pair, timeframe, indicators, recentCandles, extra 
     ].filter(Boolean).join('\n')
     : extra.plan ? `Plan: ${extra.plan}` : 'Stop en kosten onbekend: wees voorzichtig met de risk/reward.';
 
+  const bk = extra.book;
+  const bookTxt = bk ? `Orderboek nu: verschil bied/laat ${fx(bk.spreadPct)}%` +
+    (bk.buyCostPct != null ? `, deze aankoop wordt ~${fx(bk.buyCostPct)}% boven de middenprijs gevuld` : '') +
+    (bk.buyersShare != null ? `, binnen 1% van de prijs ${fx(bk.buyersShare * 100, 0)}% kopers en ${fx(100 - bk.buyersShare * 100, 0)}% verkopers` +
+      (bk.buyersShare > 0.6 ? ' (meer koopinteresse)' : bk.buyersShare < 0.4 ? ' (meer verkoopdruk)' : '') : '') + '.' : '';
   const perf = perfOf(extra.recentTrades, rk?.stopPct);
   const perfTxt = perf
     ? `${perf.n} trades: winrate ${fx(perf.winRate, 0)}%, gemiddeld ${sgn(perf.avgPct)}%${perf.avgR != null ? ` = ${sgn(perf.avgR)}R` : ''}. Laatste: ${extra.recentTrades.slice(0, 5).map((t) => `${sgn(t.pnlPct, 1)}% (${String(t.exit ?? '').split(/[:(]/)[0].trim()})`).join(', ')}`
@@ -221,7 +226,7 @@ Volume signaalcandle: ${volumeText(ind.volumeRatio)}
 Volume laatste 3 candles vs. ervoor: ${st?.volTrend == null ? 'onbekend' : `${fx(st.volTrend, 2)}×`} · volume op stijgende vs. dalende candles: ${st?.upDownVol == null ? 'alleen stijgende candles' : `${fx(st.upDownVol, 2)}×`}
 
 == Risk/reward (vast, bepaald door de gebruiker) ==
-${rr}
+${rr}${bookTxt ? `\n${bookTxt}` : ''}
 
 ${extra.ml ? `== Eigen voorspelmodel (getraind op ${extra.ml.meta?.days ?? '?'} dagen koersgeschiedenis) ==
 Winstkans volgens het model: ${fx(extra.ml.prob, 0)}% (kans dat de koers eerst +${extra.ml.meta?.targetPct ?? '?'}% stijgt voordat hij −${extra.ml.meta?.stopPct ?? '?'}% daalt)

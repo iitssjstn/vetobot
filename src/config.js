@@ -60,6 +60,9 @@ export const config = {
     cooldownMinutes: num('COOLDOWN_MINUTES', 30),
     // Paper: koop iets duurder en verkoop iets goedkoper dan de laatste koers, zoals live met spread.
     slippagePct: num('PAPER_SLIPPAGE_PCT', 0.1),
+    // Orderboek-check bij het kopen: max verschil bied/laat en max kosten van je aankoop in het boek (0 = uit).
+    maxSpreadPct: num('MAX_SPREAD_PCT', 0.5),
+    maxBookCostPct: num('MAX_BOOK_COST_PCT', 0.3),
     // Live: nooit meer dan dit bedrag tegelijk in posities, ongeacht je saldo (0 = uit).
     liveBudgetEur: num('LIVE_BUDGET_EUR', 0),
     // Trailing stop: verkoop als de koers zoveel % onder het hoogste punt sinds aankoop zakt (0 = uit).

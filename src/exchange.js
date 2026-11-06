@@ -1,3 +1,4 @@
+import { fillBuy, fillSell } from './orderbook.js';
 import ccxt from 'ccxt';
 
 // Wrapper rond ccxt voor Bitvavo. Marktdata is publiek en werkt zonder keys.
@@ -75,6 +76,10 @@ export class SharedMarket {
     return this.#cached(`ticker:${pair}`, 3000, () => this.ex.fetchTicker(pair));
   }
 
+  fetchOrderBook(pair, limit = 50) {
+    return this.#cached(`book:${pair}:${limit}`, 3000, () => this.ex.fetchOrderBook(pair, limit));
+  }
+
   async fetchTickers(pairs) {
     const out = {};
     const missing = [];
@@ -97,7 +102,7 @@ export class SharedMarket {
 // Verbinding voor één gebruiker: marktdata uit de gedeelde cache, al het andere (orders,
 // saldo, keys) via de eigen ccxt-instantie van de gebruiker.
 export function userExchange(shared, privateEx) {
-  const viaShared = new Set(['fetchOHLCV', 'fetchTicker', 'fetchTickers', 'parseTimeframe']);
+  const viaShared = new Set(['fetchOHLCV', 'fetchTicker', 'fetchTickers', 'fetchOrderBook', 'parseTimeframe']);
   return new Proxy(privateEx, {
     get(target, prop) {
       if (viaShared.has(prop)) return shared[prop].bind(shared);
@@ -147,6 +152,16 @@ export async function fetchPrice(ex, pair) {
 // Wachten en pollen, instelbaar voor tests.
 export const orderTiming = { sleep: (ms) => new Promise((r) => setTimeout(r, ms)), pollMs: 2000 };
 
+// Echte vulprijs uit het orderboek (paper), of null als dat niet lukt.
+async function bookPrice(ex, pair, side, size) {
+  try {
+    const book = await ex.fetchOrderBook?.(pair, 50);
+    return side === 'buy' ? fillBuy(book, size) : fillSell(book, size);
+  } catch {
+    return null;
+  }
+}
+
 export class PaperBroker {
   // feePct mag een getal of een functie zijn, zodat de fee uit het dashboard direct geldt.
   // slippagePct (getal of functie): koop zoveel procent duurder en verkoop zoveel goedkoper
@@ -183,10 +198,13 @@ export class PaperBroker {
       const feeEur = (stakeEur * this.makerFeePct) / 100;
       return { amount: (stakeEur - feeEur) / limit, price: limit, costEur: stakeEur, feeEur, limit: true };
     }
-    const price = (await fetchPrice(this.ex, pair)) * (1 + this.slippagePct / 100);
     const feeEur = (stakeEur * this.feePct) / 100;
+    // Vullen tegen de echte prijzen in het orderboek (zoals live); lukt dat niet, dan de
+    // laatste koers plus de ingestelde slippage.
+    const fromBook = await bookPrice(this.ex, pair, 'buy', stakeEur - feeEur);
+    const price = fromBook ?? (await fetchPrice(this.ex, pair)) * (1 + this.slippagePct / 100);
     const amount = (stakeEur - feeEur) / price;
-    return { amount, price, costEur: stakeEur, feeEur };
+    return { amount, price, costEur: stakeEur, feeEur, ...(fromBook ? { book: true } : {}) };
   }
 
   async sell(pair, amount, opts = {}) {
@@ -201,7 +219,8 @@ export class PaperBroker {
       }
       // Niet gevuld: alsnog market.
     }
-    const price = (await fetchPrice(this.ex, pair)) * (1 - this.slippagePct / 100);
+    const fromBook = await bookPrice(this.ex, pair, 'sell', amount);
+    const price = fromBook ?? (await fetchPrice(this.ex, pair)) * (1 - this.slippagePct / 100);
     const gross = amount * price;
     const feeEur = (gross * this.feePct) / 100;
     return { amount, price, costEur: gross - feeEur, feeEur, ...(opts.limit ? { limitFallback: true } : {}) };

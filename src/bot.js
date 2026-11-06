@@ -7,6 +7,7 @@ import { cleanSuggestions, currentValues, applySuggestions } from './suggest.js'
 import { fetchClosedCandles, fetchPrice, hasTradingKeys } from './exchange.js';
 import { checkEntry } from './risk.js';
 import { Bandit } from './bandit.js';
+import { analyzeBook, bookProblem } from './orderbook.js';
 import path from 'node:path';
 
 // Bedragen en koersen in Nederlandse notatie voor meldingen (€ 81,31 / € 0,3455 / −€ 0,36).
@@ -822,6 +823,28 @@ export class Bot {
       return;
     }
 
+    // Orderboek-check: niet instappen als het verschil bied/laat of de kosten van je aankoop in
+    // het boek te groot zijn. Werkt ook in paper (het orderboek is openbaar).
+    let book = null;
+    try {
+      this.#step(`${pair}: orderboek bekijken`);
+      book = analyzeBook(await this.ex.fetchOrderBook?.(pair, 50), this.entryRisk().stakeEur);
+    } catch {
+      book = null; // geen boek: niet blokkeren
+    }
+    if (book && result.indicators) {
+      result.indicators.book = { spreadPct: +book.spreadPct.toFixed(3), buyCostPct: book.buyCostPct != null ? +book.buyCostPct.toFixed(3) : null,
+        buyersShare: book.buyersShare != null ? +book.buyersShare.toFixed(3) : null, depthBidEur: Math.round(book.depthBidEur), depthAskEur: Math.round(book.depthAskEur) };
+    }
+    const thin = bookProblem(book, { maxSpreadPct: risk.maxSpreadPct ?? 0, maxBookCostPct: risk.maxBookCostPct ?? 0 });
+    if (thin) {
+      if (this.tickStats) this.tickStats.blocked++;
+      this.store.addDecision({ pair, signal: 'buy', outcome: 'blocked', reason: thin, indicators: result.indicators });
+      this.#event('warn', pair, thin);
+      if (result.indicators?.mlProb != null) this.think(`Ik wilde kopen, maar ${thin.charAt(0).toLowerCase()}${thin.slice(1)}.`, pair, 'warn');
+      return;
+    }
+
     const team = this.settings.ai.mode === 'team' && this.settings.ai.provider !== 'none';
     this.#step(team ? `${pair}: AI-team overlegt (analist, criticus, beslisser)` : `${pair}: AI om oordeel vragen`);
     if (this.tickStats && this.settings.ai.provider !== 'none') this.tickStats.aiCalls++;
@@ -848,6 +871,7 @@ export class Bot {
             : this.getModel?.()?.meta,
           arm: result.indicators.mlArm ?? null } : null,
         signalReason: result.armSignal ? result.reason : null,
+        book: result.indicators?.book ?? null,
         // Hoe de AI en het model het samen deden (van de trainer): wie had gelijk?
         teamwork: result.indicators?.mlProb != null ? this.getTeamwork?.() ?? null : null,
       },

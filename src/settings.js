@@ -32,6 +32,8 @@ export const RISK_LIMITS = {
   limitWaitSec: [0, 300],
   makerFeePct: [0, 5],
   maxHoldMinutes: [0, 43200],
+  maxSpreadPct: [0, 10],
+  maxBookCostPct: [0, 10],
 };
 export const LIVE_MIN_STAKE_EUR = 5;
 export const STRATEGY_LIMITS = {
@@ -67,6 +69,8 @@ const RISK_LABELS = {
   maxDailyLossEur: 'Dagelijkse verlieslimiet',
   cooldownMinutes: 'Afkoelperiode',
   slippagePct: 'Slippage (paper)',
+  maxSpreadPct: 'Max verschil bied/laat',
+  maxBookCostPct: 'Max kosten in het orderboek',
   liveBudgetEur: 'Live budgetplafond',
   trailingStopPct: 'Trailing stop',
   atrStopMult: 'ATR-stop',
