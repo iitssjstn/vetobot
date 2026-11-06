@@ -62,3 +62,18 @@ test('uitleg: bijdragen per kenmerk gelijk aan Python en tellen op tot de voorsp
   assert.equal(formatFeature('dowUtc', 0), 'maandag');
   assert.equal(formatFeature('rsi14', null), 'onbekend');
 });
+
+test('orderboek-kenmerken: via ctx.micro, anders leeg (model vult aan met de mediaan)', () => {
+  const micro = { microBookImb: 0.7, microSpread: 0.05, microBuyRatio60: 0.62, microFlow60: 0.3, microIntensity: 1.8 };
+  const f = computeFeatures(fx.candles, { btc: fx.btc, micro });
+  assert.equal(f.microBookImb, 0.7);
+  assert.equal(f.microIntensity, 1.8);
+  assert.equal(computeFeatures(fx.candles).microBookImb, null);
+  // Model dat op microBookImb splitst
+  const m = { version: 1, kind: 'gbdt', features: ['rsi14', 'microBookImb'], init: 0, learningRate: 1, medians: [50, 0.5],
+    trees: [{ f: [1, -2, -2], t: [0.6, -2, -2], l: [1, -1, -1], r: [2, -1, -1], v: [0, -1, 1], n: [10, 5, 5] }] };
+  assert.equal(validateModel(m), null);
+  assert.ok(predict(m, { microBookImb: 0.7 }) > 0.7);
+  assert.ok(predict(m, {}) < 0.3, 'ontbreekt: mediaan 0,5');
+  assert.match(explain(m, { microBookImb: 0.7 })[0].label, /kopers in het orderboek/);
+});

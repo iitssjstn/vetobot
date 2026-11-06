@@ -473,6 +473,12 @@ export function createApp({ users, manager, log = console }) {
     return { ok: true, started, config: cfg };
   }));
 
+  // Orderboek en transacties opnemen aan/uit.
+  app.post('/api/admin/trainer/micro', adminOnly, wrap(async (req) => {
+    const r = await manager.trainerRequest('/config', { method: 'POST', body: { micro: { enabled: Boolean(req.body?.enabled) } } });
+    return { ok: true, config: r.data.config };
+  }));
+
   // Strategie-zoeker aan/uit en instellingen.
   app.post('/api/admin/trainer/search', adminOnly, wrap(async (req) => {
     const b = req.body ?? {};

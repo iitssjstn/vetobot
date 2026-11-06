@@ -346,6 +346,98 @@ class Thoughts(unittest.TestCase):
         self.assertIsNone(re.search(r'\d\.\d+%', ' '.join(t for _, t in said)), 'Nederlandse komma, geen punt')
 
 
+class Micro(unittest.TestCase):
+    def test_collect_and_features(self):
+        import micro
+        root = tempfile.mkdtemp()
+        t1 = 1_000_000 * 60_000
+        calls = []
+
+        def fake_get(url):
+            calls.append(url)
+            if '/book' in url:
+                return {'bids': [['99.9', '10'], ['99.5', '10'], ['90', '100']], 'asks': [['100.1', '5'], ['100.6', '5'], ['110', '100']]}
+            return [{'timestamp': t1 - 30_000, 'amount': '2', 'price': '100', 'side': 'buy'},
+                    {'timestamp': t1 - 10_000, 'amount': '1', 'price': '100', 'side': 'sell'},
+                    {'timestamp': t1 + 5_000, 'amount': '9', 'price': '100', 'side': 'buy'}]  # volgende minuut: niet meetellen
+        col = micro.Collector(root, get=fake_get, log=lambda *_: None)
+        self.assertEqual(col.collect(['X/EUR'], now_ms=t1 + 1000), 1)
+        rows = micro.load(root, 'X/EUR')
+        r = rows[t1 - 60_000]
+        self.assertAlmostEqual(r['spread'], 0.2, places=6)
+        self.assertEqual((r['buy'], r['sell'], r['n'], r['big']), (200.0, 100.0, 2, 200.0))
+        self.assertAlmostEqual(r['bid1'], 999 + 995)
+        self.assertEqual(micro.coverage(root)[0]['pair'], 'X/EUR')
+
+    def test_series_matches_naive_and_needs_enough_data(self):
+        import micro
+        rnd = random.Random(1)
+        t0 = 500_000 * 60_000
+        rows = {}
+        for k in range(3000):
+            if rnd.random() < 0.05:
+                continue  # af en toe een gemiste minuut
+            rows[t0 + k * 60_000] = {'t': t0 + k * 60_000, 'spread': 0.1, 'bid1': rnd.random() * 100, 'ask1': rnd.random() * 100,
+                                     'buy': rnd.random() * 50, 'sell': rnd.random() * 50, 'n': rnd.randint(0, 20), 'big': 1}
+        ser = micro.Series(rows)
+        close = t0 + 2900 * 60_000
+        f = ser.at(close)
+        last = close - 60_000
+        hour = [rows[last - k * 60_000] for k in range(60) if last - k * 60_000 in rows]
+        day = [rows[last - k * 60_000] for k in range(1440) if last - k * 60_000 in rows]
+        b, sl = sum(r['buy'] for r in hour), sum(r['sell'] for r in hour)
+        self.assertAlmostEqual(f['microBuyRatio60'], b / (b + sl))
+        vol_day = sum(r['buy'] + r['sell'] for r in day) / len(day) * 60
+        self.assertAlmostEqual(f['microFlow60'], (b - sl) / vol_day)
+        n_day = sum(r['n'] for r in day) / len(day) * 60
+        self.assertAlmostEqual(f['microIntensity'], sum(r['n'] for r in hour) / len(hour) * 60 / n_day)
+        snap = rows.get(last) or rows.get(last - 60_000)
+        self.assertAlmostEqual(f['microBookImb'], snap['bid1'] / (snap['bid1'] + snap['ask1']))
+        # Begin van de opname: nog geen 24 uur -> die kenmerken leeg
+        early = ser.at(t0 + 100 * 60_000)
+        self.assertIsNotNone(early['microBuyRatio60'])
+        self.assertIsNone(early['microFlow60'])
+        self.assertTrue(all(v is None for v in ser.at(t0 - 86_400_000).values()))
+
+    def test_experiment_detects_useful_orderbook_data(self):
+        import micro
+        root = tempfile.mkdtemp()
+        # Koers waarbij de koopdruk van het afgelopen uur voorspelt of het de komende candles stijgt.
+        rnd = random.Random(5)
+        days = 20
+        n = days * 288
+        c, price = [], 100.0
+        buyers = []
+        for i in range(n):
+            pressure = rnd.random()
+            buyers.append(pressure)
+            o = price
+            price = price * (1 + rnd.gauss(0, 0.002) + (0.003 if pressure > 0.6 else -0.003 if pressure < 0.4 else 0))
+            c.append([i * M5, o, max(o, price) * 1.0005, min(o, price) * 0.9995, price, 1000])
+        # Opname: per minuut, koopdruk zoals hierboven, vooruitlopend op de candle die erna komt
+        for pair in ('A/EUR', 'B/EUR'):
+            os.makedirs(os.path.join(root, pair.replace('/', '-')), exist_ok=True)
+            with open(os.path.join(root, pair.replace('/', '-'), '1970-01-01.jsonl'), 'w') as f:
+                for i in range(n - 1):
+                    p = buyers[i + 1]  # druk die in de minuten vóór het sluiten van candle i zichtbaar is
+                    for m in range(5):
+                        t = i * M5 + m * 60_000
+                        f.write(json.dumps({'t': t, 'spread': 0.1, 'bid1': 100 * p, 'ask1': 100 * (1 - p), 'buy': 100 * p, 'sell': 100 * (1 - p), 'n': 10, 'big': 5}) + '\n')
+        cfg = {**CFG, 'pairs': ['A/EUR', 'B/EUR'], 'horizon': 3, 'targetPct': 0.3, 'stopPct': 0.3, 'costPct': 0.05}
+        said = []
+        r = micro.experiment(cfg, root, lambda p, tf, d: c, log=lambda *_: None, think=lambda t, kind='info': said.append(t))
+        self.assertTrue(r['ran'], r)
+        self.assertTrue(r['better'], r)
+        self.assertGreater(r['with']['auc'], r['without']['auc'])
+        self.assertIn('Experiment orderboek-data', said[0])
+        # Met useMicro traint de gewone training ook met deze kenmerken
+        model, report = train.train({**cfg, 'useMicro': True}, log=lambda *_: None, fetch=lambda p, tf, d: c,
+                                    markets=lambda n: cfg['pairs'], micro=micro.rows_fn(root))
+        self.assertTrue(report['published'], report.get('reason'))
+        self.assertEqual(model['features'][-5:], micro.MICRO_FEATURES)
+        self.assertTrue(model['meta']['micro'])
+
+
 class Arms(unittest.TestCase):
     def setUp(self):
         os.environ.setdefault('DATA_DIR', tempfile.mkdtemp())

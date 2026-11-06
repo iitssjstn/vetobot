@@ -161,10 +161,12 @@ def fetch_candles(pair, timeframe, days, cache_dir=None, now_ms=None, fetch=fetc
     return out
 
 
-def build_dataset(candles, cfg, step=2, ctx=None):
+def build_dataset(candles, cfg, step=2, ctx=None, micro_fn=None, micro_keys=None):
     """Kenmerken, labels en rendementen per moment. step=2: elke tweede candle (minder overlap).
     Een grotere step neemt een gespreide selectie, zodat lange periodes niet eindeloos duren.
-    ctx: context(btc_candles) voor de BTC-kenmerken."""
+    ctx: context(btc_candles) voor de BTC-kenmerken.
+    micro_keys/micro_fn: extra orderboek-kenmerken (micro_fn(sluittijd_ms) -> dict), of None."""
+    tf_ms = TF_MS.get(cfg['timeframe'], 60_000)
     s = series(candles)
     X, y, ret, ts = [], [], [], []
     horizon = int(cfg['horizon'])
@@ -173,7 +175,11 @@ def build_dataset(candles, cfg, step=2, ctx=None):
         if f is None:
             continue
         lab, r = label_at(candles, i, cfg['targetPct'], cfg['stopPct'], horizon, cfg['costPct'])
-        X.append([f[k] for k in FEATURES])
+        row = [f[k] for k in FEATURES]
+        if micro_keys:
+            m = micro_fn(candles[i][0] + tf_ms) if micro_fn else {}
+            row += [m.get(k) for k in micro_keys]
+        X.append(row)
         y.append(lab)
         ret.append(r)
         ts.append(candles[i][0])
@@ -325,7 +331,7 @@ def reward_weight(ret_pct, scale_pct, age_days, half_life_days):
     return size
 
 
-def feedback_rows(feedback, timeframe):
+def feedback_rows(feedback, timeframe, feats=None):
     """Echte trades van de bot (met de kenmerken op het moment van kopen) -> (ts, X, y, ret)."""
     rows = []
     for t in feedback or []:
@@ -335,17 +341,19 @@ def feedback_rows(feedback, timeframe):
         if not isinstance(r, (int, float)):
             continue
         f = t['features']
-        rows.append((int(t.get('ts') or 0), [f.get(k) if isinstance(f.get(k), (int, float)) else None for k in FEATURES],
+        rows.append((int(t.get('ts') or 0), [f.get(k) if isinstance(f.get(k), (int, float)) else None for k in (feats or FEATURES)],
                      1 if r > 0 else 0, float(r), t.get('prob')))
     rows.sort(key=lambda x: x[0])
     return rows
 
 
-def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=None, feedback=None, think=None):
+def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=None, feedback=None, think=None, micro=None):
     """Volledige training. Geeft (model_json_of_None, rapport).
 
     feedback: echte trades van de bot (zie feedback_rows). Trades van vóór de testperiode leert
     hij van (zwaarder gewogen); trades in de testperiode gebruikt hij als extra, eerlijke controle.
+    micro: functie pair -> (sluittijd_ms -> orderboek-kenmerken); alleen gebruikt als
+    cfg['useMicro'] aan staat (na een geslaagd experiment, zie server.py).
 
     progress(fase, gedaan, totaal, tekst) wordt aangeroepen zodat de status-pagina kan laten
     zien waar de training is.
@@ -360,6 +368,11 @@ def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=Non
     if not cfg.get('pairs'):
         step('markets', 0, 1, 'Coins met het meeste volume opzoeken')
     pairs = cfg.get('pairs') or markets(int(cfg.get('topN', 15)))
+    from micro import MICRO_FEATURES
+    use_micro = bool(cfg.get('useMicro')) and micro is not None
+    feats = FEATURES + MICRO_FEATURES if use_micro else FEATURES
+    if use_micro:
+        say('Ik neem ook de orderboek- en transactiedata mee; het experiment liet zien dat ik daar beter van word.')
     tr_X, tr_y, te_X, te_y, te_ret = [], [], [], [], []
     tr_w = []
     used = []
@@ -386,7 +399,8 @@ def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=Non
             log(f'{pair}: te weinig candles ({len(candles)}), overgeslagen')
             continue
         sample_step = max(2, math.ceil(len(candles) / per_pair))
-        X, y, ret, ts = build_dataset(candles, cfg, step=sample_step, ctx=ctx)
+        X, y, ret, ts = build_dataset(candles, cfg, step=sample_step, ctx=ctx,
+                                      micro_fn=micro(pair) if use_micro else None, micro_keys=MICRO_FEATURES if use_micro else None)
         # Tijdsplitsing per coin: oudste 80% trainen, nieuwste 20% testen (nooit door elkaar).
         cut = int(len(X) * 0.8)
         gap = int(cfg['horizon'])  # geen overlap tussen de laatste trainings- en eerste testuitkomst
@@ -406,7 +420,7 @@ def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=Non
         log(f'{pair}: {len(candles)} candles, {len(X)} voorbeelden')
 
     # Echte trades van de bot: van vóór de testperiode leren, die erin als eerlijke controle.
-    fb = feedback_rows(feedback, cfg['timeframe'])
+    fb = feedback_rows(feedback, cfg['timeframe'], feats)
     boundary = min(cut_ts) - int(cfg['horizon']) * TF_MS.get(cfg['timeframe'], 60_000) if cut_ts else 0
     fb_train = [r for r in fb if r[0] < boundary]
     fb_test = [r for r in fb if r[0] >= boundary]
@@ -431,7 +445,7 @@ def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=Non
 
     # Ontbrekende waarden vullen met de mediaan uit de trainingsdata (de bot doet hetzelfde).
     medians = []
-    for j in range(len(FEATURES)):
+    for j in range(len(feats)):
         col = sorted(v for v in (row[j] for row in tr_X) if v is not None and not (isinstance(v, float) and math.isnan(v)))
         medians.append(col[len(col) // 2] if col else 0.0)
     tr_X = _impute(tr_X, medians)
@@ -447,7 +461,7 @@ def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=Non
         step('train', k - 10, total_trees, f'Model trainen op {len(tr_X):,} voorbeelden'.replace(',', '.'))
         model.n_estimators = k
         model.fit(tr_X, tr_y, sample_weight=tr_w)
-    imp = T.importance(model, FEATURES)
+    imp = T.importance(model, feats)
     if imp:
         say(imp)
     step('test', 0, 1, f'Testen op {len(te_X):,} voorbeelden uit de laatste periode'.replace(',', '.'))
@@ -486,13 +500,13 @@ def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=Non
     if not good:
         return None, report
     model_json = {
-        'version': 1, 'kind': 'gbdt', 'features': FEATURES, **exported,
+        'version': 1, 'kind': 'gbdt', 'features': feats, **exported,
         'meta': {
             'trainedAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
             'timeframe': cfg['timeframe'], 'days': cfg['days'], 'targetPct': cfg['targetPct'], 'stopPct': cfg['stopPct'],
             'horizon': cfg['horizon'], 'costPct': cfg['costPct'], 'pairs': used,
             'trainSamples': len(tr_X), 'testSamples': len(te_X), 'metrics': metrics,
-            'suggestedMinProb': best['minProb'],
+            'suggestedMinProb': best['minProb'], 'micro': use_micro,
         },
     }
     return model_json, report

@@ -530,6 +530,11 @@
         <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Huidig model</h2></div><div class="panel-b" id="tr-model"></div></div>
         <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-gear"/></svg>Instellingen van de trainer</h2></div><div class="panel-b" id="tr-config"></div></div>
       </div>
+      <div class="panel gap" id="tr-micro-panel" hidden>
+        <div class="panel-h"><h2><svg class="i"><use href="#i-list"/></svg>Orderboek en transacties</h2><span class="hint" id="mc-hint"></span></div>
+        <div class="panel-b" id="mc-body"></div>
+        <div class="scroll" id="mc-table"></div>
+      </div>
       <div class="panel gap" id="tr-think-panel" hidden>
         <div class="panel-h"><h2><svg class="i"><use href="#i-chat"/></svg>Wat denkt het model?</h2><span class="hint">nieuwste onderaan</span></div>
         <div class="think" id="think-list"></div>
@@ -1784,6 +1789,7 @@ function renderTrainer() {
   renderTeamwork(t, nl);
   renderBandit(nl);
   renderThoughts(t);
+  renderMicro(t, nl);
 
   // Instellingen die de trainer gebruikt
   const c = t?.config;
@@ -1824,6 +1830,30 @@ function renderTrainer() {
     ['Resultaat', (h) => h.published ? '<span class="badge ok">gepubliceerd</span>' : `<span class="badge soft">niet gebruikt</span> <span class="muted" style="font-size:12.5px">${esc(h.reason ?? '')}</span>`],
   ], 'Nog geen trainingen.', 'history');
 }
+function renderMicro(t, nl) {
+  const m = t?.micro;
+  $('tr-micro-panel').hidden = !m;
+  if (!m) return;
+  const cov = m.coverage ?? [];
+  const days = Math.max(0, ...cov.map((c) => c.days));
+  const ex = m.experiment ?? {};
+  const sign = (v) => v == null ? '–' : `${v > 0 ? '+' : ''}${nl(v, 2)}%`;
+  $('mc-hint').textContent = !m.enabled ? 'uit' : m.useMicro ? 'in gebruik door het model' : `${nl(days, 1)} van ${m.minDays} dagen`;
+  $('mc-body').innerHTML = `<p class="muted" style="margin:0 0 10px;font-size:13.5px">Bitvavo bewaart geen geschiedenis van het orderboek, dus de trainer neemt het zelf op: elke minuut per coin het orderboek (kopers en verkopers die klaar staan) en alle transacties (wie nam het initiatief: kopers of verkopers). Na ${m.minDays} dagen test hij eerlijk of het model daar betere keuzes door maakt; alleen dan gebruikt hij het.</p>`
+    + (ex.ran ? `<div class="alert ${ex.better ? 'ok' : ''}" style="margin:0 0 10px">${icon('target')}<div><b>Laatste experiment</b> (${time(ex.at)}, ${ex.test} testmomenten): zonder orderboek ${sign(ex.without?.best?.avgReturnPct)} per trade (AUC ${nl(ex.without?.auc, 3)}), mét ${sign(ex.with?.best?.avgReturnPct)} (AUC ${nl(ex.with?.auc, 3)}). ${ex.better ? 'Beter: het model gebruikt het nu.' : 'Nog geen duidelijke verbetering: hij blijft verzamelen en test opnieuw.'}</div></div>`
+      : ex.lastReason ? `<p class="muted" style="margin:0 0 10px;font-size:13px">${esc(ex.lastReason)}</p>` : '')
+    + `<div class="row-actions"><button class="btn sm" type="button" id="mc-toggle">${m.enabled ? 'Opnemen stoppen' : 'Opnemen starten'}</button></div>`;
+  $('mc-toggle').onclick = async () => {
+    try { await api('api/admin/trainer/micro', { enabled: !m.enabled }); loadTrainer(); } catch (err) { toast(esc(err.message), 'err'); }
+  };
+  $('mc-table').innerHTML = cov.length ? table(cov, [
+    ['Coin', (c) => esc(c.pair)],
+    ['Dagen', (c) => `<span class="num">${nl(c.days, 1)}</span>`, 'r'],
+    ['Minuten', (c) => `<span class="num">${Number(c.minutes).toLocaleString('nl-NL')}</span>`, 'r'],
+    ['Laatste', (c) => c.to ? time(new Date(c.to).toISOString()) : '–'],
+  ], '', 'list') : '';
+}
+
 let thinkSig = '';
 function renderThoughts(t) {
   const items = [

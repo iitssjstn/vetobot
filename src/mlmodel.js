@@ -12,6 +12,8 @@ export const FEATURES = [
   'ret48', 'htfTrendPct', 'htfRet96', 'htfPos240',
   'btcRet3', 'btcRet12', 'btcRet48', 'btcTrendPct', 'relRet12', 'relRet48',
   'hourUtc', 'dowUtc',
+  // Orderboek en transacties (opgenomen door de trainer; alleen in het model als dat beter bleek).
+  'microBookImb', 'microSpread', 'microBuyRatio60', 'microFlow60', 'microIntensity',
 ];
 export const WARMUP = 250;
 const HTF = 240;
@@ -39,6 +41,7 @@ function btcAt(btc, ts) {
 
 // Kenmerken op de laatste candle. candles: [ts, open, high, low, close, volume], oud -> nieuw.
 // ctx.btc: candles van BTC/EUR op dezelfde timeframe (mag ontbreken).
+// ctx.micro: orderboek-kenmerken van de trainer voor deze coin (mag ontbreken).
 // Geeft null als er te weinig geschiedenis is.
 export function computeFeatures(candles, ctx = {}) {
   const c = candles;
@@ -80,6 +83,8 @@ export function computeFeatures(candles, ctx = {}) {
     relRet48: btc.btcRet48 != null ? ret48 - btc.btcRet48 : null,
     hourUtc: Math.floor(ts / 3600000) % 24,
     dowUtc: (Math.floor(ts / 86400000) + 3) % 7,
+    microBookImb: ctx.micro?.microBookImb ?? null, microSpread: ctx.micro?.microSpread ?? null, microBuyRatio60: ctx.micro?.microBuyRatio60 ?? null,
+    microFlow60: ctx.micro?.microFlow60 ?? null, microIntensity: ctx.micro?.microIntensity ?? null,
     rsi14: rsi(closes, 14)[i],
     adx14: adx(c, 14)[i],
     atrPct: (a / close) * 100,
@@ -110,6 +115,8 @@ export const FEATURE_INFO = {
   htfRet96: ['beweging laatste 96 candles', 2, '%'], htfPos240: ['positie in de range van 240 candles', 2, ''], btcRet3: ['Bitcoin laatste 3 candles', 2, '%'],
   btcRet12: ['Bitcoin laatste 12 candles', 2, '%'], btcRet48: ['Bitcoin laatste 48 candles', 2, '%'], btcTrendPct: ['trend van Bitcoin', 2, '%'],
   relRet12: ['coin t.o.v. Bitcoin (12 candles)', 2, '%'], relRet48: ['coin t.o.v. Bitcoin (48 candles)', 2, '%'], hourUtc: ['uur (UTC)', 0, ''], dowUtc: ['dag van de week', 0, ''],
+  microBookImb: ['aandeel kopers in het orderboek', 2, ''], microSpread: ['verschil bied/laat', 3, '%'], microBuyRatio60: ['koopdruk afgelopen uur', 2, ''],
+  microFlow60: ['netto geldstroom afgelopen uur', 2, ''], microIntensity: ['handelsdrukte t.o.v. normaal', 1, '×'],
 };
 const DAYS = ['maandag', 'dinsdag', 'woensdag', 'donderdag', 'vrijdag', 'zaterdag', 'zondag'];
 export function formatFeature(key, v) {

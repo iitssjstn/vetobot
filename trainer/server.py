@@ -22,6 +22,7 @@ import traceback
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import micro as micro_mod
 import search as searcher
 import thoughts
 import train as trainer
@@ -39,7 +40,9 @@ DEFAULTS = {'timeframe': '5m', 'days': 60, 'targetPct': 3.0, 'stopPct': 2.0, 'ho
             # Doorlopend zoeken (met pauzeMinuten tussen rondes) en optioneel automatisch overstappen
             # op de beste bevestigde strategie.
             'search': {'enabled': False, 'timeframes': [], 'perRound': 6, 'pauseMinutes': 1, 'autoApply': False},
-            'strategy': None}
+            'strategy': None,
+            # Orderboek en transacties opnemen (elke minuut); useMicro wordt door het experiment gezet.
+            'micro': {'enabled': True}, 'useMicro': False}
 LIMITS = {'days': (7, 365), 'targetPct': (0.2, 50), 'stopPct': (0.2, 50), 'horizon': (3, 2000),
           'costPct': (0, 5), 'topN': (1, 50), 'maxSamples': (20_000, 2_000_000), 'halfLifeDays': (0, 365)}
 
@@ -106,6 +109,7 @@ def config():
     cfg = {**DEFAULTS, **saved}
     cfg['schedule'] = {**DEFAULTS['schedule'], **(saved.get('schedule') or {})}
     cfg['search'] = {**DEFAULTS['search'], **(saved.get('search') or {})}
+    cfg['micro'] = {**DEFAULTS['micro'], **(saved.get('micro') or {})}
     return cfg
 
 
@@ -179,6 +183,8 @@ def validate_config(body):
         cfg['schedule'] = validate_schedule(body['schedule'], cfg['schedule'])
     if 'search' in body:
         cfg['search'] = validate_search(body['search'], cfg['search'])
+    if isinstance(body.get('micro'), dict):
+        cfg['micro'] = {'enabled': bool(body['micro'].get('enabled', cfg['micro']['enabled']))}
     # Zelf andere strategie-instellingen gekozen: dan is het niet meer de strategie van de zoeker.
     if any(k in body for k in ('timeframe', 'targetPct', 'stopPct', 'horizon')) and 'strategy' not in body:
         cfg['strategy'] = None
@@ -354,7 +360,8 @@ def run_training(reason):
             log(f'Training gestart ({reason}): {cfg["timeframe"]}, {cfg["days"]} dagen, doel +{cfg["targetPct"]}% / stop -{cfg["stopPct"]}%')
             cache = os.path.join(DATA, 'candles')
             fetch = lambda pair, tf, days: trainer.fetch_candles(pair, tf, days, cache_dir=cache, log=log)
-            model, report = trainer.train(cfg, log=log, progress=set_progress, fetch=fetch, feedback=load_feedback(), think=think)
+            model, report = trainer.train(cfg, log=log, progress=set_progress, fetch=fetch, feedback=load_feedback(), think=think,
+                                          micro=micro_mod.rows_fn(MICRO_DIR))
             report['startedAt'] = started
             report['finishedAt'] = datetime.now().isoformat(timespec='seconds')
             if model:
@@ -366,6 +373,7 @@ def run_training(reason):
                 log(f'Geen nieuw model: {report.get("reason")}')
             state['history'] = ([report] + state['history'])[:10]
             write_json('history.json', state['history'])
+            run_micro_experiment(cfg, fetch)
         except Exception as e:
             log(f'Training mislukt: {e}')
             traceback.print_exc()
@@ -424,6 +432,84 @@ def scheduler():
 
 work_lock = threading.Lock()
 search_wake = threading.Event()
+MICRO_DIR = os.path.join(DATA, 'micro')
+
+
+def run_micro_experiment(cfg, fetch):
+    """Hooguit één keer per dag: maakt orderboek-data het model beter? Zo ja: voortaan meenemen."""
+    last = read_json('micro_experiment.json', {})
+    if last.get('at') and (time.time() - datetime.fromisoformat(last['at'].replace('Z', '+00:00')).timestamp()) < 20 * 3600:
+        return
+    try:
+        set_progress('test', 0, 1, 'Experiment: maakt orderboek-data het model beter?')
+        r = micro_mod.experiment(cfg, MICRO_DIR, fetch, log=log, think=think)
+    except Exception as e:
+        log(f'Experiment orderboek-data mislukt: {e}')
+        return
+    if not r.get('ran'):
+        r['at'] = last.get('at')  # niet gedraaid: niet als "vandaag gedaan" tellen
+        write_json('micro_experiment.json', {**last, 'lastReason': r['reason']})
+        return
+    write_json('micro_experiment.json', r)
+    saved = read_json('config.json', {})
+    if bool(saved.get('useMicro')) != r['better']:
+        saved['useMicro'] = r['better']
+        write_json('config.json', saved)
+        log('Orderboek-data wordt voortaan meegenomen in het model' if r['better'] else 'Orderboek-data wordt niet (meer) meegenomen')
+
+
+micro_state = {'lastDayNote': None, 'errors': 0}
+
+
+def micro_worker():
+    """Neemt elke minuut het orderboek en de transacties op van de coins."""
+    col = micro_mod.Collector(MICRO_DIR, log=lambda m: None)
+    started_note = False
+    while True:
+        cfg = config()
+        if not cfg['micro']['enabled']:
+            time.sleep(30)
+            continue
+        try:
+            pairs = list(dict.fromkeys((cfg.get('pairs') or trainer.top_markets(int(cfg.get('topN', 15)))) + ['BTC/EUR']))
+        except Exception:
+            time.sleep(60)
+            continue
+        if not started_note:
+            think(f"Ik ben begonnen met het opnemen van het orderboek en alle transacties van {len(pairs)} coins, elke minuut. "
+                  f"Bitvavo bewaart dat zelf niet, dus ik bouw mijn eigen geschiedenis op. Na {micro_mod.MIN_DAYS} dagen test ik of "
+                  "ik daar betere voorspellingen door doe.", kind='doing')
+            started_note = True
+        try:
+            done = col.collect(pairs)
+            micro_state['errors'] = 0 if done else micro_state['errors'] + 1
+        except Exception as e:
+            micro_state['errors'] += 1
+            if micro_state['errors'] in (3, 60):
+                log(f'Orderboek opnemen mislukt: {e}')
+        today = datetime.now().strftime('%Y-%m-%d')
+        if micro_state['lastDayNote'] != today and datetime.now().hour == 12:
+            micro_state['lastDayNote'] = today
+            col.cleanup()
+            cov = micro_mod.coverage(MICRO_DIR)
+            days = max((c['days'] for c in cov), default=0)
+            exp = read_json('micro_experiment.json', {})
+            think(f"Orderboek-data: ik heb nu {days:g} dagen van {len(cov)} coins. ".replace('.', ',', 1) +
+                  (f"Nog {max(0, micro_mod.MIN_DAYS - days):.0f} dagen tot het eerste experiment." if days < micro_mod.MIN_DAYS else
+                   ('Ik gebruik het in mijn voorspellingen.' if config().get('useMicro') else
+                    'Het experiment liet nog geen verbetering zien; ik blijf verzamelen en test opnieuw.' if exp.get('ran') else 'Het experiment draait na de volgende training.')),
+                  kind='insight')
+        time.sleep(max(5, 60 - datetime.now().second))
+
+
+def micro_info():
+    cfg = config()
+    # Dekking hooguit elke 5 minuten opnieuw tellen (bestanden lezen kost tijd).
+    if not micro_state.get('cov') or time.time() - micro_state.get('covAt', 0) > 300:
+        micro_state['cov'] = micro_mod.coverage(MICRO_DIR)
+        micro_state['covAt'] = time.time()
+    return {'enabled': cfg['micro']['enabled'], 'useMicro': bool(cfg.get('useMicro')), 'minDays': micro_mod.MIN_DAYS,
+            'coverage': micro_state['cov'], 'experiment': read_json('micro_experiment.json', {})}
 
 
 def set_search_progress(phase, done, total, text):
@@ -603,6 +689,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             return self.send(200, data, extra={'ETag': etag})
+        if self.path == '/micro/latest':
+            cfg = config()
+            return self.send(200, {'useMicro': bool(cfg.get('useMicro')), 'features': micro_mod.latest(MICRO_DIR, cfg.get('pairs') or None)})
         if self.path == '/teamwork':
             return self.send(200, read_json('teamwork.json', {'total': 0}))
         if self.path == '/model.json':
@@ -625,6 +714,7 @@ class Handler(BaseHTTPRequestHandler):
                 'config': config(), 'nextRunAt': None if state['running'] else next_run().isoformat(timespec='minutes'), 'trainHour': TRAIN_HOUR,
                 'cache': state.get('cache', []), 'feedback': feedback_info(), 'search': search_info(),
                 'teamwork': read_json('teamwork.json', {'total': 0}), 'thoughts': state.get('thoughts', [])[-120:],
+                'micro': micro_info(),
                 'model': model and model.get('meta'), 'history': state['history'], 'log': state['log'][-150:],
             })
         self.send(404, {'error': 'Niet gevonden'})
@@ -668,6 +758,7 @@ def main():
     print('=' * 70, flush=True)
     threading.Thread(target=scheduler, daemon=True).start()
     threading.Thread(target=search_worker, daemon=True).start()
+    threading.Thread(target=micro_worker, daemon=True).start()
     ThreadingHTTPServer(('0.0.0.0', PORT), Handler).serve_forever()
 
 

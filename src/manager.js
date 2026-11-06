@@ -137,6 +137,12 @@ export class BotManager {
 
   // Haalt het nieuwste model op (alleen als het veranderd is). Fouten zijn niet erg: het vorige
   // model blijft gewoon in gebruik.
+  async refreshMicro() {
+    if (!this.ml.model?.meta?.micro || !this.trainerAccess()) return;
+    const r = await this.trainerRequest('/micro/latest').catch(() => null);
+    if (r?.data?.features) this.ml.micro = { features: r.data.features, at: Date.now() };
+  }
+
   async refreshModel() {
     if (!this.trainerAccess()) return this.ml;
     try {
@@ -257,6 +263,7 @@ export class BotManager {
     bot.getModel = () => this.ml.model;
     bot.getTeamwork = () => this.ml.teamwork ?? null;
     bot.getArms = () => this.ml.arms ?? [];
+    bot.getMicro = (pair) => this.ml.micro?.features?.[pair] ?? null;
     bot.onFeedback = (trade) => { this.queueFeedback(trade).catch(() => {}); };
     const ctx = { user, dir, settings, secrets, exchange, brokers, stores, notifier, bot, timer: null, watchTimer: null };
     this.contexts.set(user.id, ctx);
@@ -328,8 +335,11 @@ export class BotManager {
     this.summaryTimer = setInterval(() => this.checkSummaries(), 60 * 1000);
     // Eigen model: bij de start en daarna elk half uur kijken of er een nieuwe is.
     clearInterval(this.modelTimer);
+    clearInterval(this.microTimer);
     this.refreshModel();
     this.modelTimer = setInterval(() => { this.refreshModel(); this.flushFeedback(); }, 30 * 60 * 1000);
+    // Orderboek-kenmerken van de trainer, elke minuut, maar alleen als het model ze gebruikt.
+    this.microTimer = setInterval(() => this.refreshMicro(), 60 * 1000);
     this.flushFeedback();
   }
 
@@ -373,6 +383,7 @@ export class BotManager {
   stopAll() {
     clearInterval(this.summaryTimer);
     clearInterval(this.modelTimer);
+    clearInterval(this.microTimer);
     for (const id of [...this.contexts.keys()]) this.stop(id);
   }
 

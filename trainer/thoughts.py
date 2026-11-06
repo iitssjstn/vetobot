@@ -15,6 +15,9 @@ LABELS = {
     'btcRet12': 'wat Bitcoin doet', 'btcRet48': 'Bitcoin over een langere periode', 'btcTrendPct': 'de trend van Bitcoin',
     'relRet12': 'hoe de coin het doet t.o.v. Bitcoin', 'relRet48': 'de coin t.o.v. Bitcoin (langer)', 'hourUtc': 'het tijdstip',
     'dowUtc': 'de dag van de week',
+    'microBookImb': 'kopers t.o.v. verkopers in het orderboek', 'microSpread': 'het verschil bied/laat',
+    'microBuyRatio60': 'de koopdruk van het afgelopen uur', 'microFlow60': 'de netto geldstroom van het afgelopen uur',
+    'microIntensity': 'hoe druk er gehandeld wordt',
 }
 
 

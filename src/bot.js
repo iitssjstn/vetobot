@@ -972,7 +972,7 @@ export class Bot {
       if (!ts || this.lastArmTs[`${pair}|${tf}`] === ts) continue; // deze candle al bekeken
       this.lastArmTs[`${pair}|${tf}`] = ts;
       const btc = pair === 'BTC/EUR' ? candles : await fetchClosedCandles(this.ex, 'BTC/EUR', tf, CANDLES_NEEDED).catch(() => null);
-      const f = computeFeatures(candles, { btc });
+      const f = computeFeatures(candles, { btc, micro: this.getMicro?.(pair) });
       if (!f) continue;
       evaluated++;
       for (const a of arms.filter((x) => x.timeframe === tf)) {
@@ -1025,7 +1025,7 @@ export class Bot {
     if (pair !== 'BTC/EUR') {
       btc = await fetchClosedCandles(this.ex, 'BTC/EUR', timeframe, CANDLES_NEEDED).catch(() => null);
     }
-    const f = computeFeatures(candles, { btc: pair === 'BTC/EUR' ? candles : btc });
+    const f = computeFeatures(candles, { btc: pair === 'BTC/EUR' ? candles : btc, micro: this.getMicro?.(pair) });
     if (!f) return null;
     const model = this.getModel?.();
     // Een model getraind op andere candles (bijv. 1h) zegt niets over 5m-candles.
