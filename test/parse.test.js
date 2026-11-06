@@ -24,3 +24,13 @@ test('dagoverzicht: denkblok niet in de analyse', () => {
   assert.equal(r.analysis, 'Rustige dag.');
   assert.equal(parseSummary('<think>hmm</think>Gewoon tekst.').analysis, 'Gewoon tekst.');
 });
+
+test('andere veldnaam voor de uitleg (bijv. "feedback") wordt geaccepteerd', () => {
+  assert.deepEqual(parseDecision('{"decision": "approve", "feedback": "positieve trend"}'), { decision: 'approve', reason: 'positieve trend' });
+  assert.equal(parseExit('{"decision": "hold", "uitleg": "stijgt door"}').reason, 'stijgt door');
+});
+
+test('afgebroken antwoord dat zichzelf herhaalt wordt niet als goedkeuring gelezen', () => {
+  const looping = '{"decision": "approve", "feedback": "Deze coin is een goed moment om te handelen. Deze coin is een goed moment om te handelen. Deze coin is ee';
+  assert.throws(() => parseDecision(looping), /Geen JSON/);
+});

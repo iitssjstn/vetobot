@@ -244,13 +244,20 @@ export function extractJson(text) {
   return null;
 }
 
+// De uitleg uit een AI-antwoord. Sommige (kleine) modellen gebruiken een andere veldnaam dan
+// "reason", zoals "feedback" of "uitleg"; die accepteren we ook.
+function reasonOf(obj) {
+  const v = obj.reason ?? obj.reden ?? obj.feedback ?? obj.uitleg ?? obj.toelichting ?? obj.explanation ?? obj.rationale ?? '';
+  return String(v).slice(0, 500);
+}
+
 export function parseDecision(text) {
   if (!text) throw new Error('Leeg antwoord van AI');
   const obj = extractJson(text);
   if (!obj) throw new Error(`Geen JSON in AI-antwoord: "${String(text).replace(/\s+/g, ' ').slice(0, 120)}"`);
   const decision = String(obj.decision || '').toLowerCase();
   if (!['approve', 'reject'].includes(decision)) throw new Error(`Ongeldige decision "${obj.decision}"`);
-  return { decision, reason: String(obj.reason || '').slice(0, 500) };
+  return { decision, reason: reasonOf(obj) };
 }
 
 // Hoe lang een provider vraagt te wachten na een rate limit (HTTP 429), in ms, of null.
@@ -560,7 +567,7 @@ export function parseExit(text) {
   if (!obj) throw new Error(`Geen JSON in AI-antwoord: "${String(text).replace(/\s+/g, ' ').slice(0, 120)}"`);
   const decision = String(obj.decision || '').toLowerCase();
   if (!['sell', 'hold'].includes(decision)) throw new Error(`Ongeldige decision "${obj.decision}"`);
-  return { decision, reason: String(obj.reason || '').slice(0, 500) };
+  return { decision, reason: reasonOf(obj) };
 }
 
 // Gooit nooit. Lukt geen enkel model, dan "hold" met error: true (de regels blijven gelden).
