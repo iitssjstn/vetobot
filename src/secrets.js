@@ -14,7 +14,7 @@ import path from 'node:path';
 
 // aiApiKey hoort bij AI-model 1, aiApiKey2 t/m aiApiKey5 bij de back-ups.
 export const SECRET_NAMES = ['bitvavoApiKey', 'bitvavoApiSecret', 'aiApiKey', 'aiApiKey2', 'aiApiKey3', 'aiApiKey4', 'aiApiKey5',
-  'discordWebhook', 'heartbeatUrl'];
+  'discordWebhook', 'heartbeatUrl', 'trainerUrl', 'trainerToken'];
 
 // Extra controle voor secrets die een URL zijn, zodat een typfout direct opvalt.
 const VALIDATORS = {
@@ -22,6 +22,7 @@ const VALIDATORS = {
     /^https:\/\/(?:(?:canary|ptb)\.)?(?:discord|discordapp)\.com\/api\/webhooks\/\d+\/[\w-]+\/?$/.test(v) ||
     'Dat is geen Discord-webhook-URL (https://discord.com/api/webhooks/...)',
   heartbeatUrl: (v) => /^https:\/\/[^\s]+$/.test(v) || 'De heartbeat-URL moet met https:// beginnen',
+  trainerUrl: (v) => /^https?:\/\/[^\s/]+(:\d+)?\/?$/.test(v) || 'Het trainer-adres moet er zo uitzien: https://trainer.jouwdomein.nl of http://1.2.3.4:8787',
 };
 
 // Verhuist de AI-keys mee als je modellen in de lijst verschuift of verwijdert.

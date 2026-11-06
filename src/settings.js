@@ -48,6 +48,7 @@ export const STRATEGY_LIMITS = {
   sellConfirmCandles: [0, 20],
   minHoldCandles: [0, 500],
   aiStrictness: [0, 2],
+  mlMinProb: [0, 100],
 };
 export const AI_FAIL_MODES = ['reject', 'approve'];
 const NOTIFY_DEFAULTS = {
@@ -77,6 +78,7 @@ const RISK_LABELS = {
   sellConfirmCandles: 'Verkoopsignaal bevestigen',
   minHoldCandles: 'Minimaal in positie',
   aiStrictness: 'AI-strengheid',
+  mlMinProb: 'Minimale modelkans',
   aiExitMinPct: 'AI winst nemen vanaf',
   aiExitEveryMin: 'AI winstcheck elke',
   reinvestPct: 'Winst herinvesteren',

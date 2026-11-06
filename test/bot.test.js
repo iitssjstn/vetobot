@@ -768,3 +768,33 @@ test('check haalt candles van alle coins vooraf op, maximaal 8 tegelijk', async 
   assert.equal(seen.size, 20);
   assert.ok(maxActive > 1 && maxActive <= 8, `tegelijk: ${maxActive}`);
 });
+
+test('eigen model: winstkans bij het signaal, minimale kans filtert, AI krijgt de kans mee', async () => {
+  const fixture = JSON.parse(fs.readFileSync(new URL('./fixtures/ml-parity.json', import.meta.url), 'utf8'));
+  const run = async (minProb, initShift) => {
+    const { bot, ex } = setup({});
+    await bot.setRisk({ cooldownMinutes: 0 });
+    await bot.setStrategy({ mlMinProb: minProb, maxChasePct: 0 });
+    // init verschuiven = kans hoog of laag forceren
+    const model = { ...fixture.model, init: fixture.model.init + initShift, meta: { timeframe: '1h', days: 60, targetPct: 3, stopPct: 2, metrics: { base: { winRate: 40 } } } };
+    bot.getModel = () => model;
+    withAi(bot);
+    aiAnswer = 'approve';
+    lastAiPrompt = '';
+    const seq = [...Array(160)].map((_, i) => 100 - i * 0.2).concat([68, 70, 72, 74]);
+    bot.reasons = [];
+    for (let n = 161; n <= seq.length; n++) { ex.prices = seq.slice(0, n); await bot.tick(); bot.reasons.push(bot.pairStatus['BTC/EUR']?.reason); }
+    return bot;
+  };
+  const high = await run(50, 10);
+  assert.ok(high.store.state.decisions[0]?.indicators?.mlProb > 99, 'kans in de beslissing');
+  assert.match(lastAiPrompt, /Winstkans volgens het model: 100%/);
+  assert.match(lastAiPrompt, /zomaar kopen won op de testperiode 40%/);
+  const low = await run(50, -10);
+  assert.equal(low.store.state.decisions.length, 0, 'onder de minimale kans: AI niet gevraagd');
+  assert.ok(low.reasons.some((r) => /eigen model geeft maar 0% winstkans \(minimaal 50%\)/.test(r ?? '')), low.reasons.join(' | '));
+  // Model voor een andere candle-tijd wordt niet gebruikt
+  const { bot } = setup({});
+  bot.getModel = () => ({ ...fixture.model, meta: { timeframe: '5m' } });
+  assert.equal(bot.store.state.decisions.length, 0);
+});

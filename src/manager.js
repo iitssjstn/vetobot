@@ -6,6 +6,7 @@ import { SecretStore } from './secrets.js';
 import { Settings } from './settings.js';
 import { Bot } from './bot.js';
 import { Notifier } from './notify.js';
+import { validateModel } from './mlmodel.js';
 
 // Beheert één bot per gebruiker.
 //
@@ -25,6 +26,81 @@ export class BotManager {
     this.makePrivateExchange = makePrivateExchange;
     this.contexts = new Map();
     this.root = config.dataDir;
+    // Eigen voorspelmodel van de trainer (gedeeld door alle bots, ingesteld door de admin).
+    this.ml = { model: null, etag: null, fetchedAt: null, error: null };
+    this.#loadCachedModel();
+  }
+
+  // ---------- Eigen model (trainer op de VPS) ----------
+  #modelFile() {
+    return path.join(this.root, 'ml-model.json');
+  }
+
+  #loadCachedModel() {
+    try {
+      const m = JSON.parse(fs.readFileSync(this.#modelFile(), 'utf8'));
+      if (!validateModel(m)) this.ml.model = m;
+    } catch {
+      // Nog geen model; geen probleem.
+    }
+  }
+
+  // Adres en code van de trainer, uit de versleutelde keys van de admin.
+  trainerAccess() {
+    const admin = this.users.admin;
+    const ctx = admin && this.contexts.get(admin.id);
+    const url = ctx?.secrets.get('trainerUrl')?.replace(/\/+$/, '');
+    const token = ctx?.secrets.get('trainerToken');
+    return url && token ? { url, token } : null;
+  }
+
+  // Praat met de trainer. Gooit bij fouten een leesbare melding.
+  async trainerRequest(pathname, { method = 'GET', body, etag } = {}) {
+    const access = this.trainerAccess();
+    if (!access) throw new Error('Vul eerst het adres en de code van de trainer in');
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 15000);
+    try {
+      const res = await (this.fetchImpl ?? fetch)(access.url + pathname, {
+        method,
+        signal: ctrl.signal,
+        headers: { Authorization: `Bearer ${access.token}`, 'Content-Type': 'application/json', ...(etag ? { 'If-None-Match': etag } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (res.status === 304) return { notModified: true };
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401) throw new Error('De trainer weigert de code; controleer hem (staat in de logs van de trainer)');
+      if (!res.ok) throw new Error(data.error || `Trainer antwoordt met HTTP ${res.status}`);
+      return { data, etag: res.headers.get('etag') };
+    } catch (err) {
+      if (err.name === 'AbortError') throw new Error('De trainer reageert niet (time-out)');
+      if (/fetch failed|ECONNREFUSED|ENOTFOUND/.test(err.message)) throw new Error('Kan de trainer niet bereiken; klopt het adres en draait hij?');
+      throw err;
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  // Haalt het nieuwste model op (alleen als het veranderd is). Fouten zijn niet erg: het vorige
+  // model blijft gewoon in gebruik.
+  async refreshModel() {
+    if (!this.trainerAccess()) return this.ml;
+    try {
+      const r = await this.trainerRequest('/model.json', { etag: this.ml.etag });
+      if (!r.notModified) {
+        const problem = validateModel(r.data);
+        if (problem) throw new Error(problem);
+        this.ml.model = r.data;
+        this.ml.etag = r.etag;
+        fs.writeFileSync(this.#modelFile(), JSON.stringify(r.data));
+        this.log.info(`Eigen model bijgewerkt (getraind ${r.data.meta?.trainedAt ?? 'onbekend'})`);
+      }
+      this.ml.error = null;
+    } catch (err) {
+      this.ml.error = err.message;
+    }
+    this.ml.fetchedAt = new Date().toISOString();
+    return this.ml;
   }
 
   dirOf(userId) {
@@ -78,6 +154,7 @@ export class BotManager {
     bot.username = user.username;
     // De heartbeat gaat over de server, dus alleen de admin stuurt hem.
     bot.heartbeatEnabled = user.role === 'admin';
+    bot.getModel = () => this.ml.model;
     const ctx = { user, dir, settings, secrets, exchange, brokers, stores, notifier, bot, timer: null, watchTimer: null };
     this.contexts.set(user.id, ctx);
     this.#wire();
@@ -146,6 +223,10 @@ export class BotManager {
     // Dagoverzicht: elke minuut per gebruiker kijken of het tijd is.
     clearInterval(this.summaryTimer);
     this.summaryTimer = setInterval(() => this.checkSummaries(), 60 * 1000);
+    // Eigen model: bij de start en daarna elk half uur kijken of er een nieuwe is.
+    clearInterval(this.modelTimer);
+    this.refreshModel();
+    this.modelTimer = setInterval(() => this.refreshModel(), 30 * 60 * 1000);
   }
 
   checkSummaries(now = new Date()) {
@@ -187,6 +268,7 @@ export class BotManager {
 
   stopAll() {
     clearInterval(this.summaryTimer);
+    clearInterval(this.modelTimer);
     for (const id of [...this.contexts.keys()]) this.stop(id);
   }
 

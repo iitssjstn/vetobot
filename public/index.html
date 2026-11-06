@@ -667,6 +667,7 @@
             <div><label for="st-chase">Max. stijging na signaal (%)</label><input id="st-chase" type="number" min="0" max="50" step="any" required></div>
             <div><label for="st-confirm">Verkoopsignaal bevestigen (candles)</label><input id="st-confirm" type="number" min="1" max="20" step="1" required></div>
             <div><label for="st-hold">Minimaal in positie (candles, 0 = uit)</label><input id="st-hold" type="number" min="0" max="500" step="1" required></div>
+            <div><label for="st-mlmin">Minimale modelkans (%, 0 = uit)</label><input id="st-mlmin" type="number" min="0" max="100" step="any" required></div>
             <div><label for="st-strict">AI-strengheid</label><select id="st-strict"><option value="0">Streng: weinig, sterke trades</option><option value="1">Normaal</option><option value="2">Soepel: meer trades</option></select></div>
             <div><label for="st-open">Lopende candle meenemen</label><select id="st-open"><option value="0">Nee (aanbevolen)</option><option value="1">Ja, sneller</option></select></div>
             <div id="st-pass-wrap"><label for="st-pass">Je wachtwoord (verplicht in live)</label><input id="st-pass" type="password" autocomplete="current-password"></div>
@@ -720,6 +721,31 @@
           </div>
           <div id="ai-result" hidden style="margin-top:14px"></div>
         </form>
+      </div>
+
+      <div class="panel gap" id="mlpanel">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Eigen model</h2><span class="hint" id="ml-hint"></span></div>
+        <div class="panel-b">
+          <p class="muted" style="margin:0 0 6px;font-size:13.5px">Een eigen voorspelmodel, getraind op maanden koersgeschiedenis door <b>vetobot-trainer</b> op je VPS.
+            Bij elk koopsignaal rekent de bot uit hoe groot de kans is dat de koers eerst je winstdoel haalt voordat hij je stop raakt.
+            Die kans krijgt de AI als extra argument, en met <b>Minimale modelkans</b> (bij Strategie) kun je er ook op filteren.</p>
+          <form id="ml-form" data-admin>
+            <div class="fields" style="margin-top:12px">
+              <div><label for="ml-url">Adres van de trainer <span class="kstate" id="st-trainerUrl"></span></label>
+                <input id="ml-url" type="password" autocomplete="off" placeholder="https://trainer.jouwdomein.nl (leeg = niet wijzigen)"></div>
+              <div><label for="ml-token">Code van de trainer <span class="kstate" id="st-trainerToken"></span></label>
+                <input id="ml-token" type="password" autocomplete="off" placeholder="staat in de logs van de trainer (leeg = niet wijzigen)"></div>
+              <div><label for="ml-days">Dagen geschiedenis om op te trainen</label><input id="ml-days" type="number" min="14" max="365" step="1" value="60"></div>
+            </div>
+            <div class="row-actions">
+              <button class="btn" type="submit">Opslaan</button>
+              <button class="btn primary" type="button" id="ml-train">Nu trainen met mijn instellingen</button>
+              <button class="btn" type="button" id="ml-fetch">Model nu ophalen</button>
+              <span class="msg" id="ml-msg"></span>
+            </div>
+          </form>
+          <div id="ml-status" style="margin-top:14px"></div>
+        </div>
       </div>
 
       <div class="panel gap" id="notify">
@@ -1002,7 +1028,7 @@ function go(section, anchor) {
   $('title').textContent = titles[section];
   $('aside').classList.remove('open');
   render();
-  if (section === 'settings') { renderSettings(); loadMarkets(); loadKeys(); }
+  if (section === 'settings') { renderSettings(); loadMarkets(); loadKeys(); loadModel(); }
   if (section === 'users') loadUsers();
   if (section === 'aichat' && Date.now() - (chatsLoadedAt ?? 0) > 1000) loadChats();
   else if (section === 'aichat') renderChats();
@@ -1232,6 +1258,7 @@ function render() {
     ['Uitkomst', d => { const [t, c] = outcome[d.outcome] || [d.outcome, 'soft']; return `<span class="badge ${c}">${t}</span>`; }],
     ['Koers', d => `<span class="num">${eur(d.indicators?.close)}</span>`, 'r'],
     ['RSI', d => `<span class="num">${d.indicators?.rsi?.toFixed(1) ?? '–'}</span>`, 'r'],
+    ['Model', d => `<span class="num">${d.indicators?.mlProb != null ? `${d.indicators.mlProb.toFixed(0)}%` : '–'}</span>`, 'r'],
     ['Reden', d => `<div class="reason">${esc(d.reason)}${d.aiError ? ' <span class="warnc">(AI-fout)</span>' : ''}${d.hasChat ? ` <a href="#" data-chat="${esc(d.at)}">Bekijk gesprek</a>` : ''}</div>`],
   ], 'Nog geen koopsignalen. Bij 1h-candles kan dat even duren.', 'pulse');
 
@@ -1413,6 +1440,7 @@ function renderSettings() {
     $('st-open').value = String(s.strategy.useOpenCandle ?? 0);
     $('st-confirm').value = s.strategy.sellConfirmCandles || 1;
     $('st-strict').value = String(s.strategy.aiStrictness ?? 1);
+    $('st-mlmin').value = s.strategy.mlMinProb ?? 0;
     $('st-hold').value = s.strategy.minHoldCandles ?? 0;
   }
   if (!document.activeElement?.closest('#risk-form') && !riskDirty) {
@@ -1489,6 +1517,85 @@ $('mode-form').addEventListener('submit', async (e) => {
   } catch (err) { $('md-error').textContent = err.message; }
   finally { $('md-go').disabled = false; }
 });
+
+// ---------- Eigen model ----------
+let mlData = null, mlTimer = null;
+async function loadModel() {
+  try { mlData = await api('api/model'); renderModel(); }
+  catch (err) { $('ml-status').innerHTML = `<div class="msg err">${esc(err.message)}</div>`; }
+  // Tijdens een training elke 10 sec bijwerken.
+  clearTimeout(mlTimer);
+  if (mlData?.trainer?.running && isOn('settings')) mlTimer = setTimeout(loadModel, 10000);
+}
+function renderModel() {
+  const d = mlData; if (!d) return;
+  const admin = state?.user?.role === 'admin';
+  $('ml-form').hidden = !admin;
+  const m = d.meta;
+  $('ml-hint').innerHTML = m ? `<span class="badge ok">model actief</span>` : d.configured ? '<span class="badge wait">nog geen model</span>' : '<span class="badge soft">niet gekoppeld</span>';
+  const nl = (v, dd = 1) => v == null ? '–' : Number(v).toFixed(dd).replace('.', ',');
+  const parts = [];
+  if (d.error) parts.push(`<div class="alert err" style="margin:0 0 10px">${icon('alert')}<div>${esc(d.error)}${m ? ' Het vorige model blijft in gebruik.' : ''}</div></div>`);
+  if (m) {
+    const met = m.metrics ?? {};
+    const tfOk = !state?.timeframe || m.timeframe === state.timeframe;
+    parts.push(`<div class="help" style="margin-top:0">Getraind op <b>${time(m.trainedAt)}</b> met ${m.days} dagen ${esc(m.timeframe)}-candles van ${m.pairs?.length ?? '?'} coins (${(m.trainSamples ?? 0).toLocaleString('nl-NL')} voorbeelden).
+      Het voorspelt of de koers eerst <b>+${nl(m.targetPct)}%</b> haalt voordat hij <b>−${nl(m.stopPct)}%</b> daalt, binnen ${m.horizon} candles, na ${nl(m.costPct, 2)}% kosten.
+      ${tfOk ? '' : `<br><span class="warnc">Let op: je bot gebruikt ${esc(state.timeframe)}-candles; dit model is voor ${esc(m.timeframe)}. Het wordt pas gebruikt als die gelijk zijn. Klik op "Nu trainen met mijn instellingen".</span>`}</div>`);
+    if (met.base) {
+      const rows = [{ label: 'Zomaar kopen (elk moment)', ...met.base }, ...(met.buckets ?? []).map((b) => ({ label: `Alleen bij modelkans ≥ ${Math.round(b.minProb * 100)}%`, ...b, best: met.best && b.minProb === met.best.minProb }))];
+      parts.push(`<div class="sub-h">Resultaat op de testperiode (laatste 20%, niet gezien bij het trainen)</div>
+        <div class="scroll">${table(rows, [
+          ['', (r) => `${esc(r.label)}${r.best ? ' <span class="badge ok">beste</span>' : ''}`],
+          ['Trades', (r) => `<span class="num">${r.n.toLocaleString('nl-NL')}</span>`, 'r'],
+          ['Gewonnen', (r) => `<span class="num">${nl(r.winRate, 0)}%</span>`, 'r'],
+          ['Gem. per trade (na kosten)', (r) => { const v = Math.abs(r.avgReturnPct) < 0.005 ? 0 : r.avgReturnPct; return `<span class="num ${cls(v)}">${v > 0 ? '+' : ''}${nl(v, 2)}%</span>`; }, 'r'],
+        ], '')}</div>
+        <div class="help">AUC ${nl(met.auc, 3)} (0,5 = gokken, hoger = beter). Aanbevolen minimale modelkans: <b>${Math.round((m.suggestedMinProb ?? 0.5) * 100)}%</b>. Uitkomsten uit het verleden zijn geen garantie voor de toekomst.</div>`);
+    }
+  } else if (!d.configured) {
+    parts.push(`<div class="help" style="margin-top:0">${admin ? 'Vul hierboven het adres en de code van de trainer in. Hoe je de trainer op je VPS zet, staat in de README onder "Eigen model".' : 'De beheerder heeft nog geen trainer gekoppeld.'}</div>`);
+  }
+  const t = d.trainer;
+  if (admin && t && !t.error) {
+    const hist = (t.history ?? []).slice(0, 5);
+    parts.push(`<div class="sub-h">Trainer</div>
+      <div class="help" style="margin-top:0">${t.running ? '<span class="badge wait">training loopt…</span> Dit duurt een paar minuten.' : `Volgende training: <b>${esc(String(t.nextRunAt ?? '').replace('T', ' '))}</b>.`}
+        Instellingen: ${esc(t.config?.timeframe ?? '?')}-candles, doel +${nl(t.config?.targetPct)}% / stop −${nl(t.config?.stopPct)}%, ${t.config?.pairs?.length ? `${t.config.pairs.length} coins` : `top ${t.config?.topN} coins op volume`}.</div>
+      ${hist.length ? `<ul class="muted" style="margin:6px 0 0;padding-left:18px;font-size:13px">${hist.map((h) => `<li>${esc(String(h.finishedAt ?? h.startedAt ?? '').replace('T', ' '))}: ${h.published ? `<span class="up">nieuw model gepubliceerd</span> (AUC ${nl(h.metrics?.auc, 3)})` : `<span class="warnc">geen nieuw model</span>: ${esc(h.reason ?? '')}`}</li>`).join('')}</ul>` : ''}`);
+  } else if (admin && t?.error) {
+    parts.push(`<div class="alert err" style="margin:0">${icon('alert')}<div>${esc(t.error)}</div></div>`);
+  }
+  $('ml-status').innerHTML = parts.join('');
+}
+const mlMsg = (t, c) => { $('ml-msg').className = `msg ${c ?? ''}`; $('ml-msg').textContent = t; };
+$('ml-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const updates = {};
+  if ($('ml-url').value.trim()) updates.trainerUrl = $('ml-url').value.trim();
+  if ($('ml-token').value.trim()) updates.trainerToken = $('ml-token').value.trim();
+  if (!Object.keys(updates).length) return mlMsg('Niets ingevuld.');
+  try {
+    renderKeyStatus(await api('api/settings/keys', updates));
+    $('ml-url').value = $('ml-token').value = '';
+    mlMsg('Opgeslagen. Verbinding testen…');
+    await api('api/admin/trainer/fetch', {}).then(() => mlMsg('Verbonden, model opgehaald.', 'ok')).catch((err) => mlMsg(/Nog geen model/.test(err.message) ? 'Verbonden. Er is nog geen model; klik op "Nu trainen".' : err.message, /Nog geen model/.test(err.message) ? 'ok' : 'err'));
+    loadModel();
+  } catch (err) { mlMsg(err.message, 'err'); }
+};
+$('ml-train').onclick = async () => {
+  mlMsg('Instellingen naar de trainer sturen…');
+  try {
+    const r = await api('api/admin/trainer/train', { days: Number($('ml-days').value) || 60 });
+    mlMsg(r.started ? `Training gestart (${r.config.timeframe}, doel +${r.config.targetPct}% / stop −${r.config.stopPct}%). Dit duurt een paar minuten.` : 'Er loopt al een training; de nieuwe instellingen gelden voor de volgende.', 'ok');
+    setTimeout(loadModel, 1500);
+  } catch (err) { mlMsg(err.message, 'err'); }
+};
+$('ml-fetch').onclick = async () => {
+  mlMsg('Ophalen…');
+  try { const r = await api('api/admin/trainer/fetch', {}); mlMsg(r.meta ? 'Model opgehaald.' : 'Verbonden, maar er is nog geen model.', 'ok'); loadModel(); }
+  catch (err) { mlMsg(err.message, 'err'); }
+};
 
 // ---------- AI-chat ----------
 let chatsLoadedAt = null, chatData = null, chatFocus = null;
@@ -1992,6 +2099,7 @@ const HELP = {
   'st-adx': 'De ADX (0–100) meet hoe sterk een trend is, ongeacht de richting. Onder de 20 beweegt de markt meestal zijwaarts, en dan kruisen de lijnen vaak heen en weer zonder echte beweging. <b>Gebruikelijk:</b> 20 tot 25. 0 = uit.',
   'st-vol': 'Koop alleen als het volume op de kruising zoveel keer hoger is dan normaal (gemiddelde van de 20 candles ervoor). Een kruising zonder volume is vaak loos. <b>Gebruikelijk:</b> 1,2 tot 2. 0 = uit. Te hoog en er komen bijna geen signalen meer.',
   'st-chase': 'Een koopsignaal is gebaseerd op de slotkoers van een candle. Is de koers sindsdien al flink gestegen, dan koop je duurder dan het signaal bedoelde en is een deel van de stijging al voorbij. Met deze waarde slaat de bot de aankoop over als de koers nu meer dan zoveel procent boven die slotkoers ligt. <b>Gebruikelijk:</b> 0,5 tot 2. 0 = uit.',
+  'st-mlmin': 'Werkt alleen als er een eigen model is (Instellingen → Eigen model) dat getraind is op dezelfde candle-tijd. Bij elk koopsignaal rekent het model de winstkans uit: de kans dat de koers eerst je winstdoel haalt voordat hij je stop raakt. Ligt die onder dit percentage, dan slaat de bot het signaal over, nog voordat de AI wordt gevraagd. Bij het model staat welke drempel op de testperiode het beste werkte. 0 = niet filteren (de AI krijgt de kans dan alleen als extra argument).',
   'st-strict': 'Hoe kritisch de AI een koopsignaal beoordeelt. De AI rekent eerst harde eisen na (trendsterkte, volume, RSI, niet te ver doorgeschoten, kosten ten opzichte van je stop-loss) en keurt daarna alleen goed als de verwachte winst na kosten groot genoeg is.<br><b>Streng:</b> trendsterkte (ADX) minimaal 20, volume minimaal 0,8×, RSI maximaal 72, kosten maximaal 35% van je risico, verwachte winst minimaal 0,3× je risico, Bitcoin moet stijgen.<br><b>Normaal:</b> ADX 18, volume 0,6×, RSI 75, kosten maximaal 50% van je risico, verwachte winst minimaal 0,15× je risico.<br><b>Soepel:</b> ADX 15, volume 0,5×, RSI 80, kosten maximaal 70% van je risico, verwachte winst alleen positief; een richtingloze markt en dalende Bitcoin tellen alleen nog mee in de afweging.<br>Wat je zelf hierboven instelt (max RSI, minimale ADX, volumefilter, BTC-filter) gaat altijd voor. Soepeler = meer trades, maar ook meer verliezers; kijk bij Trades in de resultaatanalyse of het loont.',
   'st-confirm': 'Bij korte candles kruisen de lijnen vaak heen en weer door ruis. De bot koopt dan en verkoopt een paar minuten later met verlies, vooral door de fees (whipsaw). Met deze waarde verkoopt de bot op het verkoopsignaal pas als EMA fast zoveel candles <b>op rij</b> onder EMA slow ligt. Herstelt de koers binnen die tijd, dan blijft de positie staan. Stop-loss, trailing stop, take-profit en de AI-winstcheck werken altijd direct. <b>Gebruikelijk:</b> 2 of 3. 1 = direct verkopen.',
   'st-hold': 'Hoeveel candles een positie minimaal open blijft voordat het verkoopsignaal mag verkopen. Geeft een nieuwe positie de tijd om te bewegen. Stop-loss, trailing stop, take-profit en de AI-winstcheck werken altijd direct, dus je verlies blijft begrensd. <b>Gebruikelijk:</b> 3 tot 6. 0 = uit.',
@@ -2173,7 +2281,7 @@ $('strat-form').onsubmit = async (e) => {
   const strategy = { emaFast: $('st-fast').value, emaSlow: $('st-slow').value, rsiPeriod: $('st-rsi').value, rsiMaxEntry: $('st-rsimax').value,
     trendEma: $('st-trend').value, adxMin: $('st-adx').value, volumeMult: $('st-vol').value, btcFilter: $('st-btc').value,
     maxChasePct: $('st-chase').value, useOpenCandle: $('st-open').value,
-    sellConfirmCandles: $('st-confirm').value, minHoldCandles: $('st-hold').value, aiStrictness: $('st-strict').value };
+    sellConfirmCandles: $('st-confirm').value, minHoldCandles: $('st-hold').value, aiStrictness: $('st-strict').value, mlMinProb: $('st-mlmin').value };
   if (state.mode === 'live' && !$('st-pass').value) { $('strat-msg').className = 'msg err'; $('strat-msg').textContent = 'Vul je wachtwoord in'; return; }
   try {
     await api('api/settings/strategy', { strategy, password: $('st-pass').value });

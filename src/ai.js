@@ -195,7 +195,11 @@ Volume laatste 3 candles vs. ervoor: ${st?.volTrend == null ? 'onbekend' : `${fx
 == Risk/reward (vast, bepaald door de gebruiker) ==
 ${rr}
 
-== Feedback ==
+${extra.ml ? `== Eigen voorspelmodel (getraind op ${extra.ml.meta?.days ?? '?'} dagen koersgeschiedenis) ==
+Winstkans volgens het model: ${fx(extra.ml.prob, 0)}% (kans dat de koers eerst +${extra.ml.meta?.targetPct ?? '?'}% stijgt voordat hij −${extra.ml.meta?.stopPct ?? '?'}% daalt)
+${extra.ml.meta?.metrics?.base ? `Ter vergelijking: zomaar kopen won op de testperiode ${fx(extra.ml.meta.metrics.base.winRate, 0)}% van de keren. Gebruik dit als één van je argumenten, niet als enige.` : ''}
+
+` : ''}== Feedback ==
 Deze coin: ${perfTxt}${setup}
 Eerdere AI-beslissingen in deze coin (nieuwste eerst):
 ${history}

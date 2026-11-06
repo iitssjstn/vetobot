@@ -190,3 +190,54 @@ test('dagoverzicht: elke gebruiker één keer per dag na zijn eigen tijd', () =>
   assert.deepEqual(manager.checkSummaries(at(9, 30)), [piet.id]);
   manager.stopAll();
 });
+
+// ---------- Eigen model van de trainer ----------
+const fixture = JSON.parse(fs.readFileSync(new URL('./fixtures/ml-parity.json', import.meta.url), 'utf8'));
+
+test('eigen model: ophalen met de code van de admin, ETag, en het vorige model blijft bij een storing', async () => {
+  const { admin, piet, manager } = setup();
+  const a = manager.ensure(admin);
+  const p = manager.ensure(piet);
+  assert.equal(manager.trainerAccess(), null);
+  await manager.refreshModel(); // zonder instellingen: niets
+  assert.equal(manager.ml.model, null);
+  a.secrets.update({ trainerUrl: 'http://10.0.0.5:8787', trainerToken: 'geheim' });
+  const calls = [];
+  let mode = 'ok';
+  const model = { ...fixture.model, meta: { trainedAt: '2026-11-06T03:00:00Z', timeframe: '1h' } };
+  manager.fetchImpl = async (url, opts) => {
+    calls.push({ url, auth: opts.headers.Authorization, etag: opts.headers['If-None-Match'] });
+    if (mode === 'down') throw new Error('fetch failed');
+    if (opts.headers['If-None-Match'] === '"v1"') return { status: 304, ok: false, headers: new Map(), json: async () => ({}) };
+    return { status: 200, ok: true, headers: new Map([['etag', '"v1"']]), json: async () => model };
+  };
+  await manager.refreshModel();
+  assert.equal(calls[0].url, 'http://10.0.0.5:8787/model.json');
+  assert.equal(calls[0].auth, 'Bearer geheim');
+  assert.equal(manager.ml.model.meta.trainedAt, '2026-11-06T03:00:00Z');
+  // Elke bot (ook van andere gebruikers) gebruikt hetzelfde model
+  assert.equal(p.bot.getModel(), manager.ml.model);
+  // Niet veranderd → 304, model blijft
+  await manager.refreshModel();
+  assert.equal(calls[1].etag, '"v1"');
+  assert.ok(manager.ml.model);
+  // Trainer onbereikbaar → leesbare fout, vorige model blijft in gebruik
+  mode = 'down';
+  await manager.refreshModel();
+  assert.match(manager.ml.error, /Kan de trainer niet bereiken/);
+  assert.ok(manager.ml.model);
+  // Na een herstart staat het model er nog (bewaard op schijf)
+  manager.stopAll();
+  const again = new BotManager({ config: manager.config, users: manager.users, log: quiet, shared: manager.shared });
+  assert.equal(again.ml.model.meta.trainedAt, '2026-11-06T03:00:00Z');
+});
+
+test('eigen model: een model met andere kenmerken wordt geweigerd', async () => {
+  const { admin, manager } = setup();
+  manager.ensure(admin).secrets.update({ trainerUrl: 'http://10.0.0.5:8787', trainerToken: 'geheim' });
+  manager.fetchImpl = async () => ({ status: 200, ok: true, headers: new Map(), json: async () => ({ ...fixture.model, features: ['iets'] }) });
+  await manager.refreshModel();
+  assert.equal(manager.ml.model, null);
+  assert.match(manager.ml.error, /andere kenmerken/);
+  manager.stopAll();
+});

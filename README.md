@@ -180,6 +180,38 @@ Valt je server uit, dan kan vetobot zelf niets meer sturen. Daarom stuurt hij na
 2. Plak de ping-URL bij Heartbeat-URL in vetobot en klik op **Heartbeat testen**.
 3. Kies in healthchecks.io bij **Integrations** de **Webhook**-integratie met als URL je Discord-webhook, methode POST, header `Content-Type: application/json` en body `{"content": "<@JOUW_ID> vetobot is offline ($NAME)"}`. Dan word je getagd. Zonder tag kun je ook de Discord-integratie gebruiken.
 
+## Eigen model (trainer op een VPS)
+
+Naast de AI kan vetobot een **eigen voorspelmodel** gebruiken. Dat wordt getraind door een aparte container, **vetobot-trainer**, die je op een sterkere server (bijv. een VPS) draait. De bot zelf blijft op je eigen server.
+
+- De trainer haalt maanden koersgeschiedenis op bij Bitvavo (publieke data, geen keys nodig) en bepaalt voor elk moment of een aankoop daar eerst je winstdoel of eerst je stop had geraakt, na kosten.
+- Daarop traint hij een gradient-boosting-model en test het op de laatste 20% van de periode, die het model niet gezien heeft. **Alleen als het model daar echt winst na kosten maakt en duidelijk beter is dan zomaar kopen, wordt het gepubliceerd.** Anders blijft het vorige model in gebruik.
+- Elke nacht (standaard om 03:00) traint hij opnieuw met de nieuwste koersen.
+- vetobot haalt elk half uur het nieuwste model op. Bij een koopsignaal rekent hij de **winstkans** uit (in JavaScript, zonder extra software). Die kans krijgt de AI als extra argument, en met **Minimale modelkans** (bij Strategie) kun je er ook op filteren. Is de VPS onbereikbaar, dan blijft het vorige model gewoon werken.
+
+**Op de VPS** (apart, klein compose-bestand):
+
+```yaml
+services:
+  vetobot-trainer:
+    image: ghcr.io/iitssjstn/vetobot-trainer:latest
+    container_name: vetobot-trainer
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Amsterdam
+      - TRAIN_HOUR=3        # elke nacht om 03:00 trainen
+    ports:
+      - "8787:8787"        # of achter je reverse proxy met HTTPS (aanbevolen)
+    volumes:
+      - ./trainer-data:/data
+```
+
+Start hem met `docker compose up -d` en kijk in de logs (`docker compose logs vetobot-trainer`) voor de **code**. Die code staat ook in `trainer-data/token`. Er staan geen geheimen in de compose of in een .env-bestand.
+
+**In vetobot** (als admin): Instellingen → **Eigen model** → vul het adres van de trainer (bijv. `https://trainer.jouwdomein.nl` of `http://IP-van-je-VPS:8787`) en de code in, en klik op **Nu trainen met mijn instellingen**. De bot stuurt dan je candle-tijd, stop-loss, take-profit (of maximale tijd in positie), kosten en coinlijst naar de trainer. Na een paar minuten zie je het resultaat op de testperiode, met de aanbevolen minimale modelkans. Het model wordt alleen gebruikt als het getraind is op dezelfde candle-tijd als je bot.
+
+Gebruik bij voorkeur HTTPS (bijv. via Nginx Proxy Manager op de VPS), zodat de code niet onversleuteld over internet gaat. Het model is gedeeld: alle gebruikers van je vetobot gebruiken hetzelfde model.
+
 ## Meerdere gebruikers
 
 Je kunt andere mensen uitnodigen. Iedereen heeft een eigen bot met eigen Bitvavo- en AI-keys, eigen saldo, trades en instellingen, in een eigen map `data/users/<id>/`.

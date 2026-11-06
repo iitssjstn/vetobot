@@ -14,7 +14,7 @@ import { AI_PROVIDERS, MAX_PAIRS, TIMEFRAMES, RISK_LIMITS, STRATEGY_LIMITS } fro
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
 // Keys die over de server gaan en niet over één gebruiker. Alleen de admin mag ze zetten.
-const ADMIN_ONLY_SECRETS = new Set(['heartbeatUrl']);
+const ADMIN_ONLY_SECRETS = new Set(['heartbeatUrl', 'trainerUrl', 'trainerToken']);
 
 export function createApp({ users, manager, log = console }) {
   const app = express();
@@ -423,6 +423,49 @@ export function createApp({ users, manager, log = console }) {
 
   // Test de Bitvavo-keys zonder van modus te wisselen.
   app.post('/api/settings/keys/test', wrap(async (_req, { bot }) => ({ ok: true, liveBalance: await bot.refreshLiveBalance() })));
+
+  // --- Eigen model / trainer -------------------------------------------------
+  // Status van het model (voor iedereen zichtbaar; instellen alleen door de admin).
+  app.get('/api/model', wrap(async (req) => {
+    const ml = manager.ml;
+    const out = { configured: Boolean(manager.trainerAccess()), meta: ml.model?.meta ?? null, fetchedAt: ml.fetchedAt, error: ml.error, trainer: null };
+    if (req.user.role === 'admin' && out.configured) {
+      out.trainer = await manager.trainerRequest('/status').then((r) => r.data).catch((err) => ({ error: err.message }));
+    }
+    return out;
+  }));
+
+  // Stuurt de instellingen van de admin naar de trainer en start een training.
+  app.post('/api/admin/trainer/train', adminOnly, wrap(async (req, { bot, settings }) => {
+    const r = bot.risk;
+    const tfMin = { '1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120, '4h': 240, '1d': 1440 }[bot.timeframe] ?? 5;
+    const cost = r.limitOrders ? (r.makerFeePct ?? 0.15) + (r.feePct ?? 0.25) : (r.feePct ?? 0.25) * 2;
+    const stopPct = r.stopLossPct > 0 ? r.stopLossPct : 2;
+    const cfg = {
+      timeframe: bot.timeframe,
+      stopPct,
+      // Winstdoel: je take-profit; staat die uit, dan 1,5× de stop (en altijd ruim boven de kosten).
+      targetPct: r.takeProfitPct > 0 ? r.takeProfitPct : Math.max(stopPct * 1.5, cost * 3),
+      costPct: +cost.toFixed(3),
+      // Hoe lang een trade mag duren: je maximale tijd in positie, anders ongeveer 3 uur.
+      horizon: Math.max(6, Math.round((r.maxHoldMinutes > 0 ? r.maxHoldMinutes : 180) / tfMin)),
+      pairs: settings.pairs,
+      days: Math.min(365, Math.max(14, Number(req.body?.days) || 60)),
+    };
+    await manager.trainerRequest('/config', { method: 'POST', body: cfg });
+    const started = await manager.trainerRequest('/train', { method: 'POST', body: {} }).then(() => true).catch((err) => {
+      if (/loopt al/.test(err.message)) return false;
+      throw err;
+    });
+    log.info(`Training gestart door ${req.user.username}: ${JSON.stringify(cfg)}`);
+    return { ok: true, started, config: cfg };
+  }));
+
+  app.post('/api/admin/trainer/fetch', adminOnly, wrap(async () => {
+    const ml = await manager.refreshModel();
+    if (ml.error) throw new Error(ml.error);
+    return { ok: true, meta: ml.model?.meta ?? null };
+  }));
 
   // --- Gebruikersbeheer (alleen admin) ---------------------------------------
   app.get('/api/admin/users', adminOnly, wrap(() => ({ users: manager.overview(), invites: users.listInvites() })));

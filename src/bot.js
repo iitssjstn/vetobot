@@ -1,5 +1,6 @@
 import { evaluate } from './strategy.js';
 import { ema } from './indicators.js';
+import { computeFeatures, predict } from './mlmodel.js';
 import { askVetoChain, askTeamChain, askExitChain, testChain, listModels, writeSummaryChain, aiLabel } from './ai.js';
 import { TIMEFRAME_MINUTES, fmtInterval, LIVE_MIN_STAKE_EUR } from './settings.js';
 import { cleanSuggestions, currentValues, applySuggestions } from './suggest.js';
@@ -693,6 +694,15 @@ export class Bot {
           reason: `Kruising, maar de koers is sinds het signaal al ${moved.toFixed(2)}% gestegen (max ${strategy.maxChasePct}%)` };
       }
     }
+    // Eigen voorspelmodel: winstkans uitrekenen bij een koopsignaal, en eventueel filteren.
+    if (result.signal === 'buy') {
+      const ml = this.#modelProbability(useOpen ? candles.slice(0, -1) : candles, timeframe);
+      if (ml && result.indicators) result.indicators.mlProb = ml.prob;
+      if (ml && strategy.mlMinProb > 0 && ml.prob < strategy.mlMinProb) {
+        result = { ...result, signal: 'none', filtered: true,
+          reason: `Kruising, maar het eigen model geeft maar ${ml.prob.toFixed(0)}% winstkans (minimaal ${strategy.mlMinProb}%)` };
+      }
+    }
     const ind = result.indicators;
     this.pairStatus[pair] = {
       at: new Date().toISOString(),
@@ -778,6 +788,7 @@ export class Bot {
         filters: this.#aiFilters(),
         aiHistory: this.#aiHistory(pair),
         setupStats: this.#setupStats(),
+        ml: result.indicators?.mlProb != null ? { prob: result.indicators.mlProb, meta: this.getModel?.()?.meta } : null,
       },
     });
 
@@ -838,6 +849,17 @@ export class Bot {
   entryRisk() {
     const risk = this.risk;
     return { ...risk, stakeEur: this.stakeInfo(risk).effective };
+  }
+
+  // Winstkans in % volgens het eigen model, of null als er geen (passend) model is.
+  #modelProbability(candles, timeframe) {
+    const model = this.getModel?.();
+    if (!model) return null;
+    // Een model getraind op andere candles (bijv. 1h) zegt niets over 5m-candles.
+    if (model.meta?.timeframe && model.meta.timeframe !== timeframe) return null;
+    const f = computeFeatures(candles);
+    if (!f) return null;
+    return { prob: predict(model, f) * 100, meta: model.meta };
   }
 
   // Gesprekken zijn groot; bewaar ze alleen bij de laatste 60 beslissingen (state blijft klein).
