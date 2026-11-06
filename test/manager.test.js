@@ -219,7 +219,10 @@ test('eigen model: ophalen met de code van de admin, ETag, en het vorige model b
   assert.equal(p.bot.getModel(), manager.ml.model);
   // Niet veranderd → 304, model blijft
   await manager.refreshModel();
-  assert.equal(calls[1].etag, '"v1"');
+  const modelCalls = calls.filter((c) => c.url.endsWith('/model.json'));
+  assert.equal(modelCalls[1].etag, '"v1"');
+  // Ook het scorebord van AI + model wordt opgehaald
+  assert.ok(calls.some((c) => c.url === 'http://10.0.0.5:8787/teamwork'));
   assert.ok(manager.ml.model);
   // Trainer onbereikbaar → leesbare fout, vorige model blijft in gebruik
   mode = 'down';

@@ -150,6 +150,8 @@ export class BotManager {
         this.log.info(`Eigen model bijgewerkt (getraind ${r.data.meta?.trainedAt ?? 'onbekend'})`);
         await this.#autoApplyStrategy(r.data).catch((err) => this.log.error(`Strategie overnemen mislukt: ${err.message}`));
       }
+      // Scorebord van AI + model (wie had gelijk bij de laatste signalen).
+      this.ml.teamwork = (await this.trainerRequest('/teamwork').catch(() => null))?.data ?? this.ml.teamwork ?? null;
       this.ml.error = null;
     } catch (err) {
       this.ml.error = err.message;
@@ -247,6 +249,7 @@ export class BotManager {
     // De heartbeat gaat over de server, dus alleen de admin stuurt hem.
     bot.heartbeatEnabled = user.role === 'admin';
     bot.getModel = () => this.ml.model;
+    bot.getTeamwork = () => this.ml.teamwork ?? null;
     bot.onFeedback = (trade) => { this.queueFeedback(trade).catch(() => {}); };
     const ctx = { user, dir, settings, secrets, exchange, brokers, stores, notifier, bot, timer: null, watchTimer: null };
     this.contexts.set(user.id, ctx);

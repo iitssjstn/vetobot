@@ -778,6 +778,10 @@ test('eigen model: winstkans bij het signaal, minimale kans filtert, AI krijgt d
     // init verschuiven = kans hoog of laag forceren
     const model = { ...fixture.model, init: fixture.model.init + initShift, meta: { timeframe: '1h', days: 60, targetPct: 3, stopPct: 2, metrics: { base: { winRate: 40 } } } };
     bot.getModel = () => model;
+    bot.getTeamwork = () => ({ total: 40, modelThreshold: 60, approved: { n: 20, winRate: 30, avgReturnPct: -0.2 }, rejected: { n: 20, winRate: 50, avgReturnPct: 0.3 },
+      modelYesAiNo: { n: 10, winRate: 60, avgReturnPct: 0.5 }, modelNoAiYes: { n: 0 }, bothYes: { n: 5, winRate: 60, avgReturnPct: 0.4 } });
+    bot.fb = [];
+    bot.onFeedback = (t) => bot.fb.push(t);
     withAi(bot);
     aiAnswer = 'approve';
     lastAiPrompt = '';
@@ -820,8 +824,12 @@ test('eigen model: marktfase waarin het model verliest → AI gewaarschuwd, of o
     const { bot, ex } = setup({});
     await bot.setRisk({ cooldownMinutes: 0 });
     await bot.setStrategy({ mlMinProb: 0, maxChasePct: 0, mlSkipBadRegime: skip });
-    const model = { ...fixture.model, init: fixture.model.init + 10, meta: { timeframe: '1h', days: 60, targetPct: 3, stopPct: 2, metrics: { regimes: { stijgend: bad, zijwaarts: bad, dalend: bad } } } };
+    const model = { ...fixture.model, meta: { timeframe: '1h', days: 60, targetPct: 3, stopPct: 2, metrics: { regimes: { stijgend: bad, zijwaarts: bad, dalend: bad } } } };
     bot.getModel = () => model;
+    bot.getTeamwork = () => ({ total: 40, modelThreshold: 60, approved: { n: 20, winRate: 30, avgReturnPct: -0.2 }, rejected: { n: 20, winRate: 50, avgReturnPct: 0.3 },
+      modelYesAiNo: { n: 10, winRate: 60, avgReturnPct: 0.5 }, modelNoAiYes: { n: 0 }, bothYes: { n: 5, winRate: 60, avgReturnPct: 0.4 } });
+    bot.fb = [];
+    bot.onFeedback = (t) => bot.fb.push(t);
     withAi(bot);
     aiAnswer = 'approve';
     lastAiPrompt = '';
@@ -833,6 +841,17 @@ test('eigen model: marktfase waarin het model verliest → AI gewaarschuwd, of o
   const warn = await run(0);
   assert.match(lastAiPrompt, /Soort markt nu: \w+ markt\. In dit soort markt maakten de trades die het model zou nemen op de test gemiddeld -0.40% per trade \(120 trades\)\. Het model scoort in dit soort markt dus slecht/);
   assert.ok(warn.store.state.decisions[0]?.indicators?.mlRegime);
+  // Samenwerking: het model legt uit waarom, de AI krijgt het scorebord, en het oordeel gaat terug naar de trainer
+  assert.match(lastAiPrompt, /Waarom het model dit zegt/);
+  assert.match(lastAiPrompt, /procentpunt/);
+  assert.match(lastAiPrompt, /wie had gelijk\? \(laatste 40 signalen\)/);
+  assert.match(lastAiPrompt, /Je wijst te vaak goede trades af/);
+  assert.match(lastAiPrompt, /Als het model ja zei en jij nee, had het model vaak gelijk/);
+  assert.ok(warn.store.state.decisions[0].indicators.mlWhy.length > 0);
+  const sig = warn.fb.find((t) => t.kind === 'signal');
+  assert.equal(sig.aiDecision, 'approve');
+  assert.equal(sig.pair, 'BTC/EUR');
+  assert.ok(sig.prob > 0);
   const skip = await run(1);
   assert.equal(skip.store.state.decisions.length, 0);
   assert.ok(skip.reasons.some((r) => /maakte het eigen model op de test verlies \(gem\. -0\.40% per trade\)/.test(r ?? '')), skip.reasons.join(' | '));

@@ -196,6 +196,7 @@ def export_model(model, medians, X_sample):
             'l': [int(v) for v in t.children_left],
             'r': [int(v) for v in t.children_right],
             'v': [float(v[0][0]) for v in t.value],
+            'n': [float(v) for v in t.weighted_n_node_samples],  # voor de uitleg per voorspelling
         })
     # Startwaarde (log-odds van het gemiddelde): afleiden uit één voorspelling.
     row = X_sample[0]
@@ -211,6 +212,35 @@ def export_model(model, medians, X_sample):
 
     init = float(model.decision_function([row])[0]) - lr * tree_sum(row)
     return {'init': init, 'learningRate': lr, 'trees': trees, 'medians': medians}
+
+
+def contributions_json(m, row):
+    """Zelfde uitleg als contributions() in src/mlmodel.js: per kenmerk de bijdrage in log-odds."""
+    c = [0.0] * len(m['features'])
+    base = m['init']
+    lr = m['learningRate']
+    for t in m['trees']:
+        mean = [0.0] * len(t['l'])
+
+        def walk(n):
+            if t['l'][n] == -1:
+                mean[n] = t['v'][n]
+                return mean[n]
+            a, b = walk(t['l'][n]), walk(t['r'][n])
+            if t.get('n'):
+                na, nb = t['n'][t['l'][n]], t['n'][t['r'][n]]
+                mean[n] = (na * a + nb * b) / (na + nb)
+            else:
+                mean[n] = t['v'][n]
+            return mean[n]
+        walk(0)
+        base += lr * mean[0]
+        n = 0
+        while t['l'][n] != -1:
+            nxt = t['l'][n] if row[t['f'][n]] <= t['t'][n] else t['r'][n]
+            c[t['f'][n]] += lr * (mean[nxt] - mean[n])
+            n = nxt
+    return base, c
 
 
 def predict_json(m, row):

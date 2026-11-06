@@ -117,6 +117,34 @@ function perfOf(trades, stopPct) {
 // extra: { btcTrend, recentTrades, plan, risk: { stopLossPct, atrStopMult, takeProfitPct, trailingStopPct,
 //   feePct, slippagePct }, htfTrend: { timeframe, up, close, ema, changePct }, setupStats: { trades, winRate, avgR },
 //   aiHistory: [{ at, decision, reason, resultPct, outcome }] }
+// Scorebord van de trainer: hoe liepen de signalen af die de AI goedkeurde of afwees, en de
+// gevallen waarin model en AI het oneens waren. Zo kan de AI leren wanneer het model gelijk heeft.
+function teamworkText(tw) {
+  if (!tw || !(tw.total >= 15)) return '';
+  const fx2 = (v) => (v == null ? '–' : `${v > 0 ? '+' : ''}${v.toFixed(2)}%`);
+  const line = (name, x) => (x?.n ? `- ${name}: ${x.n}×, gemiddeld ${fx2(x.avgReturnPct)} per trade, ${x.winRate.toFixed(0)}% bereikte het doel` : null);
+  const rows = [
+    line('Jij keurde goed', tw.approved),
+    line('Jij wees af (wat het zou hebben opgeleverd)', tw.rejected),
+    line(`Model zei ja (≥ ${tw.modelThreshold.toFixed(0)}%) maar jij wees af`, tw.modelYesAiNo),
+    line('Model zei nee maar jij keurde goed', tw.modelNoAiYes),
+    line('Allebei ja', tw.bothYes),
+  ].filter(Boolean);
+  let advice = '';
+  const a = tw.approved, r = tw.rejected;
+  if (a?.n >= 10 && r?.n >= 10) {
+    if (r.avgReturnPct > a.avgReturnPct) advice = 'Let op: de signalen die jij afwees deden het gemiddeld BETER dan die je goedkeurde. Je wijst te vaak goede trades af; vertrouw het model meer.';
+    else if (r.avgReturnPct > 0) advice = 'Ook je afgewezen signalen maakten gemiddeld winst: je bent mogelijk te streng.';
+    else advice = 'Je afwijzingen voorkwamen gemiddeld verlies: je oordeel voegt waarde toe.';
+  }
+  const ym = tw.modelYesAiNo, ny = tw.modelNoAiYes;
+  if (ym?.n >= 8 && ym.avgReturnPct > 0) advice += ' Als het model ja zei en jij nee, had het model vaak gelijk.';
+  if (ny?.n >= 8 && ny.avgReturnPct < 0) advice += ' Als het model nee zei en jij ja, maakte dat gemiddeld verlies: volg het model daar vaker.';
+  return `== Samenwerking met het model: wie had gelijk? (laatste ${tw.total} signalen) ==
+${rows.join('\n')}
+${advice}`.trim() + '\n';
+}
+
 export function buildPrompt({ pair, timeframe, indicators, recentCandles, extra = {} }) {
   const ind = indicators ?? {};
   const st = candleStats(recentCandles, ind.close, ind.atrPct);
@@ -207,7 +235,10 @@ ${(() => {
   return `Soort markt nu: ${label} markt. In dit soort markt maakten de trades die het model zou nemen op de test gemiddeld ${rs.avgReturnPct > 0 ? '+' : ''}${fx(rs.avgReturnPct, 2)}% per trade (${rs.nSelected} trades)` +
     (rs.avgReturnPct <= 0 ? '. Het model scoort in dit soort markt dus slecht: wees extra kritisch.' : '.');
 })()}
-
+${extra.ml.why?.length ? `Waarom het model dit zegt (wat de winstkans het meest omhoog of omlaag duwde):
+${extra.ml.why.map((w) => `- ${w.label}: ${w.text} → ${w.effect > 0 ? '+' : ''}${fx(w.effect, 1)} procentpunt`).join('\n')}
+Kijk of je het met deze redenen eens bent op basis van de grafiek en het nieuws dat jij ziet. Noem in je reden kort waar je het model volgt of juist niet.` : ''}
+${teamworkText(extra.teamwork)}
 ` : ''}== Feedback ==
 Deze coin: ${perfTxt}${setup}
 Eerdere AI-beslissingen in deze coin (nieuwste eerst):

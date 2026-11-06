@@ -339,6 +339,30 @@ class Feedback(unittest.TestCase):
         self.assertIn('requiredEdge', info)
         self.assertGreater(info['possible'], 10)
 
+    def test_teamwork_scoreboard(self):
+        s = self.s
+        s.write_json('config.json', {'timeframe': '5m', 'targetPct': 1.0, 'stopPct': 1.0, 'horizon': 12, 'costPct': 0.2})
+        s.write_json('signals.json', [])
+        s.write_json('model.json', {'meta': {'metrics': {'best': {'minProb': 0.6}}}})
+        M = 300_000
+        # Koers stijgt steeds 0,2% per candle: elk signaal haalt het doel
+        c = [[k * M, 100 * 1.002 ** k, 100 * 1.002 ** k * 1.001, 100 * 1.002 ** k * 0.9995, 100 * 1.002 ** (k + 1), 10] for k in range(400)]
+        os.makedirs(os.path.join(s.DATA, 'candles'), exist_ok=True)
+        s.write_json('candles/X-EUR_5m.json', c)
+        items = [{'kind': 'signal', 'pair': 'X/EUR', 'timeframe': '5m', 'ts': k * M, 'prob': 70 if k % 2 else 40,
+                  'aiDecision': 'reject' if k % 3 else 'approve', 'features': {}, 'returnPct': 0} for k in range(100, 160)]
+        items.append({'kind': 'signal', 'pair': 'X/EUR', 'timeframe': '5m', 'ts': 395 * M, 'prob': 50, 'aiDecision': 'approve'})  # nog bezig
+        self.assertEqual(s.add_feedback(items), 0, 'signalen zijn geen trades')
+        self.assertEqual(len(s.load_feedback()), 0)
+        tw = s.compute_teamwork()
+        self.assertEqual(tw['total'], 60)
+        self.assertEqual(tw['pending'], 1)
+        self.assertEqual(tw['rejected']['n'], 40)
+        self.assertEqual(tw['rejected']['winRate'], 100.0)
+        self.assertGreater(tw['rejected']['avgReturnPct'], 0)
+        self.assertEqual(tw['modelYesAiNo']['n'] + tw['bothYes']['n'], 30)
+        self.assertEqual(s.read_json('teamwork.json', {})['total'], 60)
+
     def test_store_dedupe_and_clean(self):
         t = {'pair': 'DOGE/EUR', 'timeframe': '5m', 'ts': 123, 'returnPct': 1.5, 'features': {'rsi14': 40, 'onzin': 5, 'adx14': 'x'}, 'prob': 61}
         self.assertEqual(self.s.add_feedback([t, dict(t), {'pair': 'X'}, 'rommel']), 1)

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { computeFeatures, predict, validateModel, FEATURES, regimeOf } from '../src/mlmodel.js';
+import { computeFeatures, predict, validateModel, FEATURES, regimeOf, contributions, explain, formatFeature } from '../src/mlmodel.js';
 
 // Gemaakt door Python (trainer/features.py + sklearn), zie trainer/test_trainer.py.
 const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/ml-parity.json', import.meta.url), 'utf8'));
@@ -43,4 +43,22 @@ test('marktfase: trend over het grotere plaatje gemeten in normale beweging', ()
   assert.equal(regimeOf({ htfTrendPct: -4, atrPct: 1 }), 'dalend');
   assert.equal(regimeOf({ htfTrendPct: 4, atrPct: 2 }), 'zijwaarts'); // wilde coin: 4% is niet veel
   assert.equal(regimeOf({}), 'zijwaarts');
+});
+
+test('uitleg: bijdragen per kenmerk gelijk aan Python en tellen op tot de voorspelling', () => {
+  for (const pt of fx.points) {
+    const { base, contrib } = contributions(fx.model, pt.features);
+    assert.ok(Math.abs(base - pt.base) < 1e-9, `basis bij ${pt.end}`);
+    contrib.forEach((v, j) => assert.ok(Math.abs(v - pt.contrib[j]) < 1e-9, `${FEATURES[j]} bij ${pt.end}: ${v} vs ${pt.contrib[j]}`));
+    const raw = base + contrib.reduce((a, b) => a + b, 0);
+    assert.ok(Math.abs(1 / (1 + Math.exp(-raw)) - predict(fx.model, pt.features)) < 1e-9);
+    const why = explain(fx.model, pt.features);
+    assert.ok(why.length > 0 && why.length <= 6);
+    assert.ok(why.every((w, i) => i === 0 || Math.abs(w.effect) <= Math.abs(why[i - 1].effect)), 'grootste eerst');
+    assert.ok(why.every((w) => typeof w.label === 'string' && w.label !== w.key));
+  }
+  assert.equal(formatFeature('btcRet12', 0.834), '+0.83%');
+  assert.equal(formatFeature('distEma20Atr', -1.25), '-1.3 × ATR');
+  assert.equal(formatFeature('dowUtc', 0), 'maandag');
+  assert.equal(formatFeature('rsi14', null), 'onbekend');
 });

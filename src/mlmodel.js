@@ -99,6 +99,81 @@ export function computeFeatures(candles, ctx = {}) {
   };
 }
 
+// Begrijpelijke namen en notatie per kenmerk (voor de uitleg aan de AI en op het dashboard).
+export const FEATURE_INFO = {
+  rsi14: ['RSI (14)', 0, ''], adx14: ['trendsterkte (ADX)', 0, ''], atrPct: ['normale beweging per candle (ATR)', 2, '%'],
+  volRatio: ['volume t.o.v. gemiddeld', 1, '×'], distEma20Atr: ['afstand tot EMA20', 1, '× ATR'], distEma50Atr: ['afstand tot EMA50', 1, '× ATR'],
+  emaSpreadPct: ['afstand snelle/trage EMA', 2, '%'], ret1: ['beweging laatste candle', 2, '%'], ret3: ['beweging laatste 3 candles', 2, '%'],
+  ret12: ['beweging laatste 12 candles', 2, '%'], er24: ['hoe recht de koers liep (24 candles)', 2, ''], greens: ['groene candles op rij', 0, ''],
+  toHigh48Atr: ['ruimte tot recente top', 1, '× ATR'], fromLow48Atr: ['afstand tot recente bodem', 1, '× ATR'], upperWick: ['bovenwick laatste candle', 2, ''],
+  volTrend: ['volume-trend (kort t.o.v. lang)', 1, '×'], ret48: ['beweging laatste 48 candles', 2, '%'], htfTrendPct: ['trend groter plaatje', 2, '%'],
+  htfRet96: ['beweging laatste 96 candles', 2, '%'], htfPos240: ['positie in de range van 240 candles', 2, ''], btcRet3: ['Bitcoin laatste 3 candles', 2, '%'],
+  btcRet12: ['Bitcoin laatste 12 candles', 2, '%'], btcRet48: ['Bitcoin laatste 48 candles', 2, '%'], btcTrendPct: ['trend van Bitcoin', 2, '%'],
+  relRet12: ['coin t.o.v. Bitcoin (12 candles)', 2, '%'], relRet48: ['coin t.o.v. Bitcoin (48 candles)', 2, '%'], hourUtc: ['uur (UTC)', 0, ''], dowUtc: ['dag van de week', 0, ''],
+};
+const DAYS = ['maandag', 'dinsdag', 'woensdag', 'donderdag', 'vrijdag', 'zaterdag', 'zondag'];
+export function formatFeature(key, v) {
+  if (v == null || !Number.isFinite(v)) return 'onbekend';
+  if (key === 'dowUtc') return DAYS[v] ?? String(v);
+  if (key === 'hourUtc') return `${v}:00`;
+  const [, dec, unit] = FEATURE_INFO[key] ?? [key, 2, ''];
+  const sign = unit === '%' && v > 0 ? '+' : '';
+  return `${sign}${v.toFixed(dec)}${unit && unit !== '×' ? (unit.startsWith('%') ? '%' : ` ${unit}`) : unit}`;
+}
+
+// Gemiddelde uitkomst onder elke knoop van een boom (voor de uitleg). Met het aantal
+// voorbeelden per knoop (t.n, nieuwere modellen) is dat exact; anders de waarde van de knoop.
+function nodeMeans(t) {
+  if (t._mean) return t._mean;
+  const mean = new Array(t.l.length);
+  const walk = (n) => {
+    if (t.l[n] === -1) return (mean[n] = t.v[n]);
+    const a = walk(t.l[n]), b = walk(t.r[n]);
+    if (t.n) { const na = t.n[t.l[n]], nb = t.n[t.r[n]]; mean[n] = (na * a + nb * b) / (na + nb); } else mean[n] = t.v[n];
+    return mean[n];
+  };
+  walk(0);
+  Object.defineProperty(t, '_mean', { value: mean, enumerable: false });
+  return mean;
+}
+
+// Waarom geeft het model deze kans? Per kenmerk hoeveel het de uitkomst omhoog of omlaag duwde
+// (in log-odds), door elke splitsing langs het pad toe te rekenen aan het kenmerk waarop gesplitst
+// wordt. Samen tellen ze precies op tot de voorspelling.
+export function contributions(model, features) {
+  const row = model.features.map((k, j) => {
+    const v = features?.[k];
+    return v == null || !Number.isFinite(v) ? model.medians[j] : v;
+  });
+  const c = new Array(model.features.length).fill(0);
+  let base = model.init;
+  for (const t of model.trees) {
+    const mean = nodeMeans(t);
+    let n = 0;
+    base += model.learningRate * mean[0];
+    while (t.l[n] !== -1) {
+      const next = row[t.f[n]] <= t.t[n] ? t.l[n] : t.r[n];
+      c[t.f[n]] += model.learningRate * (mean[next] - mean[n]);
+      n = next;
+    }
+  }
+  return { base, contrib: c };
+}
+
+// Top-uitleg in procentpunten winstkans: [{ key, label, value, text, effect }], grootste eerst.
+export function explain(model, features, top = 6) {
+  const { base, contrib } = contributions(model, features);
+  const raw = base + contrib.reduce((a, b) => a + b, 0);
+  const sig = (x) => 1 / (1 + Math.exp(-x));
+  const p = sig(raw);
+  return model.features
+    .map((key, j) => ({ key, label: FEATURE_INFO[key]?.[0] ?? key, value: features?.[key] ?? null,
+      text: formatFeature(key, features?.[key]), effect: (p - sig(raw - contrib[j])) * 100 }))
+    .filter((x) => Math.abs(x.effect) >= 0.5)
+    .sort((a, b) => Math.abs(b.effect) - Math.abs(a.effect))
+    .slice(0, top);
+}
+
 // Soort markt voor deze coin (zelfde berekening als regime_of in trainer/train.py): de trend
 // over het grotere plaatje, gemeten in "normale beweging" (ATR).
 export const REGIME_LABEL = { stijgend: 'stijgende markt', zijwaarts: 'zijwaartse markt', dalend: 'dalende markt' };

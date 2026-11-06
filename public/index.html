@@ -521,6 +521,10 @@
         <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Huidig model</h2></div><div class="panel-b" id="tr-model"></div></div>
         <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-gear"/></svg>Instellingen van de trainer</h2></div><div class="panel-b" id="tr-config"></div></div>
       </div>
+      <div class="panel gap" id="tr-team-panel" hidden>
+        <div class="panel-h"><h2><svg class="i"><use href="#i-pulse"/></svg>Samenwerking AI + model</h2><span class="hint" id="tw-hint"></span></div>
+        <div class="panel-b" id="tw-body"></div>
+      </div>
       <div class="panel gap" id="tr-sched-panel">
         <div class="panel-h"><h2><svg class="i"><use href="#i-history"/></svg>Wanneer trainen</h2><span class="hint" id="tr-next"></span></div>
         <form class="panel-b" id="tr-sched">
@@ -1331,7 +1335,7 @@ function render() {
     ['Koers', d => `<span class="num">${eur(d.indicators?.close)}</span>`, 'r'],
     ['RSI', d => `<span class="num">${d.indicators?.rsi?.toFixed(1) ?? '–'}</span>`, 'r'],
     ['Model', d => `<span class="num">${d.indicators?.mlProb != null ? `${d.indicators.mlProb.toFixed(0)}%` : '–'}</span>`, 'r'],
-    ['Reden', d => `<div class="reason">${esc(d.reason)}${d.aiError ? ' <span class="warnc">(AI-fout)</span>' : ''}${d.hasChat ? ` <a href="#" data-chat="${esc(d.at)}">Bekijk gesprek</a>` : ''}</div>`],
+    ['Reden', d => `<div class="reason">${esc(d.reason)}${d.indicators?.mlWhy?.length ? `<div class="muted" style="font-size:12.5px;margin-top:3px">Model: ${d.indicators.mlWhy.slice(0, 3).map((w) => `${esc(w.label)} ${esc(w.text)} <span class="${w.effect > 0 ? 'up' : 'down'}">${w.effect > 0 ? '+' : ''}${Number(w.effect).toFixed(0)}</span>`).join(' · ')}</div>` : ''}${d.aiError ? ' <span class="warnc">(AI-fout)</span>' : ''}${d.hasChat ? ` <a href="#" data-chat="${esc(d.at)}">Bekijk gesprek</a>` : ''}</div>`],
   ], 'Nog geen koopsignalen. Bij 1h-candles kan dat even duren.', 'pulse');
 
   if (isOn('trades')) { $('analysis').innerHTML = analysisHtml(s.analysis); $('an-hint').textContent = s.analysis?.trades ? `${s.analysis.trades} gesloten trades in ${live ? 'live' : 'paper'}${s.analysis.since ? ` sinds ${time(s.analysis.since)}` : ''}` : ''; }
@@ -1753,6 +1757,7 @@ function renderTrainer() {
 
   // Strategie-zoeker
   renderSearch(t, nl);
+  renderTeamwork(t, nl);
 
   // Instellingen die de trainer gebruikt
   const c = t?.config;
@@ -1793,6 +1798,25 @@ function renderTrainer() {
     ['Resultaat', (h) => h.published ? '<span class="badge ok">gepubliceerd</span>' : `<span class="badge soft">niet gebruikt</span> <span class="muted" style="font-size:12.5px">${esc(h.reason ?? '')}</span>`],
   ], 'Nog geen trainingen.', 'history');
 }
+function renderTeamwork(t, nl) {
+  $('tr-team-panel').hidden = !t;
+  if (!t) return;
+  const tw = t.teamwork ?? {};
+  const sign = (v) => v == null ? '–' : `${v > 0 ? '+' : ''}${nl(v, 2)}%`;
+  $('tw-hint').textContent = tw.total ? `${tw.total} signalen afgelopen${tw.pending ? ` · ${tw.pending} nog bezig` : ''}` : '';
+  const row = (name, x, note) => `<tr><td>${name}</td><td class="r num">${x?.n ?? 0}</td><td class="r num"><span class="${(x?.avgReturnPct ?? 0) > 0 ? 'up' : 'down'}">${sign(x?.avgReturnPct)}</span></td><td class="r num">${x?.winRate == null ? '–' : `${nl(x.winRate, 0)}%`}</td><td class="muted">${note}</td></tr>`;
+  $('tw-body').innerHTML = `<p class="muted" style="margin:0 0 10px;font-size:13.5px">Het model geeft bij elk signaal een winstkans én legt uit waarom (welke kenmerken de doorslag gaven). De AI krijgt die uitleg en beslist. De trainer rekent daarna met de echte koersen uit hoe elk signaal afliep, ook de afgewezen. Dat scorebord krijgt de AI weer te zien, zodat hij leert wanneer hij het model moet volgen.</p>`
+    + (tw.total ? `<div class="scroll"><table><thead><tr><th></th><th class="r">Signalen</th><th class="r">Gem. per trade</th><th class="r">Doel gehaald</th><th></th></tr></thead><tbody>
+      ${row('AI keurde goed', tw.approved, '')}
+      ${row('AI wees af', tw.rejected, 'wat het zou hebben opgeleverd')}
+      ${row(`Model ja (≥ ${nl(tw.modelThreshold ?? 50, 0)}%), AI nee`, tw.modelYesAiNo, 'oneens')}
+      ${row('Model nee, AI ja', tw.modelNoAiYes, 'oneens')}
+      ${row('Allebei ja', tw.bothYes, '')}
+      </tbody></table></div>
+      <p class="muted" style="margin:8px 0 0;font-size:12.5px">Berekend met doel +${nl(tw.target)}% / stop −${nl(tw.stop)}% en kosten, op ${esc(tw.timeframe ?? '')}-candles${tw.updatedAt ? `, bijgewerkt ${time(tw.updatedAt)}` : ''}. De AI krijgt dit scorebord vanaf 15 afgelopen signalen.</p>`
+      : '<p class="muted" style="margin:0">Nog geen afgelopen signalen. Zodra de AI signalen met een modelkans beoordeelt, verschijnt hier wie het vaker bij het rechte eind had.</p>');
+}
+
 let ssDirty = false;
 const SS_STATUS = { bevestigd: 'ok', 'niet bevestigd': 'wait', 'niet goed genoeg': 'soft', 'geen bruikbare drempel': 'soft', 'te weinig data': 'soft' };
 const REGIME_NL = { stijgend: 'stijgend', zijwaarts: 'zijwaarts', dalend: 'dalend' };

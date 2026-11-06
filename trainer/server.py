@@ -184,10 +184,100 @@ def load_feedback():
     return read_json('feedback.json', [])
 
 
-def add_feedback(trades):
-    """Echte trades van de bot opslaan. Dubbele (zelfde coin, timeframe en tijdstip) tellen één keer."""
+SIGNALS_MAX = 5000
+
+
+def add_signals(items):
+    """Oordelen van de AI over signalen (goedgekeurd/afgewezen), met de kans van het model.
+    De uitkomst rekenen we later uit met de koersen (zie compute_teamwork)."""
     clean = []
-    for t in trades if isinstance(trades, list) else []:
+    for t in items:
+        try:
+            clean.append({'pair': str(t['pair'])[:20], 'timeframe': str(t['timeframe'])[:5], 'ts': int(t['ts']),
+                          'prob': float(t['prob']) if isinstance(t.get('prob'), (int, float)) else None,
+                          'ai': 'approve' if t.get('aiDecision') == 'approve' else 'reject'})
+        except (KeyError, TypeError, ValueError):
+            continue
+    if not clean:
+        return 0
+    with feedback_lock:
+        rows = read_json('signals.json', [])
+        seen = {(r['pair'], r['timeframe'], r['ts']) for r in rows}
+        added = []
+        for r in clean:
+            k = (r['pair'], r['timeframe'], r['ts'])
+            if k not in seen:
+                seen.add(k)
+                added.append(r)
+        write_json('signals.json', (rows + added)[-SIGNALS_MAX:])
+    return len(added)
+
+
+def compute_teamwork():
+    """Wie had gelijk: het model of de AI? Voor elk signaal rekenen we met de bewaarde koersen uit
+    hoe het was afgelopen (zelfde doel/stop/duur/kosten als de training), en vergelijken
+    goedgekeurd met afgewezen, en de gevallen waarin model en AI het oneens waren."""
+    cfg = config()
+    signals = read_json('signals.json', [])
+    model = read_json('model.json', None)
+    thr = ((model or {}).get('meta', {}).get('metrics', {}).get('best') or {}).get('minProb') or 0.5
+    cache = os.path.join(DATA, 'candles')
+    loaded = {}
+    done = []
+    pending = 0
+    for sg in signals:
+        if sg['timeframe'] != cfg['timeframe']:
+            continue
+        key = (sg['pair'], sg['timeframe'])
+        if key not in loaded:
+            try:
+                c = read_json(os.path.join('candles', f"{sg['pair'].replace('/', '-')}_{sg['timeframe']}.json"), [])
+            except Exception:
+                c = []
+            loaded[key] = (c, {x[0]: i for i, x in enumerate(c)})
+        c, idx = loaded[key]
+        i = idx.get(sg['ts'])
+        if i is None or i + int(cfg['horizon']) >= len(c):
+            pending += 1
+            continue
+        lab, ret = trainer.label_at(c, i, cfg['targetPct'], cfg['stopPct'], int(cfg['horizon']), cfg['costPct'])
+        done.append({**sg, 'win': lab, 'returnPct': ret})
+
+    def summary(rows):
+        if not rows:
+            return {'n': 0, 'winRate': None, 'avgReturnPct': None}
+        return {'n': len(rows), 'winRate': sum(r['win'] for r in rows) / len(rows) * 100,
+                'avgReturnPct': sum(r['returnPct'] for r in rows) / len(rows)}
+    model_yes = lambda r: r['prob'] is not None and r['prob'] >= thr * 100
+    out = {
+        'updatedAt': datetime.now().isoformat(timespec='seconds'), 'timeframe': cfg['timeframe'],
+        'total': len(done), 'pending': pending, 'modelThreshold': thr * 100,
+        'target': cfg['targetPct'], 'stop': cfg['stopPct'], 'horizon': cfg['horizon'],
+        'approved': summary([r for r in done if r['ai'] == 'approve']),
+        'rejected': summary([r for r in done if r['ai'] == 'reject']),
+        # De interessante gevallen: model en AI oneens.
+        'modelYesAiNo': summary([r for r in done if model_yes(r) and r['ai'] == 'reject']),
+        'modelNoAiYes': summary([r for r in done if not model_yes(r) and r['ai'] == 'approve']),
+        'bothYes': summary([r for r in done if model_yes(r) and r['ai'] == 'approve']),
+        'recent': [{k: r[k] for k in ('pair', 'ts', 'prob', 'ai', 'win', 'returnPct')} for r in done[-12:]][::-1],
+    }
+    write_json('teamwork.json', out)
+    return out
+
+
+def add_feedback(trades):
+    """Echte trades van de bot opslaan. Dubbele (zelfde coin, timeframe en tijdstip) tellen één keer.
+    Items met kind 'signal' zijn oordelen van de AI over een signaal (geen trade)."""
+    items = trades if isinstance(trades, list) else []
+    signals = [t for t in items if isinstance(t, dict) and t.get('kind') == 'signal']
+    if signals:
+        n = add_signals(signals)
+        if n:
+            log(f'{n} AI-oordeel/oordelen over signalen ontvangen')
+    clean = []
+    for t in items:
+        if isinstance(t, dict) and t.get('kind') == 'signal':
+            continue
         if not isinstance(t, dict) or not isinstance(t.get('features'), dict):
             continue
         try:
@@ -268,6 +358,10 @@ def run_training(reason):
             traceback.print_exc()
             state['history'] = ([{'startedAt': started, 'published': False, 'reason': f'Fout: {e}'}] + state['history'])[:10]
         finally:
+            try:
+                compute_teamwork()
+            except Exception as e:
+                log(f'Scorebord AI + model bijwerken mislukt: {e}')
             work_lock.release()
             state['running'] = False
             state['lastFinished'] = datetime.now()
@@ -352,6 +446,10 @@ def search_round():
         finally:
             state['searching'] = False
             state['cache'] = cache_info()
+            try:
+                compute_teamwork()
+            except Exception as e:
+                log(f'Scorebord AI + model bijwerken mislukt: {e}')
     if switch:
         log(f"Nieuwe beste strategie gevonden: {switch['timeframe']} +{switch['targetPct']:g}% / -{switch['stopPct']:g}%, "
             f"max {switch['holdMinutes']} min ({switch['val']['best']['avgReturnPct']:+.2f}% per trade, controle {switch['holdout']['avgReturnPct']:+.2f}%)")
@@ -442,6 +540,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {'ok': True})
         if not self.authed():
             return
+        if self.path == '/teamwork':
+            return self.send(200, read_json('teamwork.json', {'total': 0}))
         if self.path == '/model.json':
             try:
                 with open(path('model.json'), 'rb') as f:
@@ -461,6 +561,7 @@ class Handler(BaseHTTPRequestHandler):
                 'running': state['running'], 'progress': state['progress'] if state['running'] else None,
                 'config': config(), 'nextRunAt': None if state['running'] else next_run().isoformat(timespec='minutes'), 'trainHour': TRAIN_HOUR,
                 'cache': state.get('cache', []), 'feedback': feedback_info(), 'search': search_info(),
+                'teamwork': read_json('teamwork.json', {'total': 0}),
                 'model': model and model.get('meta'), 'history': state['history'], 'log': state['log'][-150:],
             })
         self.send(404, {'error': 'Niet gevonden'})

@@ -11,7 +11,7 @@ import os
 import random
 
 from features import FEATURES, context, features_at, series
-from train import _impute, export_model
+from train import _impute, contributions_json, export_model, predict_json
 
 N = 700
 STEP = 300_000  # 5m-candles
@@ -54,6 +54,11 @@ def main():
         points.append({'end': end, 'features': f})
     probs = [float(model.predict_proba(_impute([[p['features'][k] for k in FEATURES]], medians))[0][1]) for p in points]
     missing = float(model.predict_proba([medians])[0][1])
+    for p in points:
+        base, c = contributions_json(m, _impute([[p['features'][k] for k in FEATURES]], medians)[0])
+        p['base'], p['contrib'] = base, c
+        raw = base + sum(c)
+        assert abs(1 / (1 + math.exp(-raw)) - predict_json(m, _impute([[p['features'][k] for k in FEATURES]], medians)[0])) < 1e-9
     out = {'candles': coin, 'btc': btc, 'points': points, 'model': m, 'probs': probs, 'missing': missing}
     dest = os.path.join(os.path.dirname(__file__), '..', 'test', 'fixtures', 'ml-parity.json')
     with open(dest, 'w') as fh:

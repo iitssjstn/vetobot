@@ -1,6 +1,6 @@
 import { evaluate } from './strategy.js';
 import { ema } from './indicators.js';
-import { computeFeatures, predict, CANDLES_NEEDED, regimeOf, REGIME_LABEL } from './mlmodel.js';
+import { computeFeatures, predict, explain, CANDLES_NEEDED, regimeOf, REGIME_LABEL } from './mlmodel.js';
 import { askVetoChain, askTeamChain, askExitChain, testChain, listModels, writeSummaryChain, aiLabel } from './ai.js';
 import { TIMEFRAME_MINUTES, fmtInterval, LIVE_MIN_STAKE_EUR } from './settings.js';
 import { cleanSuggestions, currentValues, applySuggestions } from './suggest.js';
@@ -698,7 +698,7 @@ export class Bot {
     // Eigen voorspelmodel: winstkans uitrekenen bij een koopsignaal, en eventueel filteren.
     if (result.signal === 'buy') {
       const ml = await this.#modelProbability(pair, useOpen ? candles.slice(0, -1) : candles, timeframe);
-      if (ml && result.indicators) { result.indicators.mlProb = ml.prob; result.indicators.mlRegime = ml.regime; }
+      if (ml && result.indicators) { result.indicators.mlProb = ml.prob; result.indicators.mlRegime = ml.regime; result.indicators.mlWhy = ml.why; }
       if (ml && strategy.mlMinProb > 0 && ml.prob < strategy.mlMinProb) {
         result = { ...result, signal: 'none', filtered: true,
           reason: `Kruising, maar het eigen model geeft maar ${ml.prob.toFixed(0)}% winstkans (minimaal ${strategy.mlMinProb}%)` };
@@ -792,9 +792,22 @@ export class Bot {
         filters: this.#aiFilters(),
         aiHistory: this.#aiHistory(pair),
         setupStats: this.#setupStats(),
-        ml: result.indicators?.mlProb != null ? { prob: result.indicators.mlProb, meta: this.getModel?.()?.meta, regime: result.indicators.mlRegime } : null,
+        ml: result.indicators?.mlProb != null ? { prob: result.indicators.mlProb, meta: this.getModel?.()?.meta, regime: result.indicators.mlRegime, why: result.indicators.mlWhy } : null,
+        // Hoe de AI en het model het samen deden (van de trainer): wie had gelijk?
+        teamwork: result.indicators?.mlProb != null ? this.getTeamwork?.() ?? null : null,
       },
     });
+    // Het oordeel van de AI naar de trainer, die later uitrekent hoe het signaal afliep. Zo zie
+    // je (en de AI) wie het vaker bij het rechte eind heeft: het model of de AI.
+    const lf = this.lastFeatures[pair];
+    if (lf && !veto.error && result.indicators?.mlProb != null) {
+      try {
+        this.onFeedback?.({ kind: 'signal', pair, timeframe: lf.timeframe, ts: lf.ts, prob: lf.prob, features: lf.features,
+          aiDecision: veto.decision === 'approve' ? 'approve' : 'reject', returnPct: 0 });
+      } catch {
+        // extraatje
+      }
+    }
 
     this.store.addDecision({
       pair,
@@ -874,7 +887,14 @@ export class Bot {
     // Soort markt, en hoe het model het in dat soort markt deed op de testperiode.
     const regime = regimeOf(f);
     const rs = model.meta?.metrics?.regimes?.[regime] ?? null;
-    return { prob, meta: model.meta, regime, regimeStats: rs, regimeBad: Boolean(rs && rs.nSelected >= 30 && rs.avgReturnPct != null && rs.avgReturnPct <= 0) };
+    // Waarom: welke kenmerken de kans het meest omhoog of omlaag duwden (voor de AI en het dashboard).
+    let why = [];
+    try {
+      why = explain(model, f).map((w) => ({ key: w.key, label: w.label, text: w.text, effect: +w.effect.toFixed(1) }));
+    } catch {
+      why = [];
+    }
+    return { prob, meta: model.meta, regime, regimeStats: rs, why, regimeBad: Boolean(rs && rs.nSelected >= 30 && rs.avgReturnPct != null && rs.avgReturnPct <= 0) };
   }
 
   // Gesprekken zijn groot; bewaar ze alleen bij de laatste 60 beslissingen (state blijft klein).
