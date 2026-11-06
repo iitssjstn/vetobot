@@ -857,36 +857,45 @@ test('eigen model: marktfase waarin het model verliest → AI gewaarschuwd, of o
   assert.ok(skip.reasons.some((r) => /maakte het eigen model op de test verlies \(gem\. -0\.40% per trade\)/.test(r ?? '')), skip.reasons.join(' | '));
 });
 
-test('zelflerend kiezen: strategie met eigen model, doel en stop; beloning na het sluiten', async () => {
+test('zelflerend kiezen: strategieën op elke candle-tijd bepalen zelf de aankoop; beloning na het sluiten', async () => {
   const fixture = JSON.parse(fs.readFileSync(new URL('./fixtures/ml-parity.json', import.meta.url), 'utf8'));
   const { bot, ex } = setup({});
   await bot.setRisk({ cooldownMinutes: 0, stopLossPct: 9, takeProfitPct: 9 });
   await bot.setStrategy({ mlMinProb: 0, maxChasePct: 0, mlBandit: 1 });
   const arm = (key, init, target, stop) => ({ key, timeframe: key.split('|')[0], targetPct: target, stopPct: stop, holdMinutes: 240, minProb: 0.5,
-    model: { ...fixture.model, init: fixture.model.init + init, meta: { timeframe: '1h', targetPct: target, stopPct: stop } } });
-  // 'nee' ziet nooit een kans (kans ~0%), 'ja' altijd (kans ~100%)
-  bot.getArms = () => [arm('1h|2|1|240', 10, 2, 1), arm('1h|5|3|240', -10, 5, 3), arm('15m|1|1|60', 10, 1, 1)];
+    model: { ...fixture.model, init: fixture.model.init + init, meta: { timeframe: key.split('|')[0], targetPct: target, stopPct: stop } } });
+  // '15m' ziet altijd een kans (~100%), '1h' nooit (~0%); de bot zelf staat op 1h
+  bot.getArms = () => [arm('15m|2|1|240', 10, 2, 1), arm('1h|5|3|240', -10, 5, 3)];
   withAi(bot);
   aiAnswer = 'approve';
   lastAiPrompt = '';
-  const seq = [...Array(100)].map((_, i) => 100 + Math.sin(i) * 0.5).concat([...Array(160)].map((_, i) => 100 - i * 0.2), [68, 70, 72, 74]);
-  let pos = null;
-  for (let n = 261; n <= seq.length; n++) {
-    ex.prices = seq.slice(0, n);
-    await bot.tick();
-    pos ??= bot.store.state.positions['BTC/EUR'] ? structuredClone(bot.store.state.positions['BTC/EUR']) : null;
-  }
-  assert.ok(pos, 'gekocht');
-  assert.deepEqual(pos.plan, { key: '1h|2|1|240', stopLossPct: 1, takeProfitPct: 2, maxHoldMinutes: 240 });
-  const d = bot.store.state.decisions.find((x) => x.outcome === 'approved');
-  assert.equal(d.indicators.mlArm.key, '1h|2|1|240');
+  // Zijwaartse koers, geen EMA-kruising: toch kopen, want een strategie ziet een kans
+  const seq = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+  ex.prices = seq;
+  await bot.tick();
+  const pos = bot.store.state.positions['BTC/EUR'];
+  assert.ok(pos, `gekocht: ${bot.pairStatus['BTC/EUR']?.reason}`);
+  assert.deepEqual(pos.plan, { key: '15m|2|1|240', stopLossPct: 1, takeProfitPct: 2, maxHoldMinutes: 240 });
+  assert.equal(pos.ml.timeframe, '15m', 'kenmerken van de candle-tijd van de strategie, voor de feedback');
+  assert.match(bot.store.state.decisions[0].reason ?? '', /./);
+  assert.match(lastAiPrompt, /Zelflerend: strategie 15m \+2% \/ −1%, max 4 uur ziet 100% kans/);
   assert.match(lastAiPrompt, /1R \(verlies tot stop\): 1\.00%/, 'AI krijgt het plan van de gekozen strategie');
-  assert.equal(bot.banditSummary().arms, 2, 'alleen strategieën op de eigen candle-tijd');
-  // +2,86% → take-profit van de strategie (2%), niet de 9% van de gebruiker
-  const t = bot.store.state.trades[0];
-  assert.match(t.exitReason, /Take-profit/);
-  const st = bot.bandit.stats('1h|2|1|240');
+  assert.equal(bot.banditSummary().arms, 2);
+  // EMA-verkoopsignaal telt niet voor een strategie-positie; take-profit (2%) wel
+  ex.prices = [...seq, seq.at(-1) * 1.025];
+  await bot.tick();
+  assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
+  assert.match(bot.store.state.trades[0].exitReason, /Take-profit/);
+  const st = bot.bandit.stats('15m|2|1|240');
   assert.equal(st.trades, 1);
   assert.ok(st.total > 0, 'beloning = de winst');
-  assert.ok(bot.activity.some((a) => /Beloning voor strategie/.test(a.message ?? a.text ?? JSON.stringify(a))));
+  assert.ok(bot.activity.some((a) => /Beloning voor strategie/.test(JSON.stringify(a))));
+  // Nieuwe candle: mag opnieuw; daarna dezelfde candle nog eens: niet nog een keer beoordelen
+  await bot.tick();
+  if (bot.store.state.positions['BTC/EUR']) await bot.closeManual('BTC/EUR');
+  const n = bot.store.state.decisions.length;
+  await bot.tick();
+  assert.equal(bot.store.state.decisions.length, n);
+  assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
+  assert.equal(bot.bandit.stats('15m|2|1|240').trades, 1, 'handmatig sluiten telt niet als beloning');
 });

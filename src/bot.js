@@ -200,9 +200,9 @@ export class Bot {
     return this._bandit;
   }
 
-  // Bevestigde strategieën van de trainer die bij de huidige candle-tijd passen.
+  // Bevestigde strategieën van de trainer (elke candle-tijd), met hun eigen model.
   activeArms() {
-    return (this.getArms?.() ?? []).filter((a) => a.timeframe === this.timeframe && a.model);
+    return (this.getArms?.() ?? []).filter((a) => a.model);
   }
 
   // Overzicht voor het dashboard.
@@ -210,7 +210,10 @@ export class Bot {
     const arms = this.activeArms();
     return {
       on: Boolean(this.strategy.mlBandit), arms: arms.length,
-      rows: this.bandit.summary(arms.map((a) => a.key)).map((r) => ({ ...r, ...(arms.find((a) => a.key === r.key) ? { targetPct: arms.find((a) => a.key === r.key).targetPct, stopPct: arms.find((a) => a.key === r.key).stopPct, holdMinutes: arms.find((a) => a.key === r.key).holdMinutes } : {}) })),
+      rows: this.bandit.summary(arms.map((a) => a.key)).map((r) => {
+        const a = arms.find((x) => x.key === r.key);
+        return a ? { ...r, timeframe: a.timeframe, targetPct: a.targetPct, stopPct: a.stopPct, holdMinutes: a.holdMinutes } : r;
+      }),
     };
   }
 
@@ -721,20 +724,21 @@ export class Bot {
           reason: `Kruising, maar de koers is sinds het signaal al ${moved.toFixed(2)}% gestegen (max ${strategy.maxChasePct}%)` };
       }
     }
+    // Zelflerend: de bevestigde strategieën van de trainer (op elke candle-tijd, met elk een eigen
+    // model) bepalen zelf wanneer er gekocht wordt; de bandit kiest welke.
+    const allArms = strategy.mlBandit && !position && !this.following ? this.activeArms() : [];
+    if (allArms.length) {
+      const a = await this.#armSignal(pair, allArms);
+      result = a.buy
+        ? { ...result, signal: 'buy', filtered: false, armSignal: true, crossClose: null, reason: a.reason,
+          indicators: { ...result.indicators, mlProb: a.prob, mlWhy: a.why, mlArm: a.plan, mlRegime: a.regime } }
+        : { ...result, signal: 'none', armSignal: true, reason: a.reason };
+    }
     // Eigen voorspelmodel: winstkans uitrekenen bij een koopsignaal, en eventueel filteren.
-    if (result.signal === 'buy') {
+    if (result.signal === 'buy' && !result.armSignal) {
       const ml = await this.#modelProbability(pair, useOpen ? candles.slice(0, -1) : candles, timeframe);
       if (ml && result.indicators) { result.indicators.mlProb = ml.prob; result.indicators.mlRegime = ml.regime; result.indicators.mlWhy = ml.why; }
-      const arm = strategy.mlBandit ? this.#banditPick(pair) : null;
-      if (arm?.none) {
-        result = { ...result, signal: 'none', filtered: true, reason: `Kruising, maar geen van de ${arm.count} bevestigde strategieën ziet hier genoeg kans (${arm.best})` };
-      } else if (arm && result.indicators) {
-        // Gekozen strategie: eigen model, eigen doel/stop/duur voor deze trade.
-        Object.assign(result.indicators, { mlProb: arm.prob, mlWhy: arm.why, mlArm: arm.plan });
-      }
-      if (arm) {
-        // De strategie-keuze vervangt de vaste minimale modelkans.
-      } else if (ml && strategy.mlMinProb > 0 && ml.prob < strategy.mlMinProb) {
+      if (ml && strategy.mlMinProb > 0 && ml.prob < strategy.mlMinProb) {
         result = { ...result, signal: 'none', filtered: true,
           reason: `Kruising, maar het eigen model geeft maar ${ml.prob.toFixed(0)}% winstkans (minimaal ${strategy.mlMinProb}%)` };
       } else if (ml?.regimeBad && strategy.mlSkipBadRegime) {
@@ -832,6 +836,7 @@ export class Bot {
             ? { ...(this.getModel?.()?.meta ?? {}), targetPct: result.indicators.mlArm.takeProfitPct, stopPct: result.indicators.mlArm.stopLossPct, metrics: (this.activeArms().find((a) => a.key === result.indicators.mlArm.key)?.model?.meta?.metrics) ?? null }
             : this.getModel?.()?.meta,
           arm: result.indicators.mlArm ?? null } : null,
+        signalReason: result.armSignal ? result.reason : null,
         // Hoe de AI en het model het samen deden (van de trainer): wie had gelijk?
         teamwork: result.indicators?.mlProb != null ? this.getTeamwork?.() ?? null : null,
       },
@@ -907,36 +912,63 @@ export class Bot {
     return { ...risk, stakeEur: this.stakeInfo(risk).effective };
   }
 
-  // Zelflerend kiezen: welke bevestigde strategie ziet hier een kans (winstkans boven zijn eigen
-  // drempel), en welke daarvan kiest de bandit (op basis van de beloningen tot nu toe)?
-  // null = uit of geen strategieën; { none: true } = niemand ziet een kans.
-  #banditPick(pair) {
-    const arms = this.activeArms();
-    const lf = this.lastFeatures[pair];
-    if (!arms.length || !lf?.features) return null;
-    const scored = arms.map((a) => {
-      let prob = null;
-      try { prob = predict(a.model, lf.features) * 100; } catch { prob = null; }
-      return { a, prob, min: (a.minProb ?? 0.5) * 100 };
-    }).filter((x) => x.prob != null);
-    const willing = scored.filter((x) => x.prob >= x.min);
+  // Zelflerend kiezen. Per candle-tijd van de strategieën: zodra daar een nieuwe candle gesloten
+  // is, rekent elk model van die candle-tijd de winstkans uit. Strategieën boven hun eigen drempel
+  // "willen" kopen; de bandit kiest daaruit op basis van de beloningen tot nu toe.
+  async #armSignal(pair, arms) {
+    this.lastArmTs ??= {};
+    this.lastArmReason ??= {};
+    const willing = [];
+    let best = null;
+    let evaluated = 0;
+    for (const tf of [...new Set(arms.map((x) => x.timeframe))]) {
+      // Pas weer ophalen als er een nieuwe candle gesloten kan zijn (scheelt verzoeken bij Bitvavo).
+      const seen = this.lastArmTs[`${pair}|${tf}`];
+      const tfMs = (this.ex.parseTimeframe?.(tf) ?? 300) * 1000;
+      if (seen && Date.now() < seen + 2 * tfMs) continue;
+      const candles = await fetchClosedCandles(this.ex, pair, tf, CANDLES_NEEDED).catch(() => null);
+      const ts = candles?.at(-1)?.[0];
+      if (!ts || this.lastArmTs[`${pair}|${tf}`] === ts) continue; // deze candle al bekeken
+      this.lastArmTs[`${pair}|${tf}`] = ts;
+      const btc = pair === 'BTC/EUR' ? candles : await fetchClosedCandles(this.ex, 'BTC/EUR', tf, CANDLES_NEEDED).catch(() => null);
+      const f = computeFeatures(candles, { btc });
+      if (!f) continue;
+      evaluated++;
+      for (const a of arms.filter((x) => x.timeframe === tf)) {
+        let prob = null;
+        try { prob = predict(a.model, f) * 100; } catch { prob = null; }
+        if (prob == null) continue;
+        const min = (a.minProb ?? 0.5) * 100;
+        const x = { a, prob, min, f, ts, tf };
+        if (prob >= min) willing.push(x);
+        if (!best || prob - min > best.prob - best.min) best = x;
+      }
+    }
+    if (!evaluated) return { buy: false, reason: this.lastArmReason[pair] ?? 'Zelflerend: wacht op een nieuwe candle' };
+    const hold = (m) => (m >= 60 ? `${+(m / 60).toFixed(1)} uur` : `${m} min`);
+    const name = (a) => `${a.timeframe} +${a.targetPct}% / −${a.stopPct}%, max ${hold(a.holdMinutes)}`;
     if (!willing.length) {
-      const top = scored.sort((x, y) => (y.prob - y.min) - (x.prob - x.min))[0];
-      return { none: true, count: arms.length, best: top ? `beste: ${top.prob.toFixed(0)}% bij minimaal ${top.min.toFixed(0)}%` : 'geen kans' };
+      const reason = `Zelflerend: geen van de ${arms.length} strategieën ziet nu een kans` +
+        (best ? ` (dichtstbij: ${name(best.a)}, ${best.prob.toFixed(0)}% bij minimaal ${best.min.toFixed(0)}%)` : '');
+      this.lastArmReason[pair] = reason;
+      return { buy: false, reason };
     }
     const choice = this.bandit.pick(willing.map((x) => x.a.key));
     const w = willing.find((x) => x.a.key === choice.key);
+    this.lastFeatures[pair] = { ts: w.ts, timeframe: w.tf, features: w.f, prob: w.prob, at: Date.now() };
     let why = [];
     try {
-      why = explain(w.a.model, lf.features).map((x) => ({ key: x.key, label: x.label, text: x.text, effect: +x.effect.toFixed(1) }));
+      why = explain(w.a.model, w.f).map((x) => ({ key: x.key, label: x.label, text: x.text, effect: +x.effect.toFixed(1) }));
     } catch {
       why = [];
     }
-    lf.prob = w.prob;
+    const reason = `Zelflerend: strategie ${name(w.a)} ziet ${w.prob.toFixed(0)}% kans (min. ${w.min.toFixed(0)}%)` +
+      (willing.length > 1 ? `, gekozen uit ${willing.length} die wilden kopen` : '');
+    this.lastArmReason[pair] = null;
     return {
-      prob: w.prob, why,
-      plan: { key: w.a.key, stopLossPct: w.a.stopPct, takeProfitPct: w.a.targetPct, maxHoldMinutes: w.a.holdMinutes, minProb: w.min,
-        estimatePct: +choice.mean.toFixed(3), options: willing.length },
+      buy: true, prob: w.prob, why, reason, regime: regimeOf(w.f),
+      plan: { key: w.a.key, timeframe: w.tf, stopLossPct: w.a.stopPct, takeProfitPct: w.a.targetPct, maxHoldMinutes: w.a.holdMinutes,
+        minProb: w.min, estimatePct: +choice.mean.toFixed(3), options: willing.length },
     };
   }
 
@@ -1097,7 +1129,7 @@ export class Bot {
     }
     // Kenmerken van het signaal bewaren (hooguit 30 min oud), voor de feedback naar de trainer.
     const lf = this.lastFeatures[pair];
-    if (lf && Date.now() - lf.at < 30 * 60 * 1000 && lf.timeframe === this.timeframe) {
+    if (lf && Date.now() - lf.at < 30 * 60 * 1000 && lf.timeframe) {
       this.store.state.positions[pair].ml = { ts: lf.ts, timeframe: lf.timeframe, features: lf.features, prob: lf.prob };
     }
     delete this.lastFeatures[pair];
@@ -1123,6 +1155,9 @@ export class Bot {
   // onder EMA slow ligt én de positie minimaal zoveel candles open staat.
   // Stop-loss, trailing stop, take-profit en de AI-winstcheck staan hier los van en werken altijd.
   #signalExit(position, candles, strategy, timeframe) {
+    // Positie van een zelflerend gekozen strategie: alleen haar eigen stop, doel en duur (zoals
+    // de trainer haar getest heeft), geen verkoop op de EMA-kruising.
+    if (position.plan) return { sell: false };
     const closes = candles.map((c) => c[4]);
     const fast = ema(closes, strategy.emaFast);
     const slow = ema(closes, strategy.emaSlow);

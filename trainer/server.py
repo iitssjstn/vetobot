@@ -122,7 +122,7 @@ def search_info():
     results = data.get('results', {})
     n = sum(1 for r in results.values() if r.get('score') is not None)
     return {'tested': len(results), 'scored': n, 'requiredEdge': searcher.required_edge(n),
-            'possible': len(searcher.all_candidates(config()['search']['timeframes'] or [config()['timeframe']], config()['costPct'])),
+            'possible': len(searcher.all_candidates(config()['search']['timeframes'] or searcher.DEFAULT_TIMEFRAMES, config()['costPct'])),
             'leaderboard': searcher.leaderboard(results), 'lastRoundAt': data.get('lastRoundAt'),
             'rounds': data.get('rounds', 0), 'champion': data.get('champion'),
             'searching': state.get('searching', False), 'progress': state.get('searchProgress') if state.get('searching') else None,

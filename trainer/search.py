@@ -20,6 +20,8 @@ TARGETS = [0.8, 1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0]
 STOPS = [0.8, 1.2, 1.6, 2.0, 2.5, 3.5, 5.0]
 HOLD_MINUTES = [30, 60, 120, 240, 480, 720, 1440]
 TF_ORDER = ['1m', '5m', '15m', '30m', '1h', '2h', '4h']
+# Niets gekozen: deze candle-tijden (1m verliest bijna altijd door de kosten).
+DEFAULT_TIMEFRAMES = ['5m', '15m', '30m', '1h']
 TF_MIN = {'1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120, '4h': 240}
 
 
@@ -134,7 +136,7 @@ def run_round(cfg, results, log=print, fetch=None, markets=None, progress=None, 
     rnd = rnd or random.Random()
     step = progress or (lambda *a: None)
     scfg = cfg.get('search') or {}
-    timeframes = scfg.get('timeframes') or [cfg['timeframe']]
+    timeframes = scfg.get('timeframes') or DEFAULT_TIMEFRAMES
     per_round = int(scfg.get('perRound') or 6)
     cands = all_candidates(timeframes, float(cfg['costPct']))
     chosen = pick(cands, results, per_round, rnd)
