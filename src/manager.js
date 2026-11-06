@@ -137,6 +137,17 @@ export class BotManager {
 
   // Haalt het nieuwste model op (alleen als het veranderd is). Fouten zijn niet erg: het vorige
   // model blijft gewoon in gebruik.
+  // Strategieën (met hun eigen model en rol) voor het zelflerend kiezen. Elke 5 minuten; met
+  // ETag, dus als er niets veranderd is kost het bijna niets.
+  async refreshArms() {
+    if (!this.trainerAccess()) return;
+    const arms = await this.trainerRequest('/arms.json', { etag: this.ml.armsEtag }).catch(() => null);
+    if (arms && !arms.notModified && Array.isArray(arms.data?.arms)) {
+      this.ml.arms = arms.data.arms.filter((a) => a?.model && !validateModel(a.model));
+      this.ml.armsEtag = arms.etag;
+    }
+  }
+
   async refreshMicro() {
     if (!this.ml.model?.meta?.micro || !this.trainerAccess()) return;
     const r = await this.trainerRequest('/micro/latest').catch(() => null);
@@ -156,12 +167,7 @@ export class BotManager {
         this.log.info(`Eigen model bijgewerkt (getraind ${r.data.meta?.trainedAt ?? 'onbekend'})`);
         await this.#autoApplyStrategy(r.data).catch((err) => this.log.error(`Strategie overnemen mislukt: ${err.message}`));
       }
-      // Bevestigde strategieën met hun eigen model, voor het zelflerend kiezen.
-      const arms = await this.trainerRequest('/arms.json', { etag: this.ml.armsEtag }).catch(() => null);
-      if (arms && !arms.notModified && Array.isArray(arms.data?.arms)) {
-        this.ml.arms = arms.data.arms.filter((a) => a?.model && !validateModel(a.model));
-        this.ml.armsEtag = arms.etag;
-      }
+      await this.refreshArms();
       // Scorebord van AI + model (wie had gelijk bij de laatste signalen).
       this.ml.teamwork = (await this.trainerRequest('/teamwork').catch(() => null))?.data ?? this.ml.teamwork ?? null;
       this.ml.error = null;
@@ -336,10 +342,12 @@ export class BotManager {
     // Eigen model: bij de start en daarna elk half uur kijken of er een nieuwe is.
     clearInterval(this.modelTimer);
     clearInterval(this.microTimer);
+    clearInterval(this.armsTimer);
     this.refreshModel();
     this.modelTimer = setInterval(() => { this.refreshModel(); this.flushFeedback(); }, 30 * 60 * 1000);
     // Orderboek-kenmerken van de trainer, elke minuut, maar alleen als het model ze gebruikt.
     this.microTimer = setInterval(() => this.refreshMicro(), 60 * 1000);
+    this.armsTimer = setInterval(() => this.refreshArms().catch(() => {}), 5 * 60 * 1000);
     this.flushFeedback();
   }
 
@@ -384,6 +392,7 @@ export class BotManager {
     clearInterval(this.summaryTimer);
     clearInterval(this.modelTimer);
     clearInterval(this.microTimer);
+    clearInterval(this.armsTimer);
     for (const id of [...this.contexts.keys()]) this.stop(id);
   }
 

@@ -1880,7 +1880,8 @@ function renderBandit(nl) {
   $('tr-bandit-panel').hidden = !b;
   if (!b) return;
   const sign = (v) => v == null ? '–' : `${v > 0 ? '+' : ''}${nl(v, 2)}%`;
-  $('bd-hint').textContent = b.on ? `aan · ${b.arms} strategie${b.arms === 1 ? '' : 'ën'}` : 'uit';
+  const waiting = (trData?.trainer?.search?.arms ?? []).filter((a) => !a.hasModel).length;
+  $('bd-hint').textContent = b.on ? `aan · ${b.arms} strategie${b.arms === 1 ? '' : 'ën'}${waiting ? ` · ${waiting} kandidaat${waiting === 1 ? '' : 'en'} wordt nog getest` : ''}` : 'uit';
   $('bd-body').innerHTML = `<p class="muted" style="margin:0;font-size:13.5px">${b.on
     ? (b.arms ? 'De strategieën die de trainer zelf bedacht heeft, bepalen nu zelf wanneer er gekocht wordt. <b>Bevestigd</b> mag echt traden; <b>proef</b> (veelbelovend, nog niet bevestigd) traded in paper echt en leert verder met schaduwtrades; <b>verkenning</b> doet alleen schaduwtrades. Hoe ze het live doen gaat terug naar de trainer: wie wint wordt bevestigd, wie verliest valt af, en de zoeker bouwt verder op wat live werkt. Elke strategie werkt elk op haar eigen candle-tijd (los van je eigen candle-instelling). Willen er meerdere kopen, dan kiest de bot er één. Na het sluiten krijgt die strategie de echte winst of het verlies als beloning; wat geld oplevert kiest hij vaker. Daarnaast volgt hij elke keer dat een strategie wil kopen een <b>schaduwtrade</b>: ook als hij die niet echt doet (andere strategie gekozen, AI zei nee, al een positie open), rekent hij uit hoe die afloopt en leert ervan (half zo zwaar als een echte trade). Zo leert hij veel sneller.' : 'Staat aan, maar de trainer heeft nog geen strategieën bedacht (de strategie-zoeker moet minstens één ronde gedraaid hebben). Zorg dat de strategie-zoeker aan staat; daarna begint het leren meteen.')
     : 'Staat uit. Zet hem aan bij Instellingen → Strategie → "Kiezen tussen strategieën" om de bot zelf te laten leren welke strategie het meeste oplevert.'}</p>`;

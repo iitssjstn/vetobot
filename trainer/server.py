@@ -143,7 +143,8 @@ def search_info():
             'leaderboard': searcher.leaderboard(results), 'lastRoundAt': data.get('lastRoundAt'),
             'rounds': data.get('rounds', 0), 'champion': data.get('champion'),
             'searching': state.get('searching', False), 'progress': state.get('searchProgress') if state.get('searching') else None,
-            'nextRoundAt': state.get('nextSearchAt')}
+            'nextRoundAt': state.get('nextSearchAt'),
+            'arms': [{'key': r['key'], 'stage': st, 'hasModel': os.path.exists(path(arm_file(r['key'])))} for r, st in select_arms(results)]}
 
 
 def validate_schedule(s, current):
@@ -630,7 +631,7 @@ def search_round():
                 missing = [r['key'] for r, _ in select_arms(data['results']) if not os.path.exists(path(arm_file(r['key'])))]
                 searcher.run_round(cfg, data['results'], log=log, fetch=fetch, markets=trainer.top_markets,
                                    progress=set_search_progress, should_stop=lambda: state.get('wantMain'), models_out=models, think=think,
-                                   prefer=missing[:2])
+                                   prefer=missing[:4])
                 save_arms(data['results'], models)
                 data['lastRoundAt'] = datetime.now().isoformat(timespec='seconds')
                 data['rounds'] = data.get('rounds', 0) + 1
