@@ -1,6 +1,6 @@
 import { evaluate } from './strategy.js';
 import { ema } from './indicators.js';
-import { computeFeatures, predict, explain, CANDLES_NEEDED, regimeOf, REGIME_LABEL } from './mlmodel.js';
+import { computeFeatures, predict, predictRaw, contributions, explain, positionFeatures, FEATURE_INFO, formatFeature, CANDLES_NEEDED, regimeOf, REGIME_LABEL } from './mlmodel.js';
 import { askVetoChain, askTeamChain, askExitChain, testChain, listModels, writeSummaryChain, aiLabel } from './ai.js';
 import { TIMEFRAME_MINUTES, fmtInterval, LIVE_MIN_STAKE_EUR } from './settings.js';
 import { cleanSuggestions, currentValues, applySuggestions } from './suggest.js';
@@ -223,6 +223,17 @@ export class Bot {
         `${d.pct >= 0 ? '+' : ''}${d.pct.toFixed(2).replace('.', ',')}% gehaald. Niet echt gedaan, maar ik leer er wel van: ` +
         `mijn verwachting voor deze strategie is nu ${est >= 0 ? '+' : ''}${est.toFixed(2).replace('.', ',')}% per trade.`, d.pair, d.pct > 0 ? 'result' : 'warn');
     }
+  }
+
+  // Na elke check waarin de AI-trader keek maar niet kocht: één samenvatting.
+  #agentSummary() {
+    const notes = this.agentNotes ?? [];
+    this.agentNotes = [];
+    if (!notes.length) return;
+    const best = notes.sort((a, b) => b.q - a.q)[0];
+    const f = (v) => `${v >= 0 ? '+' : ''}${v.toFixed(2).replace('.', ',')}%`;
+    this.think(`Ik heb ${notes.length} coin${notes.length === 1 ? '' : 's'} bekeken op ${best.tf}: nergens verwacht ik genoeg. ` +
+      `Beste kans: ${best.pair} met ${f(best.q)} na kosten (ik koop vanaf ${f(best.thr)}).`, null, 'info');
   }
 
   // Na elke check waarin de strategieën gekeken hebben: één samenvatting (waarom wel/geen koop).
@@ -676,6 +687,7 @@ export class Bot {
       }
       await this.#settleShadows();
       this.#armSummary();
+      this.#agentSummary();
       this.lastTickAt = new Date().toISOString();
       if (!errors) this.lastError = null;
       this.store.save();
@@ -738,6 +750,8 @@ export class Bot {
       const price = await fetchPrice(this.ex, pair);
       positionChangePct = ((price - position.entryPrice) / position.entryPrice) * 100;
       if (await this.#manageExit(pair, position, price, risk)) return;
+      // Positie van de AI-trader: hij beslist zelf wanneer hij verkoopt.
+      if (position.agent && (await this.#agentExit(pair, position, price))) return;
     }
 
     this.#step(`${pair}: candles ophalen`);
@@ -770,8 +784,17 @@ export class Bot {
     }
     // Zelflerend: de bevestigde strategieën van de trainer (op elke candle-tijd, met elk een eigen
     // model) bepalen zelf wanneer er gekocht wordt; de bandit kiest welke.
-    const allArms = strategy.mlBandit && !position && !this.following ? this.activeArms() : [];
-    if (allArms.length) {
+    const agent = strategy.agentMode && !this.following ? this.getAgent?.() : null;
+    const allArms = !agent && strategy.mlBandit && !position && !this.following ? this.activeArms() : [];
+    if (agent && !position) {
+      const a = await this.#agentSignal(pair, agent);
+      result = a.buy
+        ? { ...result, signal: 'buy', filtered: false, armSignal: true, crossClose: null, reason: a.reason,
+          indicators: { ...result.indicators, mlProb: null, mlWhy: a.why, agent: a.plan, mlRegime: a.regime } }
+        : { ...result, signal: 'none', armSignal: true, reason: a.reason };
+    } else if (agent && position) {
+      result = { ...result, signal: 'none', armSignal: true, reason: position.agent ? (this.agentHold?.[pair] ?? 'AI-trader houdt vast') : result.reason };
+    } else if (allArms.length) {
       const a = await this.#armSignal(pair, allArms);
       result = a.buy
         ? { ...result, signal: 'buy', filtered: false, armSignal: true, crossClose: null, reason: a.reason,
@@ -878,6 +901,8 @@ export class Bot {
       return;
     }
 
+    const g = result.indicators?.agent;
+    const agentPlan = g ? { stopLossPct: g.safetyStopPct, takeProfitPct: 0, maxHoldMinutes: g.maxHoldMinutes } : null;
     const team = this.settings.ai.mode === 'team' && this.settings.ai.provider !== 'none';
     this.#step(team ? `${pair}: AI-team overlegt (analist, criticus, beslisser)` : `${pair}: AI om oordeel vragen`);
     if (this.tickStats && this.settings.ai.provider !== 'none') this.tickStats.aiCalls++;
@@ -893,8 +918,8 @@ export class Bot {
         recentTrades: this.store.state.trades.filter((t) => t.pair === pair).slice(0, 5)
           .map((t) => ({ pnlPct: +t.pnlPct.toFixed(2), exit: t.exitReason, closedAt: t.closedAt })),
         // Zodat de AI kan inschatten of de verwachte winst de kosten en het risico waard is.
-        plan: this.#tradePlan(result.indicators?.mlArm ?? null),
-        risk: this.#aiRisk(result.indicators?.mlArm ?? null),
+        plan: this.#tradePlan(result.indicators?.mlArm ?? agentPlan),
+        risk: this.#aiRisk(result.indicators?.mlArm ?? agentPlan),
         filters: this.#aiFilters(),
         aiHistory: this.#aiHistory(pair),
         setupStats: this.#setupStats(),
@@ -904,6 +929,7 @@ export class Bot {
             : this.getModel?.()?.meta,
           arm: result.indicators.mlArm ?? null } : null,
         signalReason: result.armSignal ? result.reason : null,
+        agentSignal: Boolean(result.indicators?.agent),
         book: result.indicators?.book ?? null,
         // Hoe de AI en het model het samen deden (van de trainer): wie had gelijk?
         teamwork: result.indicators?.mlProb != null ? this.getTeamwork?.() ?? null : null,
@@ -984,6 +1010,103 @@ export class Bot {
   entryRisk() {
     const risk = this.risk;
     return { ...risk, stakeEur: this.stakeInfo(risk).effective };
+  }
+
+  // ---------- De AI-trader ----------
+  // Mag de AI-trader nu echt handelen? Bewezen: overal. Getest: in paper (live pas na bewijs in
+  // de praktijk). Oefenen: alleen in paper als proefstrategieën dat mogen.
+  agentAllowed(agent) {
+    const lv = agent.live ?? {};
+    const proven = agent.stage === 'bewezen' || (agent.stage === 'getest' && lv.n >= 20 && lv.sum / lv.n >= 0.1);
+    if (proven) return true;
+    if (this.mode !== 'paper') return false;
+    return agent.stage === 'getest' || (agent.stage === 'oefenen' && this.strategy.mlTrialPaper !== 0);
+  }
+
+  // Uitleg bij een regressiemodel: bijdrage per kenmerk in procentpunt verwachte winst.
+  static explainReg(model, features, top = 4) {
+    try {
+      const { contrib } = contributions(model, features);
+      return model.features.map((key, j) => ({ key, label: FEATURE_INFO[key]?.[0] ?? ({ posPnlPct: 'winst/verlies nu', posCandles: 'candles in de trade', posMaxPct: 'hoogste winst tot nu toe', posDrawPct: 'terugval vanaf de top' })[key] ?? key,
+        text: features?.[key] == null ? 'onbekend' : (key.startsWith('pos') ? `${features[key].toFixed(2)}${key === 'posCandles' ? '' : '%'}` : formatFeature(key, features[key])), effect: +contrib[j].toFixed(2) }))
+        .filter((x) => Math.abs(x.effect) >= 0.02).sort((a, b) => Math.abs(b.effect) - Math.abs(a.effect)).slice(0, top);
+    } catch {
+      return [];
+    }
+  }
+
+  async #agentFeatures(pair, tf) {
+    const candles = await fetchClosedCandles(this.ex, pair, tf, CANDLES_NEEDED).catch(() => null);
+    const ts = candles?.at(-1)?.[0];
+    if (!ts) return null;
+    const btc = pair === 'BTC/EUR' ? candles : await fetchClosedCandles(this.ex, 'BTC/EUR', tf, CANDLES_NEEDED).catch(() => null);
+    const f = computeFeatures(candles, { btc, micro: this.getMicro?.(pair) });
+    return f ? { f, ts, close: candles.at(-1)[4] } : null;
+  }
+
+  async #agentSignal(pair, agent) {
+    const tf = agent.timeframe;
+    this.agentTs ??= {};
+    const key = `${pair}|${tf}`;
+    const tfMs = (this.ex.parseTimeframe?.(tf) ?? 900) * 1000;
+    const seen = this.agentTs[key];
+    if (seen && Date.now() < seen + 2 * tfMs) return { buy: false, reason: this.agentReason?.[pair] ?? `AI-trader: wacht op de volgende ${tf}-candle` };
+    const x = await this.#agentFeatures(pair, tf);
+    if (!x || this.agentTs[key] === x.ts) return { buy: false, reason: this.agentReason?.[pair] ?? `AI-trader: wacht op de volgende ${tf}-candle` };
+    this.agentTs[key] = x.ts;
+    const q = predictRaw(agent.entry, x.f);
+    const nl = (v, d = 2) => `${v >= 0 ? '+' : ''}${v.toFixed(d).replace('.', ',')}`;
+    this.agentReason ??= {};
+    if (q <= agent.threshold) {
+      const reason = `AI-trader (${tf}): verwacht ${nl(q)}% na kosten, ik koop pas boven ${nl(agent.threshold)}%`;
+      this.agentReason[pair] = reason;
+      (this.agentNotes ??= []).push({ pair, q, thr: agent.threshold, tf });
+      return { buy: false, reason };
+    }
+    const why = Bot.explainReg(agent.entry, x.f);
+    const whyTxt = why.length ? ` Vooral door: ${why.slice(0, 3).map((w) => `${w.label} ${w.text} (${w.effect > 0 ? '+' : ''}${w.effect.toFixed(2).replace('.', ',')})`).join(', ')}.` : '';
+    if (!this.agentAllowed(agent)) {
+      const reason = `AI-trader (${tf}): ik zie een kans (${nl(q)}% verwacht), maar ${this.mode === 'live' ? 'live handel ik pas als ik me bewezen heb' : 'oefenen in paper staat uit'}`;
+      this.agentReason[pair] = reason;
+      this.think(`Ik zie een kans bij ${pair}: ik verwacht ${nl(q)}% na kosten.${whyTxt} Maar ${this.mode === 'live' ? 'live handel ik pas als ik me in paper bewezen heb' : 'oefenen in paper staat uit'}.`, pair, 'info');
+      return { buy: false, reason };
+    }
+    this.agentReason[pair] = null;
+    this.lastFeatures[pair] = { ts: x.ts, timeframe: tf, features: x.f, prob: null, at: Date.now() };
+    this.think(`Ik koop ${pair}: ik verwacht ${nl(q)}% na kosten (ik koop vanaf ${nl(agent.threshold)}%).${whyTxt} Wanneer ik verkoop beslis ik zelf, elke ${tf}-candle opnieuw.`, pair, 'doing');
+    return {
+      buy: true, why, regime: regimeOf(x.f),
+      reason: `AI-trader (${tf}): verwacht ${nl(q)}% na kosten (drempel ${nl(agent.threshold)}%)`,
+      plan: { timeframe: tf, expectedPct: +q.toFixed(3), version: agent.meta?.trainedAt ?? null, safetyStopPct: agent.safetyStopPct,
+        maxHoldMinutes: agent.maxHoldCandles * tfMs / 60000, entryClose: x.close },
+    };
+  }
+
+  // Elke nieuwe candle: is vasthouden nog de moeite waard? Zo niet: verkopen.
+  async #agentExit(pair, position, price) {
+    const agent = this.getAgent?.();
+    const a = position.agent;
+    if (!agent || !this.strategy.agentMode) return false;
+    position.highest = Math.max(position.highest ?? position.entryPrice, price);
+    const tf = a.timeframe;
+    const tfMs = (this.ex.parseTimeframe?.(tf) ?? 900) * 1000;
+    if (a.lastTs && Date.now() < a.lastTs + 2 * tfMs) return false;
+    const x = await this.#agentFeatures(pair, tf);
+    if (!x || a.lastTs === x.ts) return false;
+    a.lastTs = x.ts;
+    const held = Math.max(0, Math.round((Date.now() - new Date(position.openedAt).getTime()) / tfMs));
+    const pf = positionFeatures(position.entryPrice, x.close, position.highest, held);
+    const q = predictRaw(agent.exit, { ...x.f, ...pf });
+    const nl = (v, d = 2) => `${v >= 0 ? '+' : ''}${v.toFixed(d).replace('.', ',')}`;
+    if (q >= 0) {
+      (this.agentHold ??= {})[pair] = `AI-trader houdt vast: verwacht nog ${nl(q)}% (nu ${nl(pf.posPnlPct)}%)`;
+      return false;
+    }
+    const why = Bot.explainReg(agent.exit, { ...x.f, ...pf }, 3);
+    this.think(`Ik verkoop ${pair}: van langer vasthouden verwacht ik ${nl(q)}%, dus ik neem nu ${nl(pf.posPnlPct)}%.` +
+      (why.length ? ` Vooral door: ${why.map((w) => `${w.label} ${w.text}`).join(', ')}.` : ''), pair, 'doing');
+    await this.#close(pair, `AI-trader verkoopt: vasthouden levert naar verwachting ${nl(q)}% op`);
+    return true;
   }
 
   // Zelflerend kiezen. Per candle-tijd van de strategieën: zodra daar een nieuwe candle gesloten
@@ -1222,6 +1345,12 @@ export class Bot {
       highest: fill.price,
       atrAtEntry: indicators?.atr ?? null,
     };
+    // AI-trader: hij beslist zelf wanneer hij verkoopt; alleen de noodstop en maximale duur als vangnet.
+    if (indicators?.agent) {
+      const g = indicators.agent;
+      this.store.state.positions[pair].agent = { timeframe: g.timeframe, version: g.version, expectedPct: g.expectedPct };
+      this.store.state.positions[pair].plan = { key: null, stopLossPct: g.safetyStopPct, takeProfitPct: 0, maxHoldMinutes: g.maxHoldMinutes };
+    }
     // Zelflerend gekozen strategie: eigen stop, doel en duur voor deze trade.
     if (indicators?.mlArm) {
       const a = indicators.mlArm;
@@ -1416,6 +1545,17 @@ export class Bot {
     const how = fill.limitFallback ? (fill.limit ? ', limietorder deels gevuld, rest market' : ', limietorder niet gevuld, market') : fill.limit ? ', limietorder' : '';
     this.#event(pnlEur >= 0 ? 'info' : 'warn', pair, `Verkocht @ ${fmtPrice(fill.price)}, resultaat ${fmtSigned(pnlEur)} (${reason}${how})`);
     this.onTrade?.('close', { pair, reason });
+    // AI-trader: echte uitkomst terug naar de trainer (leren + bewijs in de praktijk).
+    if (pos.agent && !/^Handmatig/.test(reason)) {
+      const pct = (pnlEur / pos.costEur) * 100;
+      try {
+        this.onFeedback?.({ kind: 'agentTrade', pair, timeframe: pos.agent.timeframe, pct, version: pos.agent.version,
+          features: pos.ml?.features ?? null, mode: this.broker.mode });
+      } catch { /* extraatje */ }
+      this.think(`Trade ${pair} afgesloten met ${pct >= 0 ? '+' : ''}${pct.toFixed(2).replace('.', ',')}% (verwacht bij aankoop: ` +
+        `${pos.agent.expectedPct >= 0 ? '+' : ''}${String(pos.agent.expectedPct).replace('.', ',')}%). ${pct > 0 ? 'Een beloning' : 'Een straf'}; ` +
+        'deze uitkomst gaat mee in mijn volgende leerronde.', pair, pct > 0 ? 'result' : 'warn');
+    }
     // Beloning voor de gekozen strategie: de echte winst of het verlies in % (na kosten).
     if (pos.plan?.key && !/^Handmatig/.test(reason)) {
       const pct = (pnlEur / pos.costEur) * 100;

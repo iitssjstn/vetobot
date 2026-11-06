@@ -48,6 +48,8 @@ export const config = {
     aiStrictness: num('AI_STRICTNESS', 1),
     // Zelflerend: proefstrategieën (nog niet bevestigd) in paper ook echt laten traden.
     mlTrialPaper: num('ML_TRIAL_PAPER', 1),
+    // 1 = de AI-trader van de trainer beslist zelf wanneer kopen en verkopen.
+    agentMode: num('AGENT_MODE', 0),
   },
 
   // Harde limieten. De AI kan hier nooit aan komen.

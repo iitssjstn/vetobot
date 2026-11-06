@@ -290,6 +290,7 @@ export function createApp({ users, manager, log = console }) {
       lastSummary: bot.store.state.lastSummary ?? null,
       bandit: bot.banditSummary(),
       thoughts: bot.thoughts.slice(-40),
+      agent: (() => { const a = bot.getAgent?.(); return a ? { timeframe: a.timeframe, stage: a.stage, allowed: bot.agentAllowed(a), live: a.live ?? null } : null; })(),
       serverTime: new Date().toISOString(),
     });
   });
@@ -473,6 +474,16 @@ export function createApp({ users, manager, log = console }) {
     return { ok: true, started, config: cfg };
   }));
 
+  // AI-trader: aan/uit, candle-tijden, noodstop, pauze.
+  app.post('/api/admin/trainer/agent', adminOnly, wrap(async (req) => {
+    const b = req.body ?? {};
+    const agent = { enabled: Boolean(b.enabled), timeframes: Array.isArray(b.timeframes) ? b.timeframes.map(String) : [],
+      safetyStopPct: Number(b.safetyStopPct) || 10, pauseMinutes: Number.isFinite(Number(b.pauseMinutes)) ? Number(b.pauseMinutes) : 1 };
+    const r = await manager.trainerRequest('/config', { method: 'POST', body: { agent } });
+    log.info(`AI-trader gewijzigd door ${req.user.username}: ${JSON.stringify(agent)}`);
+    return { ok: true, config: r.data.config };
+  }));
+
   // Orderboek en transacties opnemen aan/uit.
   app.post('/api/admin/trainer/micro', adminOnly, wrap(async (req) => {
     const r = await manager.trainerRequest('/config', { method: 'POST', body: { micro: { enabled: Boolean(req.body?.enabled) } } });
@@ -515,6 +526,11 @@ export function createApp({ users, manager, log = console }) {
       const trainer = (await manager.trainerRequest('/status')).data;
       // Heeft de trainer een nieuwer model dan de bot? Dan nu meteen ophalen in plaats van
       // te wachten op de volgende halfuurlijkse controle.
+      // AI-trader en strategieën meteen ophalen als de trainer iets nieuws heeft (met ETag: goedkoop).
+      if (trainer?.agent?.published?.at && trainer.agent.published.at !== manager.ml.agentSeenAt) {
+        manager.ml.agentSeenAt = trainer.agent.published.at;
+        await manager.refreshAgent().catch(() => {});
+      }
       if (trainer?.model?.trainedAt && trainer.model.trainedAt !== ml.model?.meta?.trainedAt) {
         await manager.refreshModel();
         Object.assign(base, { model: manager.ml.model?.meta ?? null, fetchedAt: manager.ml.fetchedAt, fetchError: manager.ml.error });

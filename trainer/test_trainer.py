@@ -1,5 +1,6 @@
 import json
 import os
+import math
 import random
 import re
 import tempfile
@@ -460,6 +461,58 @@ class Micro(unittest.TestCase):
         self.assertTrue(report['published'], report.get('reason'))
         self.assertEqual(model['features'][-5:], micro.MICRO_FEATURES)
         self.assertTrue(model['meta']['micro'])
+
+
+class AgentTrader(unittest.TestCase):
+    def test_learns_on_momentum_and_not_on_random(self):
+        import agent
+        pairs = ['A/EUR', 'B/EUR', 'C/EUR']
+        good = {p: market(9000, i, momentum=0.6) for i, p in enumerate(pairs)}
+        good['BTC/EUR'] = market(9000, 99, momentum=0.3)
+        a, r = agent.train_agent({'costPct': 0.2, 'days': 60, 'agent': {}}, '15m', lambda p, tf, d: good[p], pairs)
+        self.assertTrue(r['ok'], r)
+        self.assertGreater(r['test']['avgPct'], 0)
+        self.assertGreater(r['test']['exits']['zelf verkocht'], 0, 'hij verkoopt zelf, zonder vast doel of stop')
+        self.assertEqual(a['exit']['features'][-4:], agent.POS_FEATURES)
+        # Exportformaat rekent hetzelfde als sklearn (ook getest in Node met de fixture)
+        row = [0.0] * len(a['entry']['features'])
+        self.assertTrue(math.isfinite(agent.predict_reg_json(a['entry'], row)))
+        bad = {p: market(9000, i + 20, momentum=0.0) for i, p in enumerate(pairs)}
+        bad['BTC/EUR'] = market(9000, 98, momentum=0.0)
+        _, r2 = agent.train_agent({'costPct': 0.2, 'days': 60, 'agent': {}}, '15m', lambda p, tf, d: bad[p], pairs)
+        self.assertFalse(r2['ok'], 'op een willekeurige markt geen valse winst')
+
+    def test_round_publishes_and_live_proof(self):
+        os.environ.setdefault('DATA_DIR', tempfile.mkdtemp())
+        import server
+        s = server
+        pairs = ['A/EUR', 'B/EUR', 'C/EUR']
+        good = {p: market(9000, i, momentum=0.6) for i, p in enumerate(pairs)}
+        good['BTC/EUR'] = market(9000, 99, momentum=0.3)
+        s.write_json('agents.json', {'byTf': {}, 'published': None, 'live': {}, 'round': 0})
+        s.write_json('config.json', {'pairs': pairs, 'costPct': 0.2, 'agent': {'enabled': True, 'timeframes': ['15m']}})
+        orig = s.trainer.fetch_candles
+        s.trainer.fetch_candles = lambda p, tf, d, cache_dir=None, **k: good[p]
+        said = []
+        orig_think = s.think
+        s.think = lambda t, kind='info': said.append(t)
+        try:
+            s.agent_round()
+        finally:
+            s.trainer.fetch_candles = orig
+            s.think = orig_think
+        pub = s.read_json('agent.json', None)
+        self.assertIsNotNone(pub)
+        self.assertEqual(pub['timeframe'], '15m')
+        self.assertEqual(pub['stage'], 'getest')
+        self.assertTrue(any('Klaar met leren op 15m' in t for t in said), said)
+        self.assertTrue(any('Mijn beste manier van traden is nu op 15m' in t for t in said))
+        info = s.agent_info()
+        self.assertEqual(info['published']['timeframe'], '15m')
+        # Echte trades: na 20 met winst is hij bewezen
+        s.add_agent_trades([{'timeframe': '15m', 'pct': 0.5, 'features': {'rsi14': 40}} for _ in range(20)])
+        self.assertEqual(s.load_agents()['live']['15m']['n'], 20)
+        self.assertEqual(len(s.agent_extra('15m')), 20)
 
 
 class Arms(unittest.TestCase):

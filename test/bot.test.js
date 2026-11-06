@@ -974,3 +974,56 @@ test('zelflerend zonder bevestigde strategie: verkenning alleen schaduw, proef t
   const ps = await run([arm('15m|2|1|240', 'proef')], 0);
   assert.equal(ps.bot.store.state.positions['BTC/EUR'], undefined);
 });
+
+test('AI-trader: koopt en verkoopt zelf, uitkomst naar de trainer; live pas na bewijs', async () => {
+  const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
+  const mkAgent = (stage, sell) => ({ ...fx.agent, stage, threshold: 0.2,
+    entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 },
+    exit: { ...fx.agent.exit, init: fx.agent.exit.init + (sell ? -50 : 50) } });
+  const run = async (agent, mode = 'paper') => {
+    const { bot, ex } = setup({});
+    await bot.setRisk({ cooldownMinutes: 0 });
+    await bot.setStrategy({ maxChasePct: 0, agentMode: 1 });
+    if (mode === 'live') bot.settings.data.mode = 'live';
+    bot.getAgent = () => agent;
+    bot.fb = [];
+    bot.onFeedback = (t) => bot.fb.push(t);
+    withAi(bot);
+    aiAnswer = 'approve';
+    lastAiPrompt = '';
+    ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+    await bot.tick();
+    return { bot, ex };
+  };
+  // Koopt zonder EMA-kruising, alleen omdat hij winst verwacht
+  const { bot, ex } = await run(mkAgent('getest', false));
+  const pos = bot.store.state.positions['BTC/EUR'];
+  assert.ok(pos, bot.pairStatus['BTC/EUR']?.reason);
+  assert.equal(pos.agent.timeframe, '15m');
+  assert.equal(pos.plan.takeProfitPct, 0, 'geen vast winstdoel');
+  assert.equal(pos.plan.stopLossPct, 10, 'alleen de noodstop');
+  assert.match(lastAiPrompt, /de AI-trader beslist zelf wanneer hij verkoopt/);
+  assert.ok(bot.thoughts.some((t) => /Ik koop BTC\/EUR: ik verwacht \+\d/.test(t.text)));
+  // Vasthouden zolang hij er nog iets van verwacht
+  ex.prices = [...ex.prices, 100.5];
+  await bot.tick();
+  assert.ok(bot.store.state.positions['BTC/EUR']);
+  assert.match(bot.pairStatus['BTC/EUR'].reason, /AI-trader houdt vast/);
+  // Nu verwacht hij niets meer van vasthouden: zelf verkopen
+  bot.getAgent = () => mkAgent('getest', true);
+  ex.prices = [...ex.prices, 101];
+  await bot.tick();
+  assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
+  assert.match(bot.store.state.trades[0].exitReason, /AI-trader verkoopt/);
+  const fb = bot.fb.find((t) => t.kind === 'agentTrade');
+  assert.equal(fb.timeframe, '15m');
+  assert.ok(fb.pct > 0);
+  assert.ok(fb.features && Number.isFinite(fb.features.rsi14), 'kenmerken bij aankoop, om van te leren');
+  assert.ok(bot.thoughts.some((t) => /Ik verkoop BTC\/EUR/.test(t.text)));
+  // Live: alleen als hij zich bewezen heeft
+  const live = await run(mkAgent('getest', false), 'live');
+  assert.equal(live.bot.store.state.positions['BTC/EUR'], undefined);
+  assert.match(live.bot.pairStatus['BTC/EUR'].reason, /live handel ik pas als ik me bewezen heb/);
+  const proven = await run({ ...mkAgent('getest', false), live: { n: 25, sum: 5, wins: 15 } }, 'live');
+  assert.ok(proven.bot.agentAllowed({ ...mkAgent('getest', false), live: { n: 25, sum: 5, wins: 15 } }));
+});

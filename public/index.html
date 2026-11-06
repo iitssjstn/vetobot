@@ -526,6 +526,20 @@
         <div class="panel-h"><h2><svg class="i"><use href="#i-cpu"/></svg>Wat doet de trainer?</h2><span class="hint" id="tr-badge"></span></div>
         <div class="panel-b" id="tr-now"></div>
       </div>
+      <div class="panel gap" id="tr-agent-panel" hidden>
+        <div class="panel-h"><h2><svg class="i"><use href="#i-pulse"/></svg>AI-trader</h2><span class="hint" id="ag-hint"></span></div>
+        <div class="panel-b" id="ag-body"></div>
+        <div class="scroll" id="ag-table"></div>
+        <form class="panel-b" id="ag-form" style="border-top:1px solid var(--line)">
+          <div class="fields">
+            <div><label for="ag-on">Leren</label><select id="ag-on"><option value="1">Aan: doorlopend leren</option><option value="0">Uit</option></select></div>
+            <div><label for="ag-stop">Noodstop (%)</label><input id="ag-stop" type="number" min="2" max="30" step="any"></div>
+            <div><label for="ag-pause">Pauze tussen rondes (min)</label><input id="ag-pause" type="number" min="0" max="720" step="1"></div>
+            <div><label>Candle-tijden om op te leren</label><div class="chips" id="ag-tfs" style="margin:0"><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="5m"> 5m</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="15m"> 15m</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="30m"> 30m</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="1h"> 1h</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="2h"> 2h</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="4h"> 4h</label></div></div>
+          </div>
+          <div class="row-actions"><button class="btn primary" type="submit">Opslaan</button><span class="msg" id="ag-msg"></span></div>
+        </form>
+      </div>
       <div class="tr-grid">
         <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Huidig model</h2></div><div class="panel-b" id="tr-model"></div></div>
         <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-gear"/></svg>Instellingen van de trainer</h2></div><div class="panel-b" id="tr-config"></div></div>
@@ -767,6 +781,7 @@
             <div><label for="st-confirm">Verkoopsignaal bevestigen (candles)</label><input id="st-confirm" type="number" min="1" max="20" step="1" required></div>
             <div><label for="st-hold">Minimaal in positie (candles, 0 = uit)</label><input id="st-hold" type="number" min="0" max="500" step="1" required></div>
             <div><label for="st-mlmin">Minimale modelkans (%, 0 = uit)</label><input id="st-mlmin" type="number" min="0" max="100" step="any" required></div>
+            <div><label for="st-agent">AI-trader</label><select id="st-agent"><option value="0">Uit</option><option value="1">Aan: de AI-trader beslist zelf</option></select></div>
             <div><label for="st-mlbandit">Kiezen tussen strategieën</label><select id="st-mlbandit"><option value="0">Uit: mijn eigen instellingen</option><option value="1">Zelflerend (beloning)</option></select></div>
             <div><label for="st-mltrial">Proefstrategieën in paper</label><select id="st-mltrial"><option value="1">Ook echt traden (paper)</option><option value="0">Alleen schaduwtrades</option></select></div>
             <div><label for="st-mlregime">Marktfase waarin het model verliest</label><select id="st-mlregime"><option value="0">Alleen de AI waarschuwen</option><option value="1">Overslaan</option></select></div>
@@ -1546,6 +1561,7 @@ function renderSettings() {
     $('st-mlmin').value = s.strategy.mlMinProb ?? 0;
     $('st-mlregime').value = String(s.strategy.mlSkipBadRegime ?? 0);
     $('st-mlbandit').value = String(s.strategy.mlBandit ?? 0);
+    $('st-agent').value = String(s.strategy.agentMode ?? 0);
     $('st-mltrial').value = String(s.strategy.mlTrialPaper ?? 1);
     $('st-hold').value = s.strategy.minHoldCandles ?? 0;
   }
@@ -1743,8 +1759,8 @@ function renderTrainer() {
       <div class="tr-steps">${TR_PHASES.map(([k, label], i) => `<span class="${i < idx ? 'done' : i === idx ? 'now' : ''}">${i < idx ? '✓ ' : ''}${label}</span>`).join('')}</div>`;
   } else {
     const last = t.history?.[0];
-    $('tr-badge').innerHTML = t.search?.searching ? '<span class="badge wait">zoekt strategieën</span>' : '<span class="badge ok">wacht</span>';
-    $('tr-now').innerHTML = `<p style="margin:0 0 4px">${t.search?.searching ? `De strategie-zoeker is bezig: ${esc(t.search.progress?.text ?? '')}. ` : 'De trainer staat klaar. '}Volgende training: <b>${when(t.nextRunAt)}</b>.</p>
+    $('tr-badge').innerHTML = t.agent?.busy ? '<span class="badge wait">AI-trader leert</span>' : t.search?.searching ? '<span class="badge wait">zoekt strategieën</span>' : '<span class="badge ok">wacht</span>';
+    $('tr-now').innerHTML = `<p style="margin:0 0 4px">${t.agent?.busy ? `De AI-trader leert: ${esc(t.agent.progress?.text ?? '')}. ` : t.search?.searching ? `De strategie-zoeker is bezig: ${esc(t.search.progress?.text ?? '')}. ` : 'De trainer staat klaar. '}Volgende training: <b>${when(t.nextRunAt)}</b>.</p>
       ${last ? `<p class="muted" style="margin:0;font-size:13.5px">Laatste training ${when(last.finishedAt ?? last.startedAt)}: ${last.published ? '<span class="up">nieuw model gepubliceerd</span>' : `<span class="warnc">geen nieuw model</span> — ${esc(last.reason ?? '')}`}</p>` : ''}
       <div class="row-actions"><button class="btn primary" type="button" id="tr-train">Nu trainen met mijn instellingen</button><span class="msg" id="tr-msg"></span></div>`;
     $('tr-train').onclick = async () => {
@@ -1786,6 +1802,7 @@ function renderTrainer() {
   }
   $('tr-next').textContent = t?.running ? 'training loopt' : t?.nextRunAt ? `volgende: ${String(t.nextRunAt).replace('T', ' ')}` : '';
 
+  renderAgent(t, nl);
   // Strategie-zoeker
   renderSearch(t, nl);
   renderTeamwork(t, nl);
@@ -1832,6 +1849,60 @@ function renderTrainer() {
     ['Resultaat', (h) => h.published ? '<span class="badge ok">gepubliceerd</span>' : `<span class="badge soft">niet gebruikt</span> <span class="muted" style="font-size:12.5px">${esc(h.reason ?? '')}</span>`],
   ], 'Nog geen trainingen.', 'history');
 }
+// Datum/tijd kort (buiten renderTrainer; 'when' bestaat daar niet en is in de browser iets anders).
+const whenAt = (iso) => iso ? esc(String(iso).replace('T', ' ').slice(0, 16)) : '–';
+let agDirty = false;
+const AG_STAGE = { bewezen: ['ok', 'bewezen: mag ook live'], getest: ['wait', 'getest: handelt in paper'], oefenen: ['soft', 'oefent: nog geen winst in de test'] };
+function renderAgent(t, nl) {
+  const a = t?.agent;
+  $('tr-agent-panel').hidden = !a;
+  if (!a) return;
+  const sign = (v) => v == null ? '–' : `${v > 0 ? '+' : ''}${nl(v, 2)}%`;
+  const pub = a.published;
+  const st = AG_STAGE[a.stage];
+  $('ag-hint').innerHTML = !a.enabled ? 'uit' : a.busy ? 'leert…' : `${a.rounds} leerrondes`;
+  const lv = pub ? a.live?.[pub.timeframe] : null;
+  const bot = state?.agent;
+  const botOn = Number(state?.strategy?.agentMode ?? 0) === 1;
+  $('ag-body').innerHTML = `<p class="muted" style="margin:0 0 10px;font-size:13.5px">De AI-trader leert zelf wanneer kopen en wanneer verkopen loont: geen vaste winstdoelen, stops of strategieën. Zijn enige beloning is de winst na kosten. Hij oefent in een simulator op de echte koersgeschiedenis, wordt getest op een periode die hij nooit zag, en leert daarna verder van zijn eigen trades. Hij draait doorlopend: elke ronde een candle-tijd opnieuw, met de nieuwste koersen, en de beste wordt gebruikt.</p>`
+    + (a.busy && a.progress ? `<p style="margin:0 0 8px"><b>Bezig:</b> ${esc(a.progress.text ?? '')}</p>` : a.enabled && a.nextAt ? `<p style="margin:0 0 8px">Volgende leerronde: <b>${whenAt(a.nextAt)}</b></p>` : '')
+    + (pub ? `<div class="alert ${a.stage === 'oefenen' ? '' : 'ok'}" style="margin:0 0 10px">${icon('target')}<div><b>In gebruik:</b> ${esc(pub.timeframe)}-candles · <span class="badge ${st?.[0] ?? 'soft'}">${esc(st?.[1] ?? a.stage ?? '')}</span>`
+      + (lv?.n ? ` · in de praktijk: ${lv.n} trades, gemiddeld ${sign(lv.sum / lv.n)} (bewezen na ${a.provenMin} trades met ≥ ${nl(a.provenAvg, 1)}%)` : ` · nog geen trades in de praktijk`)
+      + `<br><span class="muted">Bot: ${botOn ? (bot ? (bot.allowed ? 'handelt met de AI-trader' : 'AI-trader staat aan, maar handelt nog niet in deze modus (live pas na bewijs)') : 'AI-trader staat aan, nog niet opgehaald') : 'AI-trader staat uit bij Instellingen → Strategie'}</span></div></div>`
+      : '<p class="muted" style="margin:0 0 10px">Nog geen AI-trader getraind. Na de eerste leerronde verschijnt hier het resultaat.</p>');
+  const rows = Object.values(a.byTf ?? {}).sort((x, y) => (y.test?.avgPct ?? -99) - (x.test?.avgPct ?? -99));
+  const hold = (r) => r.test?.avgHeld != null ? (() => { const m = r.test.avgHeld * ({ '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120, '4h': 240 }[r.timeframe] ?? 15); return m >= 60 ? `${nl(m / 60, 1)} uur` : `${Math.round(m)} min`; })() : '–';
+  $('ag-table').innerHTML = rows.length ? table(rows, [
+    ['Candles', (r) => `${esc(r.timeframe)}${pub?.timeframe === r.timeframe ? ' <span class="badge ok">in gebruik</span>' : ''}`],
+    ['Eindtest', (r) => r.test ? `<span class="${(r.test.avgPct ?? 0) > 0 ? 'up' : 'down'}">${sign(r.test.avgPct)}</span> per trade <span class="muted">· ${r.test.trades} trades · ${nl(r.test.winRate ?? 0, 0)}% winst · ${r.testDays} dagen</span>` : `<span class="muted">${esc(r.reason ?? '–')}</span>`],
+    ['Vasthouden', (r) => hold(r), 'r'],
+    ['Kopen en vasthouden', (r) => r.test ? sign(r.test.buyHoldPct) : '–', 'r'],
+    ['Validatie', (r) => r.validation ? `${sign(r.validation.avgPct)} <span class="muted">(${r.validation.trades})</span>` : '–', 'r'],
+    ['Oordeel', (r) => `<span class="badge ${r.ok ? 'ok' : 'soft'}">${r.ok ? 'goed genoeg' : 'nog niet'}</span>`],
+    ['Geleerd', (r) => r.at ? time(r.at) : '–'],
+  ], '', 'pulse') : '';
+  if (!agDirty) {
+    $('ag-on').value = a.enabled ? '1' : '0';
+    $('ag-stop').value = a.config?.safetyStopPct ?? 10;
+    $('ag-pause').value = a.config?.pauseMinutes ?? 1;
+    const tfs = a.config?.timeframes?.length ? a.config.timeframes : ['15m', '30m', '1h', '5m'];
+    document.querySelectorAll('#ag-tfs input').forEach((el) => { el.checked = tfs.includes(el.value); });
+  }
+}
+['ag-on', 'ag-stop', 'ag-pause'].forEach((id) => $(id).addEventListener('input', () => { agDirty = true; }));
+$('ag-tfs').addEventListener('change', () => { agDirty = true; });
+$('ag-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const msg = (t2, c2) => { $('ag-msg').className = `msg ${c2 ?? ''}`; $('ag-msg').textContent = t2; };
+  try {
+    await api('api/admin/trainer/agent', { enabled: $('ag-on').value === '1', safetyStopPct: Number($('ag-stop').value), pauseMinutes: Number($('ag-pause').value),
+      timeframes: [...document.querySelectorAll('#ag-tfs input:checked')].map((el) => el.value) });
+    agDirty = false;
+    msg('Opgeslagen.', 'ok');
+    loadTrainer();
+  } catch (err) { msg(err.message, 'err'); }
+};
+
 function renderMicro(t, nl) {
   const m = t?.micro;
   $('tr-micro-panel').hidden = !m;
@@ -1933,11 +2004,11 @@ function renderSearch(t, nl) {
     const tfs = sc.timeframes?.length ? sc.timeframes : ['5m', '15m', '30m', '1h'];
     document.querySelectorAll('#ss-tfs input').forEach((el) => { el.checked = tfs.includes(el.value); });
   }
-  $('ss-hint').textContent = !sc.enabled ? 'uit' : se.searching ? `zoekt · ${se.tested ?? 0} van ${se.possible ?? '?'} getest` : `${se.tested ?? 0} van ${se.possible ?? '?'} getest · ${se.rounds ?? 0} rondes`;
+  $('ss-hint').textContent = t.agent?.enabled ? 'staat stil: de AI-trader is aan' : !sc.enabled ? 'uit' : se.searching ? `zoekt · ${se.tested ?? 0} van ${se.possible ?? '?'} getest` : `${se.tested ?? 0} van ${se.possible ?? '?'} getest · ${se.rounds ?? 0} rondes`;
   const champ = se.champion && (se.leaderboard ?? []).find((x) => x.key === se.champion.key);
   const holdTxt = (m) => m >= 60 ? `${nl(m / 60, m % 60 ? 1 : 0)} uur` : `${m} min`;
   const sp = se.progress;
-  $('ss-champ').innerHTML = (sc.enabled ? `<p style="margin:0 0 6px">${se.searching && sp ? `<b>Bezig:</b> ${esc(sp.text ?? '')}` : se.nextRoundAt ? `Volgende ronde: <b>${when(se.nextRoundAt)}</b>` : 'Wacht tot de training klaar is.'}</p>` : '')
+  $('ss-champ').innerHTML = (sc.enabled ? `<p style="margin:0 0 6px">${se.searching && sp ? `<b>Bezig:</b> ${esc(sp.text ?? '')}` : se.nextRoundAt ? `Volgende ronde: <b>${whenAt(se.nextRoundAt)}</b>` : 'Wacht tot de training klaar is.'}</p>` : '')
     + (champ ? `<div class="alert ok" style="margin:0">${icon('target')}<div><b>Beste strategie:</b> ${esc(champ.timeframe)}-candles, +${nl(champ.targetPct)}% / −${nl(champ.stopPct)}%, max ${holdTxt(champ.holdMinutes)} — ${champ.val?.best ? `${nl(champ.val.best.avgReturnPct, 2)}% per trade, controle ${nl(champ.holdout?.avgReturnPct, 2)}%` : ''}.
         ${t.config?.strategy?.key === champ.key ? (sc.autoApply ? ' Het model wordt hierop getraind en de bot neemt hem over zodra het klaar is.' : '') : sc.autoApply ? ' Wordt zo overgenomen.' : ' Klik op Toepassen in de ranglijst om over te stappen.'}</div></div>`
       : sc.enabled ? '<p class="muted" style="margin:0;font-size:13.5px">Nog geen bevestigde strategie. De zoeker gaat door tot hij er een vindt, en bouwt daarna verder op de beste om een nog betere te vinden.</p>' : '');
@@ -2537,6 +2608,7 @@ const HELP = {
   'st-hold': 'Hoeveel candles een positie minimaal open blijft voordat het verkoopsignaal mag verkopen. Geeft een nieuwe positie de tijd om te bewegen. Stop-loss, trailing stop, take-profit en de AI-winstcheck werken altijd direct, dus je verlies blijft begrensd. <b>Gebruikelijk:</b> 3 tot 6. 0 = uit.',
   'st-open': 'Normaal kijkt de bot alleen naar gesloten candles, zodat een signaal vaststaat. Met <b>Ja</b> telt ook de candle die nog loopt mee: je ziet een kruising tot een hele candle eerder, maar hij kan binnen die candle ook weer verdwijnen, waardoor je vaker te vroeg koopt. Vooral nuttig bij lange candles (1 uur of meer). Een kortere candle-tijd bij Planning is meestal de betere manier om sneller te zijn.',
   'st-mlbandit': 'Zelflerend: de bevestigde strategieën van de strategie-zoeker bepalen zelf wanneer er gekocht wordt, elk op haar eigen candle-tijd en met een eigen model, doel, stop en maximale duur (los van je eigen candle-instelling en EMA-kruisingen). Willen er meerdere kopen, dan kiest de bot er één. Na elke gesloten trade krijgt die strategie een beloning: de echte winst of het verlies. Strategieën die geld opleverden kiest hij daarna vaker; de andere probeert hij af en toe opnieuw, want het kan geluk geweest zijn of de markt kan veranderd zijn. Recente trades tellen zwaarder. De gekozen strategie bepaalt voor die trade de stop, het winstdoel en de maximale duur (jouw ATR-stop en trailing stop gelden dan niet). Zolang er nog geen bevestigde strategie is, gelden gewoon je eigen instellingen. Een positie van een strategie wordt alleen gesloten op haar eigen stop, doel of maximale duur (of handmatig). Paper en live delen hetzelfde geheugen.',
+  'st-agent': 'De AI-trader van de trainer beslist zelf wanneer hij koopt en wanneer hij verkoopt: geen EMA-kruisingen, winstdoelen of vaste strategieën. Hij kijkt op zijn eigen candle-tijd (die hij zelf kiest) en verkoopt zodra hij van langer vasthouden niets meer verwacht. Alleen de noodstop (instelbaar op de pagina Trainer) en een maximale duur gelden als vangnet. Je AI (bij AI) blijft als controleur meekijken, en de orderboek-check blijft gelden. Live handelt hij pas als hij zich in de praktijk bewezen heeft; in paper zodra hij in de test winst maakte (of eerder als oefening, als "Proefstrategieën in paper" aan staat). Staat dit aan, dan vervangt hij "Kiezen tussen strategieën".',
   'st-mltrial': 'Proefstrategieën zijn strategieën die de trainer zelf bedacht heeft en die op het verleden veelbelovend waren, maar nog niet bevestigd. Met "Ook echt traden (paper)" doet de bot er in paper echte (paper-)trades mee, zodat ze zich sneller kunnen bewijzen. Live traden ze nooit; daar alleen schaduwtrades. Wie het live goed doet wordt bevestigd.',
   'st-mlregime': 'Het model herkent het soort markt van een coin: stijgend, zijwaarts of dalend (de trend over een langere periode, vergeleken met hoe hard de coin normaal beweegt). De trainer houdt bij hoe de trades die het model zou nemen het in elk soort markt deden op de testperiode. Verloor het model in de huidige soort markt geld (minstens 30 testtrades), dan krijgt de AI een waarschuwing. Met "Overslaan" slaat de bot zo\'n signaal helemaal over.',
   'st-btc': 'Bijna alle coins bewegen mee met Bitcoin. Met dit filter koopt de bot geen andere coins zolang BTC onder zijn gemiddelde van 50 candles ligt. BTC zelf wordt niet gefilterd.',
@@ -2716,7 +2788,7 @@ $('strat-form').onsubmit = async (e) => {
   const strategy = { emaFast: $('st-fast').value, emaSlow: $('st-slow').value, rsiPeriod: $('st-rsi').value, rsiMaxEntry: $('st-rsimax').value,
     trendEma: $('st-trend').value, adxMin: $('st-adx').value, volumeMult: $('st-vol').value, btcFilter: $('st-btc').value,
     maxChasePct: $('st-chase').value, useOpenCandle: $('st-open').value,
-    sellConfirmCandles: $('st-confirm').value, minHoldCandles: $('st-hold').value, aiStrictness: $('st-strict').value, mlMinProb: $('st-mlmin').value, mlSkipBadRegime: $('st-mlregime').value, mlBandit: $('st-mlbandit').value, mlTrialPaper: $('st-mltrial').value };
+    sellConfirmCandles: $('st-confirm').value, minHoldCandles: $('st-hold').value, aiStrictness: $('st-strict').value, mlMinProb: $('st-mlmin').value, mlSkipBadRegime: $('st-mlregime').value, mlBandit: $('st-mlbandit').value, mlTrialPaper: $('st-mltrial').value, agentMode: $('st-agent').value };
   if (state.mode === 'live' && !$('st-pass').value) { $('strat-msg').className = 'msg err'; $('strat-msg').textContent = 'Vul je wachtwoord in'; return; }
   try {
     await api('api/settings/strategy', { strategy, password: $('st-pass').value });

@@ -22,6 +22,7 @@ import traceback
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import agent as agent_mod
 import micro as micro_mod
 import search as searcher
 import thoughts
@@ -42,7 +43,9 @@ DEFAULTS = {'timeframe': '5m', 'days': 60, 'targetPct': 3.0, 'stopPct': 2.0, 'ho
             'search': {'enabled': False, 'timeframes': [], 'perRound': 6, 'pauseMinutes': 1, 'autoApply': False},
             'strategy': None,
             # Orderboek en transacties opnemen (elke minuut); useMicro wordt door het experiment gezet.
-            'micro': {'enabled': True}, 'useMicro': False}
+            'micro': {'enabled': True}, 'useMicro': False,
+            # De AI-trader: leert zelf wanneer kopen en verkopen (zie agent.py). Draait doorlopend.
+            'agent': {'enabled': True, 'timeframes': [], 'safetyStopPct': 10, 'pauseMinutes': 1}}
 LIMITS = {'days': (7, 365), 'targetPct': (0.2, 50), 'stopPct': (0.2, 50), 'horizon': (3, 2000),
           'costPct': (0, 5), 'topN': (1, 50), 'maxSamples': (20_000, 2_000_000), 'halfLifeDays': (0, 365)}
 
@@ -110,6 +113,7 @@ def config():
     cfg['schedule'] = {**DEFAULTS['schedule'], **(saved.get('schedule') or {})}
     cfg['search'] = {**DEFAULTS['search'], **(saved.get('search') or {})}
     cfg['micro'] = {**DEFAULTS['micro'], **(saved.get('micro') or {})}
+    cfg['agent'] = {**DEFAULTS['agent'], **(saved.get('agent') or {})}
     return cfg
 
 
@@ -184,6 +188,16 @@ def validate_config(body):
         cfg['schedule'] = validate_schedule(body['schedule'], cfg['schedule'])
     if 'search' in body:
         cfg['search'] = validate_search(body['search'], cfg['search'])
+    if isinstance(body.get('agent'), dict):
+        a = {**cfg['agent'], **body['agent']}
+        tfs = [str(t) for t in a.get('timeframes') or []]
+        if any(t not in agent_mod.TF_MIN for t in tfs):
+            raise ValueError('Onbekende candle-tijd voor de AI-trader')
+        stop = float(a.get('safetyStopPct') or 10)
+        if not 2 <= stop <= 30:
+            raise ValueError('Noodstop moet tussen 2% en 30% liggen')
+        cfg['agent'] = {'enabled': bool(a.get('enabled')), 'timeframes': tfs, 'safetyStopPct': stop,
+                        'pauseMinutes': max(0, min(720, int(a.get('pauseMinutes') or 0)))}
     if isinstance(body.get('micro'), dict):
         cfg['micro'] = {'enabled': bool(body['micro'].get('enabled', cfg['micro']['enabled']))}
     # Zelf andere strategie-instellingen gekozen: dan is het niet meer de strategie van de zoeker.
@@ -289,6 +303,10 @@ def add_feedback(trades):
     """Echte trades van de bot opslaan. Dubbele (zelfde coin, timeframe en tijdstip) tellen één keer.
     Items met kind 'signal' zijn oordelen van de AI over een signaal (geen trade)."""
     items = trades if isinstance(trades, list) else []
+    ag = [t for t in items if isinstance(t, dict) and t.get('kind') == 'agentTrade']
+    if ag:
+        add_agent_trades(ag)
+    items = [t for t in items if not (isinstance(t, dict) and t.get('kind') == 'agentTrade')]
     arms = [t for t in items if isinstance(t, dict) and t.get('kind') == 'arm']
     if arms:
         add_arm_results(arms)
@@ -671,7 +689,7 @@ def search_worker():
     """Zoekt doorlopend zolang de zoeker aan staat, met een korte pauze tussen rondes."""
     while True:
         cfg = config()
-        if not cfg['search']['enabled']:
+        if not cfg['search']['enabled'] or cfg['agent']['enabled']:  # de AI-trader vervangt de zoeker
             state['nextSearchAt'] = None
             search_wake.clear()
             search_wake.wait(timeout=60)
@@ -688,6 +706,178 @@ def search_worker():
         state['nextSearchAt'] = (datetime.now() + timedelta(minutes=pause)).isoformat(timespec='minutes')
         search_wake.clear()
         search_wake.wait(timeout=max(5, pause * 60))
+
+
+# ---------- De AI-trader ----------
+agent_wake = threading.Event()
+AGENT_PROVEN_MIN = 20    # zoveel trades in paper/live voordat hij als bewezen geldt
+AGENT_PROVEN_AVG = 0.1   # gemiddeld minstens zoveel % per trade
+
+
+def load_agents():
+    return read_json('agents.json', {'byTf': {}, 'published': None, 'live': {}, 'round': 0})
+
+
+def agent_rank(r):
+    """Hoe goed is een getrainde AI-trader: rendement per dag in de eindtest (alleen als hij
+    daar en op de validatie winst maakte)."""
+    t = r.get('test') or {}
+    if not r.get('ok') or not t.get('trades'):
+        return None
+    return t['totalPct'] / max(1.0, r.get('testDays') or 1) / max(1, len(r.get('pairs') or [1]))
+
+
+def agent_extra(tf):
+    """Echte trades van de AI-trader (paper/live) als extra leervoorbeelden voor "kopen"."""
+    out = []
+    for t in read_json('agent_trades.json', []):
+        if t.get('timeframe') != tf or not isinstance(t.get('features'), dict):
+            continue
+        f = t['features']
+        out.append(([float(f[k]) if isinstance(f.get(k), (int, float)) else float('nan') for k in agent_mod.FEATURES], float(t['pct'])))
+    return out
+
+
+def add_agent_trades(items):
+    """Uitkomsten van echte trades van de AI-trader: telt mee voor 'bewezen' en om van te leren."""
+    clean = []
+    for t in items:
+        try:
+            clean.append({'timeframe': str(t['timeframe']), 'pct': float(t['pct']), 'version': str(t.get('version') or ''),
+                          'features': {k: float(v) for k, v in (t.get('features') or {}).items() if isinstance(v, (int, float))},
+                          'mode': str(t.get('mode') or ''), 'pair': str(t.get('pair') or ''), 'at': datetime.now().isoformat(timespec='seconds')})
+        except (KeyError, TypeError, ValueError):
+            continue
+    if not clean:
+        return 0
+    with feedback_lock:
+        rows = (read_json('agent_trades.json', []) + clean)[-5000:]
+        write_json('agent_trades.json', rows)
+    data = load_agents()
+    for t in clean:
+        lv = data['live'].setdefault(t['timeframe'], {'n': 0, 'sum': 0.0, 'wins': 0})
+        lv['n'] += 1
+        lv['sum'] += t['pct']
+        lv['wins'] += t['pct'] > 0
+        if lv['n'] == AGENT_PROVEN_MIN:
+            avg = lv['sum'] / lv['n']
+            think(f"Na {lv['n']} echte trades op {t['timeframe']} doe ik gemiddeld {thoughts.pct(avg)} per trade. " +
+                  ('Daarmee heb ik me bewezen.' if avg >= AGENT_PROVEN_AVG else 'Dat is nog niet goed genoeg; ik blijf leren.'),
+                  kind='result' if avg >= AGENT_PROVEN_AVG else 'warn')
+    write_json('agents.json', data)
+    return len(clean)
+
+
+def agent_round():
+    """Eén leerronde van de AI-trader: één candle-tijd (opnieuw) trainen op de nieuwste koersen,
+    dan de beste kiezen."""
+    cfg = config()
+    tfs = cfg['agent']['timeframes'] or agent_mod.DEFAULT_TIMEFRAMES
+    data = load_agents()
+    tf = tfs[data.get('round', 0) % len(tfs)]
+    cache = os.path.join(DATA, 'candles')
+    fetch = lambda pair, t, days: trainer.fetch_candles(pair, t, days, cache_dir=cache)
+    with work_lock:
+        state['agentBusy'] = True
+        state['agentProgress'] = {'startedAt': datetime.now().isoformat(timespec='seconds'), 'phase': 'agent', 'done': 0, 'total': 5, 'text': f'AI-trader {tf}: starten'}
+        try:
+            pairs = cfg.get('pairs') or trainer.top_markets(int(cfg.get('topN', 15)))
+            def prog(phase, done, total, text):
+                state['agentProgress'] = {**state['agentProgress'], 'done': done, 'total': total, 'text': text}
+            agent, report = agent_mod.train_agent({**cfg, 'agent': cfg['agent']}, tf, fetch, pairs, log=log, think=think,
+                                                  progress=prog, extra=agent_extra(tf), seed=data.get('round', 0) + 1)
+        finally:
+            state['agentBusy'] = False
+    data = load_agents()
+    data['round'] = data.get('round', 0) + 1
+    report['at'] = datetime.now().isoformat(timespec='seconds')
+    data['byTf'][tf] = report
+    os.makedirs(path('agents'), exist_ok=True)
+    if agent:
+        write_json(os.path.join('agents', f'{tf}.json'), agent)
+    think(agent_mod_say(report), kind='result' if report.get('ok') else 'warn')
+    # Beste kiezen: hoogste rendement per dag in de eindtest; anders de minst slechte om mee te oefenen.
+    ranked = sorted(((agent_rank(r), t) for t, r in data['byTf'].items() if agent_rank(r) is not None), reverse=True)
+    prev = data.get('published')
+    if ranked:
+        best_tf = ranked[0][1]
+        stage = 'getest'
+    else:
+        cand = [(r['test']['avgPct'], t) for t, r in data['byTf'].items() if (r.get('test') or {}).get('avgPct') is not None]
+        best_tf = max(cand)[1] if cand else None
+        stage = 'oefenen'
+    if best_tf and os.path.exists(path(os.path.join('agents', f'{best_tf}.json'))):
+        a = read_json(os.path.join('agents', f'{best_tf}.json'), None)
+        lv = data['live'].get(best_tf) or {}
+        proven = lv.get('n', 0) >= AGENT_PROVEN_MIN and lv['sum'] / lv['n'] >= AGENT_PROVEN_AVG
+        a['stage'] = 'bewezen' if (proven and stage == 'getest') else stage
+        a['live'] = lv
+        write_json('agent.json', a)
+        data['published'] = {'timeframe': best_tf, 'stage': a['stage'], 'at': report['at']}
+        if not prev or prev.get('timeframe') != best_tf or prev.get('stage') != a['stage']:
+            r = data['byTf'][best_tf]
+            think((f"Mijn beste manier van traden is nu op {best_tf}-candles " +
+                   (f"(eindtest: {thoughts.pct((r.get('test') or {}).get('avgPct'))} per trade over {(r.get('test') or {}).get('trades')} trades). " if r.get('test') else '') +
+                   {'getest': 'Die gaat de bot gebruiken (in paper; live pas als ik me in de praktijk bewezen heb).',
+                    'bewezen': 'Ik heb me ook in de praktijk bewezen, dus ik mag ook live handelen.',
+                    'oefenen': 'Hij maakt in de test nog geen winst, dus de bot oefent er alleen mee in paper (als je dat toestaat) om ervan te leren.'}[a['stage']]),
+                  kind='result' if a['stage'] != 'oefenen' else 'insight')
+    write_json('agents.json', data)
+
+
+def agent_mod_say(r):
+    tf = r.get('timeframe')
+    if not r.get('test'):
+        return f"AI-trader {tf}: {r.get('reason') or 'geen resultaat'}."
+    v, t = r['validation'], r['test']
+    f = thoughts.pct
+    held = (t.get('avgHeld') or 0) * agent_mod.TF_MIN.get(tf, 15)
+    s = (f"Klaar met leren op {tf}: in de eindtest (de laatste {str(r.get('testDays')).replace('.', ',')} dagen, die ik nooit gezien had) "
+         f"deed ik {t['trades']} trades, gemiddeld {f(t['avgPct'])} per trade, {t['winRate']:.0f}% met winst, "
+         f"gemiddeld {thoughts.hold(int(held))} vastgehouden. Kopen en vasthouden had {f(t.get('buyHoldPct'))} opgeleverd. ")
+    ex = t.get('exits') or {}
+    if ex.get('zelf verkocht'):
+        s += f"{ex['zelf verkocht']} keer verkocht ik zelf, {ex.get('veiligheidsstop', 0)} keer greep de noodstop in. "
+    focus = r.get('exitFocus') or []
+    if focus:
+        names = [thoughts.LABELS.get(k, {'posPnlPct': 'mijn winst of verlies', 'posCandles': 'hoe lang ik al in de trade zit',
+                                         'posMaxPct': 'de hoogste winst tot nu toe', 'posDrawPct': 'hoeveel ik terugzakte vanaf de top'}.get(k, k)) for k, _ in focus[:3]]
+        s += f"Bij verkopen let ik vooral op: {', '.join(names)}. "
+    s += 'Dat is goed genoeg om mee te handelen.' if r.get('ok') else 'Dat is nog niet goed genoeg; ik blijf leren.'
+    return s
+
+
+def agent_worker():
+    """Leert doorlopend: candle-tijd na candle-tijd, steeds met de nieuwste koersen."""
+    while True:
+        cfg = config()
+        if not cfg['agent']['enabled']:
+            agent_wake.clear()
+            agent_wake.wait(timeout=60)
+            continue
+        if state['running'] or state.get('wantMain'):
+            time.sleep(5)
+            continue
+        try:
+            agent_round()
+        except Exception as e:
+            log(f'AI-trader: leerronde mislukt: {e}')
+            traceback.print_exc()
+        pause = int(config()['agent'].get('pauseMinutes') or 0)
+        state['nextAgentAt'] = (datetime.now() + timedelta(minutes=pause)).isoformat(timespec='minutes')
+        agent_wake.clear()
+        agent_wake.wait(timeout=max(5, pause * 60))
+
+
+def agent_info():
+    cfg = config()
+    data = load_agents()
+    pub = read_json('agent.json', None)
+    return {'enabled': cfg['agent']['enabled'], 'config': cfg['agent'], 'busy': state.get('agentBusy', False),
+            'progress': state.get('agentProgress') if state.get('agentBusy') else None, 'nextAt': state.get('nextAgentAt'),
+            'byTf': data.get('byTf', {}), 'published': data.get('published'), 'live': data.get('live', {}),
+            'stage': (pub or {}).get('stage'), 'rounds': data.get('round', 0),
+            'provenMin': AGENT_PROVEN_MIN, 'provenAvg': AGENT_PROVEN_AVG}
 
 
 def cache_info():
@@ -751,6 +941,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             return self.send(200, data, extra={'ETag': etag})
+        if self.path == '/agent.json':
+            a = read_json('agent.json', None)
+            if not a:
+                return self.send(404, {'error': 'Nog geen AI-trader'})
+            a['live'] = load_agents().get('live', {}).get(a['timeframe'], {})
+            data = json.dumps(a).encode()
+            etag = '"' + hashlib.sha1(data).hexdigest()[:16] + '"'
+            if self.headers.get('If-None-Match') == etag:
+                self.send_response(304)
+                self.send_header('ETag', etag)
+                self.end_headers()
+                return
+            return self.send(200, data, extra={'ETag': etag})
         if self.path == '/micro/latest':
             cfg = config()
             return self.send(200, {'useMicro': bool(cfg.get('useMicro')), 'features': micro_mod.latest(MICRO_DIR, cfg.get('pairs') or None)})
@@ -776,7 +979,7 @@ class Handler(BaseHTTPRequestHandler):
                 'config': config(), 'nextRunAt': None if state['running'] else next_run().isoformat(timespec='minutes'), 'trainHour': TRAIN_HOUR,
                 'cache': state.get('cache', []), 'feedback': feedback_info(), 'search': search_info(),
                 'teamwork': read_json('teamwork.json', {'total': 0}), 'thoughts': state.get('thoughts', [])[-120:],
-                'micro': micro_info(),
+                'micro': micro_info(), 'agent': agent_info(),
                 'model': model and model.get('meta'), 'history': state['history'], 'log': state['log'][-150:],
             })
         self.send(404, {'error': 'Niet gevonden'})
@@ -798,6 +1001,7 @@ class Handler(BaseHTTPRequestHandler):
             log('Instellingen bijgewerkt door vetobot')
             wake.set()
             search_wake.set()
+            agent_wake.set()
             return self.send(200, {'ok': True, 'config': cfg})
         if self.path == '/feedback':
             added = add_feedback(body.get('trades'))
@@ -821,6 +1025,7 @@ def main():
     threading.Thread(target=scheduler, daemon=True).start()
     threading.Thread(target=search_worker, daemon=True).start()
     threading.Thread(target=micro_worker, daemon=True).start()
+    threading.Thread(target=agent_worker, daemon=True).start()
     ThreadingHTTPServer(('0.0.0.0', PORT), Handler).serve_forever()
 
 

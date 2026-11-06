@@ -66,5 +66,41 @@ def main():
     print(f'Geschreven: {dest} ({len(points)} punten)')
 
 
+def agent_fixture():
+    """Kleine AI-trader en de uitkomsten volgens Python, voor test/agent.test.js."""
+    import agent
+    coin = walk(4, 0.35, 0.008)
+    btc = walk(2, 60000, 0.004)
+    ctx = context(btc)
+    mk = agent.Market('X/EUR', coin, ctx)
+    rows = mk.X[agent.WARMUP:]
+    import numpy as np
+    rnd = random.Random(1)
+    y = np.array([rnd.gauss(0, 1) + (r[0] - 50) / 20 for r in rows])
+    med = agent._medians(rows)
+    m = agent._fit(agent._impute(rows, med), y)
+    entry = agent.export_reg(m, FEATURES, med)
+    pos_rows = np.array([list(r) + [rnd.gauss(0, 2), float(rnd.randint(0, 50)), abs(rnd.gauss(0, 3)), abs(rnd.gauss(0, 1))] for r in rows])
+    pmed = agent._medians(pos_rows)
+    m2 = agent._fit(agent._impute(pos_rows, pmed), y + pos_rows[:, len(FEATURES)] * 0.3)
+    exit_ = agent.export_reg(m2, FEATURES + agent.POS_FEATURES, pmed)
+    pts = []
+    for k in (0, 50, 200, 400):
+        f = {key: (None if math.isnan(v) else float(v)) for key, v in zip(FEATURES, rows[k])}
+        pf = dict(zip(agent.POS_FEATURES, [float(v) for v in pos_rows[k][len(FEATURES):]]))
+        er = agent._impute(rows[k:k + 1], med)[0]
+        xr = agent._impute(pos_rows[k:k + 1], pmed)[0]
+        pts.append({'features': f, 'pos': pf, 'entry': float(m.predict([er])[0]), 'exit': float(m2.predict([xr])[0]),
+                    'entryJson': agent.predict_reg_json(entry, list(er)), 'exitJson': agent.predict_reg_json(exit_, list(xr))})
+        assert abs(pts[-1]['entry'] - pts[-1]['entryJson']) < 1e-9 and abs(pts[-1]['exit'] - pts[-1]['exitJson']) < 1e-9
+    out = {'agent': {'version': 2, 'kind': 'agent', 'timeframe': '15m', 'threshold': 0.2, 'maxHoldCandles': 96, 'safetyStopPct': 10,
+                     'costPct': 0.4, 'entry': entry, 'exit': exit_, 'meta': {}}, 'points': pts}
+    dest = os.path.join(os.path.dirname(__file__), '..', 'test', 'fixtures', 'agent-parity.json')
+    with open(dest, 'w') as fh:
+        json.dump(out, fh)
+    print(f'Geschreven: {dest}')
+
+
 if __name__ == '__main__':
     main()
+    agent_fixture()

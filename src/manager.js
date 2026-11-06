@@ -6,7 +6,7 @@ import { SecretStore } from './secrets.js';
 import { Settings } from './settings.js';
 import { Bot } from './bot.js';
 import { Notifier } from './notify.js';
-import { validateModel } from './mlmodel.js';
+import { validateModel, validateAgent } from './mlmodel.js';
 
 // Beheert één bot per gebruiker.
 //
@@ -148,6 +148,18 @@ export class BotManager {
     }
   }
 
+  // De AI-trader van de trainer (elke 5 minuten, met ETag).
+  async refreshAgent() {
+    if (!this.trainerAccess()) return;
+    const r = await this.trainerRequest('/agent.json', { etag: this.ml.agentEtag }).catch(() => null);
+    if (r && !r.notModified && r.data && !validateAgent(r.data)) {
+      const before = this.ml.agent;
+      this.ml.agent = r.data;
+      this.ml.agentEtag = r.etag;
+      if (before?.meta?.trainedAt !== r.data.meta?.trainedAt) this.log.info(`AI-trader bijgewerkt: ${r.data.timeframe}, ${r.data.stage}`);
+    }
+  }
+
   async refreshMicro() {
     if (!this.ml.model?.meta?.micro || !this.trainerAccess()) return;
     const r = await this.trainerRequest('/micro/latest').catch(() => null);
@@ -168,6 +180,7 @@ export class BotManager {
         await this.#autoApplyStrategy(r.data).catch((err) => this.log.error(`Strategie overnemen mislukt: ${err.message}`));
       }
       await this.refreshArms();
+      await this.refreshAgent();
       // Scorebord van AI + model (wie had gelijk bij de laatste signalen).
       this.ml.teamwork = (await this.trainerRequest('/teamwork').catch(() => null))?.data ?? this.ml.teamwork ?? null;
       this.ml.error = null;
@@ -270,6 +283,7 @@ export class BotManager {
     bot.getTeamwork = () => this.ml.teamwork ?? null;
     bot.getArms = () => this.ml.arms ?? [];
     bot.getMicro = (pair) => this.ml.micro?.features?.[pair] ?? null;
+    bot.getAgent = () => this.ml.agent ?? null;
     bot.onFeedback = (trade) => { this.queueFeedback(trade).catch(() => {}); };
     const ctx = { user, dir, settings, secrets, exchange, brokers, stores, notifier, bot, timer: null, watchTimer: null };
     this.contexts.set(user.id, ctx);
@@ -347,7 +361,8 @@ export class BotManager {
     this.modelTimer = setInterval(() => { this.refreshModel(); this.flushFeedback(); }, 30 * 60 * 1000);
     // Orderboek-kenmerken van de trainer, elke minuut, maar alleen als het model ze gebruikt.
     this.microTimer = setInterval(() => this.refreshMicro(), 60 * 1000);
-    this.armsTimer = setInterval(() => this.refreshArms().catch(() => {}), 5 * 60 * 1000);
+    this.armsTimer = setInterval(() => { this.refreshArms().catch(() => {}); this.refreshAgent().catch(() => {}); }, 5 * 60 * 1000);
+    this.refreshAgent().catch(() => {});
     this.flushFeedback();
   }
 

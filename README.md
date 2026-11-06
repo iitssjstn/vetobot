@@ -180,6 +180,18 @@ Valt je server uit, dan kan vetobot zelf niets meer sturen. Daarom stuurt hij na
 2. Plak de ping-URL bij Heartbeat-URL in vetobot en klik op **Heartbeat testen**.
 3. Kies in healthchecks.io bij **Integrations** de **Webhook**-integratie met als URL je Discord-webhook, methode POST, header `Content-Type: application/json` en body `{"content": "<@JOUW_ID> vetobot is offline ($NAME)"}`. Dan word je getagd. Zonder tag kun je ook de Discord-integratie gebruiken.
 
+### AI-trader (leert zelf kopen en verkopen)
+
+Een lerende agent (reinforcement learning, *fitted Q-iteration*) die zelf uitzoekt wanneer kopen en wanneer verkopen loont. Geen EMA-kruisingen, vaste winstdoelen, stops of strategieën: zijn enige beloning is de winst na kosten.
+
+- **Verkopen leren:** voor posities op allerlei momenten in het verleden leert hij de waarde van "nog een candle vasthouden" (koersverandering plus de waarde van de beste keuze daarna), herhaald zodat hij steeds verder vooruit kijkt. Hij kijkt daarbij naar de markt én zijn eigen positie (winst nu, hoe lang al, hoogste stand, terugval). Hij verkoopt zodra vasthouden naar verwachting niets meer oplevert.
+- **Kopen leren:** voor elk moment speelt hij een aankoop na met zijn eigen verkoopgedrag, inclusief kosten, en leert zo de waarde van "nu kopen".
+- **Eerlijk testen:** 70% van de tijd leren, 15% om de koopdrempel te kiezen, 15% als eindtest die hij nooit zag (één positie per coin, kosten, noodstop), vergeleken met kopen en vasthouden.
+- **Doorlopend:** de trainer leert elke ronde één candle-tijd opnieuw (standaard 15m, 30m, 1h, 5m) met de nieuwste koersen en kiest zelf de beste. Echte trades van de bot gaan terug als leervoorbeelden.
+- **Rollen:** *getest* (winst in de eindtest) handelt in paper; *bewezen* (daarna ≥ 20 echte trades met gemiddeld ≥ +0,1%) mag ook live; *oefenen* (nog geen winst in de test) alleen in paper als "Proefstrategieën in paper" aan staat.
+- **Vangnet:** alleen een noodstop (standaard −10%, instelbaar) en een maximale duur (±2 dagen). De orderboek-check en je AI als controleur blijven gelden.
+- Aanzetten: Instellingen → Strategie → **AI-trader → Aan**. Op de pagina Trainer staat het blok **AI-trader** (resultaat per candle-tijd, welke in gebruik is, resultaat in de praktijk). Staat de AI-trader aan, dan staat de strategie-zoeker stil (de AI-trader vervangt hem).
+
 ## Eigen model (trainer op een VPS)
 
 Naast de AI kan vetobot een **eigen voorspelmodel** gebruiken. Dat wordt getraind door een aparte container, **vetobot-trainer**, die je op een sterkere server (bijv. een VPS) draait. De bot zelf blijft op je eigen server.

@@ -205,7 +205,7 @@ export function buildPrompt({ pair, timeframe, indicators, recentCandles, extra 
     return `${sgn(((x[4] - prev) / prev) * 100)}% ${x[4] >= x[1] ? 'groen' : 'rood'}, bereik ${fx(((x[2] - x[3]) / x[3]) * 100)}%, vol ${fx(avgV ? x[5] / avgV : null, 1)}×`;
   }).join('\n');
 
-  return `Pair: ${pair} · timeframe ${timeframe} · signaal: KOPEN (${extra.ml?.arm ? `${extra.signalReason ?? 'zelflerend gekozen strategie'}; deze strategie draait op ${extra.ml.arm.timeframe}-candles, de cijfers hieronder zijn van ${timeframe}` : 'EMA fast kruist boven EMA slow'})
+  return `Pair: ${pair} · timeframe ${timeframe} · signaal: KOPEN (${extra.agentSignal ? `${extra.signalReason}; de AI-trader beslist zelf wanneer hij verkoopt (geen vast winstdoel), met alleen een noodstop als vangnet` : extra.ml?.arm ? `${extra.signalReason ?? 'zelflerend gekozen strategie'}; deze strategie draait op ${extra.ml.arm.timeframe}-candles, de cijfers hieronder zijn van ${timeframe}` : 'EMA fast kruist boven EMA slow'})
 Koers: ${px(ind.close)}
 
 == Harde filters (één ✗ = afwijzen; ○ = alleen ter info) · strengheid: ${F.label} ==

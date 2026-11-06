@@ -192,13 +192,43 @@ export function regimeOf(f) {
 }
 
 // Controleert of een model van de trainer bruikbaar is.
-export function validateModel(m) {
-  if (!m || m.version !== 1 || m.kind !== 'gbdt') return 'Onbekend modelformaat';
+// Kenmerken van de eigen positie, voor de AI-trader (zie trainer/agent.py pos_state).
+export const POS_FEATURES = ['posPnlPct', 'posCandles', 'posMaxPct', 'posDrawPct'];
+export function positionFeatures(entry, price, highest, candles) {
+  const pnl = (price / entry - 1) * 100;
+  const mx = (Math.max(highest, price) / entry - 1) * 100;
+  return { posPnlPct: pnl, posCandles: candles, posMaxPct: mx, posDrawPct: mx - pnl };
+}
+
+export function validateModel(m, extraFeatures = []) {
+  if (!m || m.version !== 1 || (m.kind !== 'gbdt' && m.kind !== 'gbdt-reg')) return 'Onbekend modelformaat';
   // Een model mag een deel van de kenmerken gebruiken (oudere modellen hebben er minder).
-  if (!Array.isArray(m.features) || !m.features.length || m.features.some((k) => !FEATURES.includes(k))) return 'Het model gebruikt andere kenmerken dan deze versie van vetobot; update de bot of de trainer';
+  if (!Array.isArray(m.features) || !m.features.length || m.features.some((k) => !FEATURES.includes(k) && !extraFeatures.includes(k))) return 'Het model gebruikt andere kenmerken dan deze versie van vetobot; update de bot of de trainer';
   if (!Array.isArray(m.trees) || !m.trees.length || !Array.isArray(m.medians) || m.medians.length !== m.features.length) return 'Model is onvolledig';
   if (!Number.isFinite(m.init) || !Number.isFinite(m.learningRate)) return 'Model is onvolledig';
   return null;
+}
+
+// Ruwe uitkomst van een model (regressie: verwachte waarde in %).
+export function predictRaw(model, features) {
+  const row = model.features.map((k, j) => {
+    const v = features?.[k];
+    return v == null || !Number.isFinite(v) ? model.medians[j] : v;
+  });
+  let total = 0;
+  for (const t of model.trees) {
+    let n = 0;
+    while (t.l[n] !== -1) n = row[t.f[n]] <= t.t[n] ? t.l[n] : t.r[n];
+    total += t.v[n];
+  }
+  return model.init + model.learningRate * total;
+}
+
+// De AI-trader van de trainer controleren.
+export function validateAgent(a) {
+  if (!a || a.version !== 2 || a.kind !== 'agent') return 'Onbekend formaat voor de AI-trader';
+  return validateModel(a.entry) ?? validateModel(a.exit, POS_FEATURES) ??
+    (Number.isFinite(a.threshold) && a.maxHoldCandles > 0 && a.safetyStopPct > 0 && a.timeframe ? null : 'AI-trader is onvolledig');
 }
 
 // Winstkans (0-1) volgens het model. Ontbrekende kenmerken worden gevuld met de mediaan
