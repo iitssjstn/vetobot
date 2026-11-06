@@ -15,7 +15,7 @@ import time
 import urllib.error
 import urllib.request
 
-from features import FEATURES, WARMUP, features_at, label_at, series
+from features import FEATURES, WARMUP, context, features_at, label_at, series
 
 BITVAVO = 'https://api.bitvavo.com/v2'
 TF_MS = {'1m': 60_000, '5m': 300_000, '15m': 900_000, '30m': 1_800_000, '1h': 3_600_000,
@@ -130,14 +130,15 @@ def fetch_candles(pair, timeframe, days, cache_dir=None, now_ms=None, fetch=fetc
     return [c for c in candles if c[0] >= start]
 
 
-def build_dataset(candles, cfg, step=2):
+def build_dataset(candles, cfg, step=2, ctx=None):
     """Kenmerken, labels en rendementen per moment. step=2: elke tweede candle (minder overlap).
-    Een grotere step neemt een gespreide selectie, zodat lange periodes niet eindeloos duren."""
+    Een grotere step neemt een gespreide selectie, zodat lange periodes niet eindeloos duren.
+    ctx: context(btc_candles) voor de BTC-kenmerken."""
     s = series(candles)
     X, y, ret, ts = [], [], [], []
     horizon = int(cfg['horizon'])
     for i in range(WARMUP, len(candles) - horizon - 1, step):
-        f = features_at(candles, s, i)
+        f = features_at(candles, s, i, ctx)
         if f is None:
             continue
         lab, r = label_at(candles, i, cfg['targetPct'], cfg['stopPct'], horizon, cfg['costPct'])
@@ -216,8 +217,30 @@ def evaluate(probs, y, ret, cfg):
     return {'auc': auc, 'base': base, 'buckets': buckets, 'best': best, 'minTrades': min_n}
 
 
-def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=None):
+FEEDBACK_WEIGHT = 3.0  # een echte trade van de bot telt zwaarder dan één historisch voorbeeld
+
+
+def feedback_rows(feedback, timeframe):
+    """Echte trades van de bot (met de kenmerken op het moment van kopen) -> (ts, X, y, ret)."""
+    rows = []
+    for t in feedback or []:
+        if t.get('timeframe') != timeframe or not isinstance(t.get('features'), dict):
+            continue
+        r = t.get('returnPct')
+        if not isinstance(r, (int, float)):
+            continue
+        f = t['features']
+        rows.append((int(t.get('ts') or 0), [f.get(k) if isinstance(f.get(k), (int, float)) else None for k in FEATURES],
+                     1 if r > 0 else 0, float(r), t.get('prob')))
+    rows.sort(key=lambda x: x[0])
+    return rows
+
+
+def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=None, feedback=None):
     """Volledige training. Geeft (model_json_of_None, rapport).
+
+    feedback: echte trades van de bot (zie feedback_rows). Trades van vóór de testperiode leert
+    hij van (zwaarder gewogen); trades in de testperiode gebruikt hij als extra, eerlijke controle.
 
     progress(fase, gedaan, totaal, tekst) wordt aangeroepen zodat de status-pagina kan laten
     zien waar de training is.
@@ -230,10 +253,20 @@ def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=Non
         step('markets', 0, 1, 'Coins met het meeste volume opzoeken')
     pairs = cfg.get('pairs') or markets(int(cfg.get('topN', 15)))
     tr_X, tr_y, te_X, te_y, te_ret = [], [], [], [], []
+    tr_w = []
     used = []
+    cut_ts = []
     # Maximaal zoveel voorbeelden in totaal; daarboven een gespreide selectie over de hele periode.
     max_samples = int(cfg.get('maxSamples') or 300_000)
     per_pair = max(5_000, max_samples // max(1, len(pairs)))
+    # BTC/EUR één keer ophalen: wat Bitcoin doet is een kenmerk voor elke coin.
+    ctx = None
+    step('fetch', 0, len(pairs) + 1, 'Koersen ophalen: BTC/EUR (voor de markt-kenmerken)')
+    try:
+        btc = fetch('BTC/EUR', cfg['timeframe'], int(cfg['days']))
+        ctx = context(btc)
+    except Exception as e:
+        log(f'BTC/EUR: ophalen mislukt, BTC-kenmerken worden overgeslagen: {e}')
     for n, pair in enumerate(pairs):
         step('fetch', n, len(pairs), f'Koersen ophalen: {pair}')
         try:
@@ -245,19 +278,35 @@ def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=Non
             log(f'{pair}: te weinig candles ({len(candles)}), overgeslagen')
             continue
         sample_step = max(2, math.ceil(len(candles) / per_pair))
-        X, y, ret, _ = build_dataset(candles, cfg, step=sample_step)
+        X, y, ret, ts = build_dataset(candles, cfg, step=sample_step, ctx=ctx)
         # Tijdsplitsing per coin: oudste 80% trainen, nieuwste 20% testen (nooit door elkaar).
         cut = int(len(X) * 0.8)
         gap = int(cfg['horizon'])  # geen overlap tussen de laatste trainings- en eerste testuitkomst
         tr_X += X[:max(0, cut - gap)]
         tr_y += y[:max(0, cut - gap)]
+        tr_w += [1.0] * max(0, cut - gap)
+        if cut < len(ts):
+            cut_ts.append(ts[cut])
         te_X += X[cut:]
         te_y += y[cut:]
         te_ret += ret[cut:]
         used.append(pair)
         log(f'{pair}: {len(candles)} candles, {len(X)} voorbeelden')
 
-    report = {'pairs': used, 'trainSamples': len(tr_X), 'testSamples': len(te_X), 'config': cfg}
+    # Echte trades van de bot: van vóór de testperiode leren, die erin als eerlijke controle.
+    fb = feedback_rows(feedback, cfg['timeframe'])
+    boundary = min(cut_ts) - int(cfg['horizon']) * TF_MS.get(cfg['timeframe'], 60_000) if cut_ts else 0
+    fb_train = [r for r in fb if r[0] < boundary]
+    fb_test = [r for r in fb if r[0] >= boundary]
+    for r in fb_train:
+        tr_X.append(r[1])
+        tr_y.append(r[2])
+        tr_w.append(FEEDBACK_WEIGHT)
+    if fb:
+        log(f'Eigen trades van de bot: {len(fb)} ({len(fb_train)} om van te leren, {len(fb_test)} als controle)')
+
+    report = {'pairs': used, 'trainSamples': len(tr_X), 'testSamples': len(te_X), 'config': cfg,
+              'feedback': {'total': len(fb), 'train': len(fb_train), 'test': len(fb_test)}}
     if not used:
         report['published'] = False
         report['reason'] = 'Kon bij geen enkele coin koersen ophalen bij Bitvavo; heeft de VPS internet en klopt de coinlijst?'
@@ -282,10 +331,22 @@ def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=Non
     for k in range(10, total_trees + 1, 10):
         step('train', k - 10, total_trees, f'Model trainen op {len(tr_X):,} voorbeelden'.replace(',', '.'))
         model.n_estimators = k
-        model.fit(tr_X, tr_y)
+        model.fit(tr_X, tr_y, sample_weight=tr_w)
     step('test', 0, 1, f'Testen op {len(te_X):,} voorbeelden uit de laatste periode'.replace(',', '.'))
     probs = list(model.predict_proba(te_X)[:, 1])
     metrics = evaluate(probs, te_y, te_ret, cfg)
+    if fb_test:
+        # Hoe had dit model het gedaan op de echte trades van de bot (die hij niet gezien heeft)?
+        fp = list(model.predict_proba(_impute([r[1] for r in fb_test], medians))[:, 1])
+        n = len(fb_test)
+        best_thr = metrics['best']['minProb'] if metrics['best'] else 0.5
+        sel = [k for k in range(n) if fp[k] >= best_thr]
+        metrics['live'] = {
+            'n': n, 'winRate': sum(r[2] for r in fb_test) / n * 100, 'avgReturnPct': sum(r[3] for r in fb_test) / n,
+            'avgProb': sum(fp) / n * 100, 'minProb': best_thr, 'nSelected': len(sel),
+            'selectedAvgReturnPct': sum(fb_test[k][3] for k in sel) / len(sel) if sel else None,
+            'skippedAvgReturnPct': (sum(fb_test[k][3] for k in range(n) if k not in sel) / (n - len(sel))) if n > len(sel) else None,
+        }
     exported = export_model(model, medians, te_X)
     # Controle: de JSON-berekening moet gelijk zijn aan sklearn.
     for k in range(min(50, len(te_X))):

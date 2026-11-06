@@ -241,3 +241,29 @@ test('eigen model: een model met andere kenmerken wordt geweigerd', async () => 
   assert.match(manager.ml.error, /andere kenmerken/);
   manager.stopAll();
 });
+
+test('feedback: echte trades gaan naar de trainer, en wachten als hij onbereikbaar is', async () => {
+  const { admin, manager } = setup();
+  const a = manager.ensure(admin);
+  const sent = [];
+  let up = false;
+  manager.fetchImpl = async (url, opts) => {
+    if (!up) throw new Error('fetch failed');
+    sent.push({ url, body: JSON.parse(opts.body) });
+    return { status: 200, ok: true, headers: new Map(), json: async () => ({ ok: true }) };
+  };
+  // Zonder trainer-instellingen: alleen in de wachtrij
+  a.bot.onFeedback({ pair: 'ETH/EUR', ts: 1, timeframe: '5m', features: { rsi14: 40 }, returnPct: 1.2 });
+  await manager.flushFeedback();
+  assert.equal(manager.feedbackQueue.length, 1);
+  a.secrets.update({ trainerUrl: 'http://10.0.0.5:8787', trainerToken: 'geheim' });
+  await manager.queueFeedback({ pair: 'SOL/EUR', ts: 2, timeframe: '5m', features: { rsi14: 60 }, returnPct: -0.8 });
+  assert.equal(manager.feedbackQueue.length, 2, 'trainer onbereikbaar: blijft wachten');
+  assert.match(manager.ml.feedbackError, /Kan de trainer niet bereiken/);
+  up = true;
+  await manager.flushFeedback();
+  assert.equal(manager.feedbackQueue.length, 0);
+  assert.equal(sent[0].url, 'http://10.0.0.5:8787/feedback');
+  assert.deepEqual(sent[0].body.trades.map((t) => t.pair), ['ETH/EUR', 'SOL/EUR']);
+  manager.stopAll();
+});

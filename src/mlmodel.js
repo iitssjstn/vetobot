@@ -8,12 +8,39 @@ import { ema, rsi, atr, adx } from './indicators.js';
 export const FEATURES = [
   'rsi14', 'adx14', 'atrPct', 'volRatio', 'distEma20Atr', 'distEma50Atr', 'emaSpreadPct',
   'ret1', 'ret3', 'ret12', 'er24', 'greens', 'toHigh48Atr', 'fromLow48Atr', 'upperWick', 'volTrend',
+  // Het grotere plaatje, wat Bitcoin doet, en de tijd (zie trainer/features.py).
+  'ret48', 'htfTrendPct', 'htfRet96', 'htfPos240',
+  'btcRet3', 'btcRet12', 'btcRet48', 'btcTrendPct', 'relRet12', 'relRet48',
+  'hourUtc', 'dowUtc',
 ];
-export const WARMUP = 120;
+export const WARMUP = 250;
+const HTF = 240;
+// Zoveel candles heeft de bot minimaal nodig voor het model.
+export const CANDLES_NEEDED = WARMUP + 10;
+
+const pct = (p, q) => (q ? (p / q - 1) * 100 : 0);
+const mean = (arr) => arr.reduce((s, v) => s + v, 0) / arr.length;
+
+// Kenmerken van BTC/EUR op tijdstip ts (zelfde timeframe), of null als die candle er niet is.
+function btcAt(btc, ts) {
+  if (!btc?.length) return null;
+  let j = -1;
+  for (let k = btc.length - 1; k >= 0; k--) {
+    if (btc[k][0] === ts) { j = k; break; }
+    if (btc[k][0] < ts) break;
+  }
+  if (j < WARMUP) return null;
+  const bc = btc.map((x) => x[4]);
+  return {
+    btcRet3: pct(bc[j], bc[j - 3]), btcRet12: pct(bc[j], bc[j - 12]), btcRet48: pct(bc[j], bc[j - 48]),
+    btcTrendPct: pct(bc[j], mean(bc.slice(j - HTF + 1, j + 1))),
+  };
+}
 
 // Kenmerken op de laatste candle. candles: [ts, open, high, low, close, volume], oud -> nieuw.
+// ctx.btc: candles van BTC/EUR op dezelfde timeframe (mag ontbreken).
 // Geeft null als er te weinig geschiedenis is.
-export function computeFeatures(candles) {
+export function computeFeatures(candles, ctx = {}) {
   const c = candles;
   const i = c.length - 1;
   if (i < WARMUP) return null;
@@ -35,9 +62,24 @@ export function computeFeatures(candles) {
   const rng = x[2] - x[3];
   const v3 = sum(vol.slice(i - 2, i + 1)) / 3;
   const v20 = sum(vol.slice(i - 22, i - 2)) / 20;
-  const pct = (p, q) => (q ? (p / q - 1) * 100 : 0);
   const e9 = ema(closes, 9)[i], e20 = ema(closes, 20)[i], e21 = ema(closes, 21)[i], e50 = ema(closes, 50)[i];
+  const ret12 = pct(close, closes[i - 12]);
+  const ret48 = pct(close, closes[i - 48]);
+  const prev240 = c.slice(i - HTF, i);
+  const hi = Math.max(...prev240.map((y) => y[2]));
+  const lo = Math.min(...prev240.map((y) => y[3]));
+  const ts = Number(x[0]);
+  const btc = btcAt(ctx.btc, ts) ?? { btcRet3: null, btcRet12: null, btcRet48: null, btcTrendPct: null };
   return {
+    ret48,
+    htfTrendPct: pct(close, mean(closes.slice(i - HTF + 1, i + 1))),
+    htfRet96: pct(close, closes[i - 96]),
+    htfPos240: hi > lo ? (close - lo) / (hi - lo) : 0.5,
+    ...btc,
+    relRet12: btc.btcRet12 != null ? ret12 - btc.btcRet12 : null,
+    relRet48: btc.btcRet48 != null ? ret48 - btc.btcRet48 : null,
+    hourUtc: Math.floor(ts / 3600000) % 24,
+    dowUtc: (Math.floor(ts / 86400000) + 3) % 7,
     rsi14: rsi(closes, 14)[i],
     adx14: adx(c, 14)[i],
     atrPct: (a / close) * 100,
@@ -47,7 +89,7 @@ export function computeFeatures(candles) {
     emaSpreadPct: ((e9 - e21) / close) * 100,
     ret1: pct(close, closes[i - 1]),
     ret3: pct(close, closes[i - 3]),
-    ret12: pct(close, closes[i - 12]),
+    ret12,
     er24: path > 0 ? Math.abs(closes[i] - closes[i - 24]) / path : 0,
     greens,
     toHigh48Atr: (hi48 - close) / a,
@@ -60,8 +102,9 @@ export function computeFeatures(candles) {
 // Controleert of een model van de trainer bruikbaar is.
 export function validateModel(m) {
   if (!m || m.version !== 1 || m.kind !== 'gbdt') return 'Onbekend modelformaat';
-  if (!Array.isArray(m.features) || m.features.join() !== FEATURES.join()) return 'Het model gebruikt andere kenmerken dan deze versie van vetobot; update de bot of de trainer';
-  if (!Array.isArray(m.trees) || !m.trees.length || !Array.isArray(m.medians) || m.medians.length !== FEATURES.length) return 'Model is onvolledig';
+  // Een model mag een deel van de kenmerken gebruiken (oudere modellen hebben er minder).
+  if (!Array.isArray(m.features) || !m.features.length || m.features.some((k) => !FEATURES.includes(k))) return 'Het model gebruikt andere kenmerken dan deze versie van vetobot; update de bot of de trainer';
+  if (!Array.isArray(m.trees) || !m.trees.length || !Array.isArray(m.medians) || m.medians.length !== m.features.length) return 'Model is onvolledig';
   if (!Number.isFinite(m.init) || !Number.isFinite(m.learningRate)) return 'Model is onvolledig';
   return null;
 }

@@ -50,6 +50,26 @@ class Labels(unittest.TestCase):
 
 
 class Training(unittest.TestCase):
+    def test_btc_context_and_feedback_from_own_trades(self):
+        fake = {p: market(9000, i, momentum=0.6) for i, p in enumerate(CFG['pairs'])}
+        fake['BTC/EUR'] = market(9000, 99, momentum=0.3)
+        # Echte trades: kenmerken + uitkomst, verspreid over de hele periode (oud = leren, nieuw = controle)
+        X, y, ret, ts = train.build_dataset(fake['A/EUR'], CFG, step=40)
+        fb = [{'pair': 'A/EUR', 'timeframe': '5m', 'ts': ts[k], 'features': dict(zip(FEATURES, X[k])), 'returnPct': ret[k]}
+              for k in range(len(X))]
+        fb.append({'pair': 'A/EUR', 'timeframe': '1h', 'ts': 1, 'features': {}, 'returnPct': 1})  # andere timeframe: genegeerd
+        logs = []
+        model, report = train.train(CFG, log=logs.append, fetch=lambda p, tf, d: fake[p], markets=lambda n: CFG['pairs'], feedback=fb)
+        self.assertTrue(report['published'], report.get('reason'))
+        self.assertEqual(report['feedback']['total'], len(X))
+        self.assertGreater(report['feedback']['train'], 0)
+        self.assertGreater(report['feedback']['test'], 0)
+        live = report['metrics']['live']
+        self.assertEqual(live['n'], report['feedback']['test'])
+        self.assertTrue(any('Eigen trades van de bot' in l for l in logs))
+        # BTC-kenmerken zijn gevuld (anders zouden alle medianen voor BTC 0 zijn)
+        self.assertNotEqual(model['medians'][FEATURES.index('btcTrendPct')], 0.0)
+
     def test_learns_momentum_market_and_export_matches(self):
         fake = {p: market(9000, i, momentum=0.6) for i, p in enumerate(CFG['pairs'])}
         self._phases = []
@@ -161,6 +181,24 @@ class FetchRange(unittest.TestCase):
             train._get, train.time.sleep = orig, orig_sleep
         self.assertEqual(len(rows), 2 * 1440)  # twee pagina's binnen, derde mislukt -> houden wat er is
         self.assertEqual([r[0] for r in rows], sorted(r[0] for r in rows))
+
+
+class Feedback(unittest.TestCase):
+    def setUp(self):
+        os.environ.setdefault('DATA_DIR', tempfile.mkdtemp())
+        import server
+        self.s = server
+        server.write_json('feedback.json', [])
+
+    def test_store_dedupe_and_clean(self):
+        t = {'pair': 'DOGE/EUR', 'timeframe': '5m', 'ts': 123, 'returnPct': 1.5, 'features': {'rsi14': 40, 'onzin': 5, 'adx14': 'x'}, 'prob': 61}
+        self.assertEqual(self.s.add_feedback([t, dict(t), {'pair': 'X'}, 'rommel']), 1)
+        self.assertEqual(self.s.add_feedback([t]), 0)  # al bekend
+        rows = self.s.load_feedback()
+        self.assertEqual(rows[0]['features'], {'rsi14': 40.0})
+        info = self.s.feedback_info()
+        self.assertEqual(info['total'], 1)
+        self.assertEqual(info['byTimeframe']['5m']['winRate'], 100.0)
 
 
 class Schedule(unittest.TestCase):

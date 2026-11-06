@@ -781,15 +781,29 @@ test('eigen model: winstkans bij het signaal, minimale kans filtert, AI krijgt d
     withAi(bot);
     aiAnswer = 'approve';
     lastAiPrompt = '';
-    const seq = [...Array(160)].map((_, i) => 100 - i * 0.2).concat([68, 70, 72, 74]);
+    const seq = [...Array(100)].map((_, i) => 100 + Math.sin(i) * 0.5).concat([...Array(160)].map((_, i) => 100 - i * 0.2), [68, 70, 72, 74]);
     bot.reasons = [];
-    for (let n = 161; n <= seq.length; n++) { ex.prices = seq.slice(0, n); await bot.tick(); bot.reasons.push(bot.pairStatus['BTC/EUR']?.reason); }
+    for (let n = 261; n <= seq.length; n++) { ex.prices = seq.slice(0, n); await bot.tick(); bot.reasons.push(bot.pairStatus['BTC/EUR']?.reason); }
     return bot;
   };
   const high = await run(50, 10);
   assert.ok(high.store.state.decisions[0]?.indicators?.mlProb > 99, 'kans in de beslissing');
   assert.match(lastAiPrompt, /Winstkans volgens het model: 100%/);
   assert.match(lastAiPrompt, /zomaar kopen won op de testperiode 40%/);
+  // Feedback: de kenmerken van het signaal gaan mee in de positie, en bij het sluiten met de uitkomst naar de trainer
+  const pos = high.store.state.positions['BTC/EUR'];
+  assert.ok(pos?.ml, 'kenmerken bewaard in de positie');
+  assert.ok(Number.isFinite(pos.ml.features.htfTrendPct));
+  assert.ok(Number.isFinite(pos.ml.features.btcRet12), 'BTC-kenmerken (BTC/EUR zelf)');
+  let fb = null;
+  high.onFeedback = (t) => { fb = t; };
+  await high.closeManual('BTC/EUR');
+  assert.equal(fb.pair, 'BTC/EUR');
+  assert.equal(fb.timeframe, '1h');
+  assert.ok(fb.prob > 99);
+  assert.ok(Number.isFinite(fb.returnPct));
+  assert.equal(fb.exitReason, 'Handmatig gesloten');
+  assert.equal(fb.ts, pos.ml.ts);
   const low = await run(50, -10);
   assert.equal(low.store.state.decisions.length, 0, 'onder de minimale kans: AI niet gevraagd');
   assert.ok(low.reasons.some((r) => /eigen model geeft maar 0% winstkans \(minimaal 50%\)/.test(r ?? '')), low.reasons.join(' | '));

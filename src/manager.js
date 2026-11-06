@@ -36,6 +36,60 @@ export class BotManager {
     return path.join(this.root, 'ml-model.json');
   }
 
+  // ---------- Feedback: echte trades naar de trainer ----------
+  // Trades wachten in een wachtrij (op schijf), zodat er niets verloren gaat als de trainer
+  // even onbereikbaar is. Maximaal 2000; daarboven vallen de oudste af.
+  #feedbackFile() {
+    return path.join(this.root, 'ml-feedback-queue.json');
+  }
+
+  get feedbackQueue() {
+    if (!this._fbQueue) {
+      try {
+        this._fbQueue = JSON.parse(fs.readFileSync(this.#feedbackFile(), 'utf8'));
+        if (!Array.isArray(this._fbQueue)) this._fbQueue = [];
+      } catch {
+        this._fbQueue = [];
+      }
+    }
+    return this._fbQueue;
+  }
+
+  #saveFeedbackQueue() {
+    try {
+      fs.writeFileSync(this.#feedbackFile(), JSON.stringify(this._fbQueue));
+    } catch {
+      // Niet erg; dan staan ze alleen in het geheugen.
+    }
+  }
+
+  queueFeedback(trade) {
+    const q = this.feedbackQueue;
+    q.push(trade);
+    if (q.length > 2000) q.splice(0, q.length - 2000);
+    this.#saveFeedbackQueue();
+    return this.flushFeedback();
+  }
+
+  async flushFeedback() {
+    if (this._flushing || !this.feedbackQueue.length || !this.trainerAccess()) return;
+    this._flushing = true;
+    try {
+      while (this.feedbackQueue.length) {
+        const batch = this.feedbackQueue.slice(0, 200);
+        await this.trainerRequest('/feedback', { method: 'POST', body: { trades: batch } });
+        this.feedbackQueue.splice(0, batch.length);
+        this.#saveFeedbackQueue();
+        this.ml.feedbackSentAt = new Date().toISOString();
+      }
+      this.ml.feedbackError = null;
+    } catch (err) {
+      this.ml.feedbackError = err.message; // volgende keer opnieuw
+    } finally {
+      this._flushing = false;
+    }
+  }
+
   #loadCachedModel() {
     try {
       const m = JSON.parse(fs.readFileSync(this.#modelFile(), 'utf8'));
@@ -155,6 +209,7 @@ export class BotManager {
     // De heartbeat gaat over de server, dus alleen de admin stuurt hem.
     bot.heartbeatEnabled = user.role === 'admin';
     bot.getModel = () => this.ml.model;
+    bot.onFeedback = (trade) => { this.queueFeedback(trade).catch(() => {}); };
     const ctx = { user, dir, settings, secrets, exchange, brokers, stores, notifier, bot, timer: null, watchTimer: null };
     this.contexts.set(user.id, ctx);
     this.#wire();
@@ -226,7 +281,8 @@ export class BotManager {
     // Eigen model: bij de start en daarna elk half uur kijken of er een nieuwe is.
     clearInterval(this.modelTimer);
     this.refreshModel();
-    this.modelTimer = setInterval(() => this.refreshModel(), 30 * 60 * 1000);
+    this.modelTimer = setInterval(() => { this.refreshModel(); this.flushFeedback(); }, 30 * 60 * 1000);
+    this.flushFeedback();
   }
 
   checkSummaries(now = new Date()) {

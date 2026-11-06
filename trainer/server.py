@@ -13,6 +13,7 @@
 import hashlib
 import hmac
 import json
+import math
 import os
 import secrets
 import threading
@@ -128,6 +129,64 @@ def validate_config(body):
     return cfg
 
 
+FEEDBACK_MAX = 20000  # zoveel echte trades bewaren we maximaal (de nieuwste)
+feedback_lock = threading.Lock()
+
+
+def load_feedback():
+    return read_json('feedback.json', [])
+
+
+def add_feedback(trades):
+    """Echte trades van de bot opslaan. Dubbele (zelfde coin, timeframe en tijdstip) tellen één keer."""
+    clean = []
+    for t in trades if isinstance(trades, list) else []:
+        if not isinstance(t, dict) or not isinstance(t.get('features'), dict):
+            continue
+        try:
+            row = {
+                'pair': str(t['pair'])[:20], 'timeframe': str(t['timeframe'])[:5], 'ts': int(t['ts']),
+                'returnPct': float(t['returnPct']),
+                'features': {k: float(v) for k, v in t['features'].items() if isinstance(v, (int, float)) and k in trainer.FEATURES},
+                'prob': float(t['prob']) if isinstance(t.get('prob'), (int, float)) else None,
+                'exitReason': str(t.get('exitReason') or '')[:80], 'mode': str(t.get('mode') or '')[:6],
+            }
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not math.isfinite(row['returnPct']) or abs(row['returnPct']) > 100:
+            continue
+        clean.append(row)
+    if not clean:
+        return 0
+    with feedback_lock:
+        rows = load_feedback()
+        seen = {(r['pair'], r['timeframe'], r['ts']) for r in rows}
+        added = []
+        for r in clean:
+            key = (r['pair'], r['timeframe'], r['ts'])
+            if key not in seen:
+                seen.add(key)
+                added.append(r)
+        rows = (rows + added)[-FEEDBACK_MAX:]
+        write_json('feedback.json', rows)
+    if added:
+        wins = sum(1 for r in added if r['returnPct'] > 0)
+        log(f'{len(added)} echte trade(s) van de bot ontvangen ({wins} met winst)')
+    return len(added)
+
+
+def feedback_info():
+    rows = load_feedback()
+    by_tf = {}
+    for r in rows:
+        b = by_tf.setdefault(r['timeframe'], {'n': 0, 'wins': 0, 'sum': 0.0})
+        b['n'] += 1
+        b['wins'] += r['returnPct'] > 0
+        b['sum'] += r['returnPct']
+    return {'total': len(rows), 'byTimeframe': {k: {'n': v['n'], 'winRate': v['wins'] / v['n'] * 100, 'avgReturnPct': v['sum'] / v['n']}
+                                                for k, v in by_tf.items()}}
+
+
 def run_training(reason):
     with lock:
         if state['running']:
@@ -141,7 +200,7 @@ def run_training(reason):
             log(f'Training gestart ({reason}): {cfg["timeframe"]}, {cfg["days"]} dagen, doel +{cfg["targetPct"]}% / stop -{cfg["stopPct"]}%')
             cache = os.path.join(DATA, 'candles')
             fetch = lambda pair, tf, days: trainer.fetch_candles(pair, tf, days, cache_dir=cache)
-            model, report = trainer.train(cfg, log=log, progress=set_progress, fetch=fetch)
+            model, report = trainer.train(cfg, log=log, progress=set_progress, fetch=fetch, feedback=load_feedback())
             report['startedAt'] = started
             report['finishedAt'] = datetime.now().isoformat(timespec='seconds')
             if model:
@@ -272,7 +331,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {
                 'running': state['running'], 'progress': state['progress'] if state['running'] else None,
                 'config': config(), 'nextRunAt': None if state['running'] else next_run().isoformat(timespec='minutes'), 'trainHour': TRAIN_HOUR,
-                'cache': state.get('cache', []),
+                'cache': state.get('cache', []), 'feedback': feedback_info(),
                 'model': model and model.get('meta'), 'history': state['history'], 'log': state['log'][-150:],
             })
         self.send(404, {'error': 'Niet gevonden'})
@@ -280,7 +339,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.authed():
             return
-        length = min(int(self.headers.get('Content-Length') or 0), 20000)
+        length = min(int(self.headers.get('Content-Length') or 0), 500000 if self.path == '/feedback' else 20000)
         try:
             body = json.loads(self.rfile.read(length) or b'{}')
         except ValueError:
@@ -294,6 +353,9 @@ class Handler(BaseHTTPRequestHandler):
             log('Instellingen bijgewerkt door vetobot')
             wake.set()
             return self.send(200, {'ok': True, 'config': cfg})
+        if self.path == '/feedback':
+            added = add_feedback(body.get('trades'))
+            return self.send(200, {'ok': True, 'added': added})
         if self.path == '/train':
             started = run_training('handmatig vanuit vetobot')
             return self.send(200 if started else 409, {'ok': started, 'error': None if started else 'Er loopt al een training'})

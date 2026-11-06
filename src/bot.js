@@ -1,6 +1,6 @@
 import { evaluate } from './strategy.js';
 import { ema } from './indicators.js';
-import { computeFeatures, predict } from './mlmodel.js';
+import { computeFeatures, predict, CANDLES_NEEDED } from './mlmodel.js';
 import { askVetoChain, askTeamChain, askExitChain, testChain, listModels, writeSummaryChain, aiLabel } from './ai.js';
 import { TIMEFRAME_MINUTES, fmtInterval, LIVE_MIN_STAKE_EUR } from './settings.js';
 import { cleanSuggestions, currentValues, applySuggestions } from './suggest.js';
@@ -44,6 +44,7 @@ export class Bot {
     this.currentStep = null;
     this.nextTickAt = null;
     this.pairStatus = {};
+    this.lastFeatures = {};
     this.activity = [];
   }
 
@@ -636,7 +637,7 @@ export class Bot {
     if (pairs.length < 2) return;
     this.#step(`Koersen en candles van ${pairs.length} coins ophalen`);
     const strategy = this.strategy;
-    const need = Math.min(1400, Math.max(200, strategy.emaSlow * 4, (strategy.trendEma || 0) * 2 + 20));
+    const need = Math.min(1400, Math.max(CANDLES_NEEDED, strategy.emaSlow * 4, (strategy.trendEma || 0) * 2 + 20));
     const timeframe = this.timeframe;
     if (typeof this.ex.fetchTickers === 'function') await this.ex.fetchTickers(pairs).catch(() => {});
     const queue = [...pairs];
@@ -668,7 +669,7 @@ export class Bot {
 
     this.#step(`${pair}: candles ophalen`);
     // Genoeg candles voor de langste indicator (trend-EMA), met een maximum van wat Bitvavo in één keer geeft.
-    const need = Math.max(200, strategy.emaSlow * 4, (strategy.trendEma || 0) * 2 + 20);
+    const need = Math.max(CANDLES_NEEDED, strategy.emaSlow * 4, (strategy.trendEma || 0) * 2 + 20);
     const useOpen = Boolean(strategy.useOpenCandle);
     const candles = await fetchClosedCandles(this.ex, pair, timeframe, Math.min(1400, need), { includeOpen: useOpen });
     const lastCandleTs = candles.at(-1)?.[0];
@@ -696,7 +697,7 @@ export class Bot {
     }
     // Eigen voorspelmodel: winstkans uitrekenen bij een koopsignaal, en eventueel filteren.
     if (result.signal === 'buy') {
-      const ml = this.#modelProbability(useOpen ? candles.slice(0, -1) : candles, timeframe);
+      const ml = await this.#modelProbability(pair, useOpen ? candles.slice(0, -1) : candles, timeframe);
       if (ml && result.indicators) result.indicators.mlProb = ml.prob;
       if (ml && strategy.mlMinProb > 0 && ml.prob < strategy.mlMinProb) {
         result = { ...result, signal: 'none', filtered: true,
@@ -852,14 +853,21 @@ export class Bot {
   }
 
   // Winstkans in % volgens het eigen model, of null als er geen (passend) model is.
-  #modelProbability(candles, timeframe) {
-    const model = this.getModel?.();
-    if (!model) return null;
-    // Een model getraind op andere candles (bijv. 1h) zegt niets over 5m-candles.
-    if (model.meta?.timeframe && model.meta.timeframe !== timeframe) return null;
-    const f = computeFeatures(candles);
+  // De kenmerken worden altijd onthouden (ook zonder model): als de bot daarna koopt, gaan ze
+  // bij het sluiten met de uitkomst naar de trainer, zodat die van echte trades leert.
+  async #modelProbability(pair, candles, timeframe) {
+    let btc = null;
+    if (pair !== 'BTC/EUR') {
+      btc = await fetchClosedCandles(this.ex, 'BTC/EUR', timeframe, CANDLES_NEEDED).catch(() => null);
+    }
+    const f = computeFeatures(candles, { btc: pair === 'BTC/EUR' ? candles : btc });
     if (!f) return null;
-    return { prob: predict(model, f) * 100, meta: model.meta };
+    const model = this.getModel?.();
+    // Een model getraind op andere candles (bijv. 1h) zegt niets over 5m-candles.
+    const usable = model && (!model.meta?.timeframe || model.meta.timeframe === timeframe);
+    const prob = usable ? predict(model, f) * 100 : null;
+    this.lastFeatures[pair] = { ts: candles.at(-1)[0], timeframe, features: f, prob, at: Date.now() };
+    return usable ? { prob, meta: model.meta } : null;
   }
 
   // Gesprekken zijn groot; bewaar ze alleen bij de laatste 60 beslissingen (state blijft klein).
@@ -982,6 +990,12 @@ export class Bot {
       highest: fill.price,
       atrAtEntry: indicators?.atr ?? null,
     };
+    // Kenmerken van het signaal bewaren (hooguit 30 min oud), voor de feedback naar de trainer.
+    const lf = this.lastFeatures[pair];
+    if (lf && Date.now() - lf.at < 30 * 60 * 1000 && lf.timeframe === this.timeframe) {
+      this.store.state.positions[pair].ml = { ts: lf.ts, timeframe: lf.timeframe, features: lf.features, prob: lf.prob };
+    }
+    delete this.lastFeatures[pair];
     this.#event('info', pair, `Gekocht: ${fmtAmount(fill.amount)} @ ${fmtPrice(fill.price)} (${this.broker.mode}${fill.limit ? `, limietorder${fill.partial ? ', deels gevuld' : ''}` : ''})` +
       (stakeInfo.extra > 0 ? `, inzet ${fmtEur(stake)} waarvan ${fmtEur(stakeInfo.extra)} herinvesteerde winst` : ''));
     // Volgers laten meedoen (alleen gezet op de bot van de leider).
@@ -1157,6 +1171,14 @@ export class Bot {
     const how = fill.limitFallback ? (fill.limit ? ', limietorder deels gevuld, rest market' : ', limietorder niet gevuld, market') : fill.limit ? ', limietorder' : '';
     this.#event(pnlEur >= 0 ? 'info' : 'warn', pair, `Verkocht @ ${fmtPrice(fill.price)}, resultaat ${fmtSigned(pnlEur)} (${reason}${how})`);
     this.onTrade?.('close', { pair, reason });
+    // Echte uitkomst naar de trainer (winst/verlies na kosten), zodat het model van eigen trades leert.
+    if (pos.ml) {
+      try {
+        this.onFeedback?.({ pair, ...pos.ml, returnPct: (pnlEur / pos.costEur) * 100, exitReason: reason, mode: this.broker.mode });
+      } catch {
+        // Feedback is een extraatje; nooit een verkoop laten mislukken.
+      }
+    }
     const isStop = reason.startsWith('Stop-loss');
     this.#notify(isStop ? 'stoploss' : 'trades', {
       title: `${isStop ? 'Stop-loss' : 'Verkocht'}: ${pair}`,

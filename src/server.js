@@ -466,7 +466,8 @@ export function createApp({ users, manager, log = console }) {
   // Live status voor de pagina Trainer.
   app.get('/api/admin/trainer/status', adminOnly, wrap(async () => {
     const ml = manager.ml;
-    const base = { configured: Boolean(manager.trainerAccess()), model: ml.model?.meta ?? null, fetchedAt: ml.fetchedAt, fetchError: ml.error };
+    const base = { configured: Boolean(manager.trainerAccess()), model: ml.model?.meta ?? null, fetchedAt: ml.fetchedAt, fetchError: ml.error,
+      feedbackQueued: manager.feedbackQueue.length, feedbackError: ml.feedbackError ?? null, feedbackSentAt: ml.feedbackSentAt ?? null };
     if (!base.configured) return base;
     try {
       const trainer = (await manager.trainerRequest('/status')).data;

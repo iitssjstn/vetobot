@@ -1709,6 +1709,8 @@ function renderTrainer() {
       <dt>Kwaliteit (AUC)</dt><dd>${nl(m.metrics?.auc, 3)} <span class="muted">(0,5 = gokken)</span></dd>
       <dt>Beste drempel</dt><dd>${m.metrics?.best ? `≥ ${Math.round(m.metrics.best.minProb * 100)}%: ${nl(m.metrics.best.winRate, 0)}% gewonnen, gem. ${m.metrics.best.avgReturnPct > 0 ? '+' : ''}${nl(m.metrics.best.avgReturnPct, 2)}% per trade` : '–'}</dd>
       <dt>Zomaar kopen</dt><dd>${m.metrics?.base ? `${nl(m.metrics.base.winRate, 0)}% gewonnen, gem. ${nl(m.metrics.base.avgReturnPct, 2)}% per trade` : '–'}</dd>
+      ${m.metrics?.live ? `<dt>Op echte trades</dt><dd>${m.metrics.live.n} trades van je bot (niet gezien bij het leren): gem. ${m.metrics.live.avgReturnPct > 0 ? '+' : ''}${nl(m.metrics.live.avgReturnPct, 2)}%.
+        ${m.metrics.live.selectedAvgReturnPct != null ? `Die het model zou nemen (${m.metrics.live.nSelected}): ${m.metrics.live.selectedAvgReturnPct > 0 ? '+' : ''}${nl(m.metrics.live.selectedAvgReturnPct, 2)}%` : ''}${m.metrics.live.skippedAvgReturnPct != null ? `, die het zou overslaan: ${m.metrics.live.skippedAvgReturnPct > 0 ? '+' : ''}${nl(m.metrics.live.skippedAvgReturnPct, 2)}%` : ''}</dd>` : ''}
       <dt>Opgehaald door bot</dt><dd>${d.fetchedAt ? time(d.fetchedAt) : '–'}${d.fetchError ? ` <span class="warnc">(${esc(d.fetchError)})</span>` : ''}</dd>
     </dl><div class="help">Alle cijfers per drempel staan bij <a href="#" data-go="settings">Instellingen → Eigen model</a>.</div>`
     : '<p class="muted" style="margin:0">Nog geen model. Na de eerste geslaagde training verschijnt het hier.</p>';
@@ -1739,6 +1741,12 @@ function renderTrainer() {
       <dt>Bewaarde koersen</dt><dd>${(t.cache ?? []).filter((x) => x.timeframe === c.timeframe).length
         ? (t.cache ?? []).filter((x) => x.timeframe === c.timeframe).map((x) => `${esc(x.pair.replace('/EUR', ''))} ${nl(x.days, 0)} d`).join(', ')
         : '<span class="muted">nog niets (na de eerste training)</span>'}</dd>
+      <dt>Eigen trades</dt><dd>${(() => {
+        const fb = t.feedback?.byTimeframe?.[c.timeframe];
+        const all = t.feedback?.total ?? 0;
+        const txt = fb ? `${fb.n} op ${esc(c.timeframe)}: ${nl(fb.winRate, 0)}% met winst, gem. ${fb.avgReturnPct > 0 ? '+' : ''}${nl(fb.avgReturnPct, 2)}%` : all ? `${all}, nog geen op ${esc(c.timeframe)}` : '<span class="muted">nog geen; elke gesloten trade van je bot komt hier bij</span>';
+        return txt + (d.feedbackQueued ? ` <span class="muted">(${d.feedbackQueued} wachten op verzenden${d.feedbackError ? `: ${esc(d.feedbackError)}` : ''})</span>` : '');
+      })()}</dd>
     </dl><div class="help">Deze komen van je bot. Wijzig je strategie of risico, klik dan op "Nu trainen met mijn instellingen".</div>` : '';
 
   // Logboek: nieuwste onderaan; alleen meescrollen als je al onderaan stond.
@@ -1755,6 +1763,7 @@ function renderTrainer() {
     ['Coins', (h) => `<span class="num">${h.pairs?.length ?? '–'}</span>`, 'r'],
     ['Voorbeelden', (h) => `<span class="num">${h.trainSamples ? `${h.trainSamples.toLocaleString('nl-NL')} / ${h.testSamples.toLocaleString('nl-NL')}` : '–'}</span>`, 'r'],
     ['AUC', (h) => `<span class="num">${nl(h.metrics?.auc, 3)}</span>`, 'r'],
+    ['Eigen trades', (h) => `<span class="num">${h.feedback?.total ? `${h.feedback.train} / ${h.feedback.test}` : '–'}</span>`, 'r'],
     ['Beste drempel', (h) => h.metrics?.best ? `≥ ${Math.round(h.metrics.best.minProb * 100)}%: ${nl(h.metrics.best.winRate, 0)}% gewonnen, ${h.metrics.best.avgReturnPct > 0 ? '+' : ''}${nl(h.metrics.best.avgReturnPct, 2)}%` : '–'],
     ['Resultaat', (h) => h.published ? '<span class="badge ok">gepubliceerd</span>' : `<span class="badge soft">niet gebruikt</span> <span class="muted" style="font-size:12.5px">${esc(h.reason ?? '')}</span>`],
   ], 'Nog geen trainingen.', 'history');
