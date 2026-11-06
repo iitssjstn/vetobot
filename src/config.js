@@ -46,6 +46,8 @@ export const config = {
     minHoldCandles: num('MIN_HOLD_CANDLES', 3),
     // Hoe streng de AI keurt: 0 = streng, 1 = normaal, 2 = soepel.
     aiStrictness: num('AI_STRICTNESS', 1),
+    // Zelflerend: proefstrategieën (nog niet bevestigd) in paper ook echt laten traden.
+    mlTrialPaper: num('ML_TRIAL_PAPER', 1),
   },
 
   // Harde limieten. De AI kan hier nooit aan komen.

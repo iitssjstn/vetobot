@@ -288,6 +288,10 @@ def add_feedback(trades):
     """Echte trades van de bot opslaan. Dubbele (zelfde coin, timeframe en tijdstip) tellen één keer.
     Items met kind 'signal' zijn oordelen van de AI over een signaal (geen trade)."""
     items = trades if isinstance(trades, list) else []
+    arms = [t for t in items if isinstance(t, dict) and t.get('kind') == 'arm']
+    if arms:
+        add_arm_results(arms)
+    items = [t for t in items if not (isinstance(t, dict) and t.get('kind') == 'arm')]
     signals = [t for t in items if isinstance(t, dict) and t.get('kind') == 'signal']
     if signals:
         n = add_signals(signals)
@@ -517,22 +521,41 @@ def set_search_progress(phase, done, total, text):
     state['searchProgress'] = {**p, 'phase': phase, 'done': done, 'total': total, 'text': text}
 
 
-ARMS_MAX = 5
+ARMS_MAX = 5      # bevestigde strategieën
+TRIAL_MAX = 4     # proefstrategieën (veelbelovend, nog niet bevestigd)
+MIN_ARMS = 3      # altijd minstens zoveel strategieën om mee te leren (desnoods verkenning)
 
 
 def arm_file(key):
     return os.path.join('arms', key.replace('|', '_').replace('.', ',') + '.json')
 
 
+def select_arms(results):
+    """Welke strategieën gaan naar de bot, en in welke rol:
+    - bevestigd: mag echt traden
+    - proef: veelbelovend maar nog niet bevestigd; leert met schaduwtrades (en in paper echt)
+    - verkenning: als er nog te weinig zijn, de beste van de rest; alleen schaduwtrades
+    Zo is er altijd iets om van te leren, ook voordat er een bevestigde strategie is."""
+    scored = [r for r in results.values() if (r.get('val') or {}).get('best') and r.get('score') is not None]
+    scored.sort(key=lambda r: r['score'], reverse=True)
+    out = [(r, 'bevestigd') for r in scored if r.get('status') == 'bevestigd'][:ARMS_MAX]
+    out += [(r, 'proef') for r in scored if r.get('status') != 'bevestigd' and r['score'] > 0
+            and r.get('status') != 'afgevallen'][:TRIAL_MAX]
+    if len(out) < MIN_ARMS:
+        have = {r['key'] for r, _ in out}
+        out += [(r, 'verkenning') for r in scored if r['key'] not in have and r.get('status') != 'afgevallen'][:MIN_ARMS - len(out)]
+    return out
+
+
 def save_arms(results, models):
-    """Modellen van bevestigde strategieën bewaren (de "armen" voor het zelflerend kiezen in de bot);
-    strategieën die niet (meer) bevestigd zijn gaan eruit. Hooguit de ARMS_MAX beste."""
+    """Modellen van de gekozen strategieën bewaren (de "armen" voor het zelflerend kiezen in de
+    bot); de rest gaat eruit."""
     os.makedirs(path('arms'), exist_ok=True)
+    chosen = select_arms(results)
     for key, m in models.items():
-        if results.get(key, {}).get('status') == 'bevestigd':
+        if any(r['key'] == key for r, _ in chosen):
             write_json(arm_file(key), m)
-    ok = sorted((r for r in results.values() if r.get('status') == 'bevestigd'), key=lambda r: r['score'], reverse=True)[:ARMS_MAX]
-    keep = {os.path.basename(arm_file(r['key'])) for r in ok}
+    keep = {os.path.basename(arm_file(r['key'])) for r, _ in chosen}
     for name in os.listdir(path('arms')):
         if name not in keep:
             try:
@@ -542,17 +565,53 @@ def save_arms(results, models):
 
 
 def load_arms():
-    """Bevestigde strategieën met hun model, voor de bot."""
+    """Strategieën met hun model en rol, voor de bot."""
     data = load_search()
     out = []
-    for r in sorted((r for r in data.get('results', {}).values() if r.get('status') == 'bevestigd'), key=lambda r: r['score'], reverse=True)[:ARMS_MAX]:
+    for r, stage in select_arms(data.get('results', {})):
         m = read_json(arm_file(r['key']), None)
         if not m:
             continue
-        out.append({'key': r['key'], 'timeframe': r['timeframe'], 'targetPct': r['targetPct'], 'stopPct': r['stopPct'],
+        out.append({'key': r['key'], 'stage': stage, 'timeframe': r['timeframe'], 'targetPct': r['targetPct'], 'stopPct': r['stopPct'],
                     'holdMinutes': r['holdMinutes'], 'minProb': r['val']['best']['minProb'], 'score': r['score'],
-                    'holdout': {k: r.get('holdout', {}).get(k) for k in ('n', 'avgReturnPct')}, 'model': m})
+                    'holdout': {k: r.get('holdout', {}).get(k) for k in ('n', 'avgReturnPct')}, 'live': r.get('live'), 'model': m})
     return out
+
+
+def add_arm_results(items):
+    """Resultaten van de bot per strategie (echte trades en schaduwtrades): de "live-test".
+    Een strategie die het live goed doet kan zo bevestigd worden; een die live verliest valt af."""
+    clean = [t for t in items if isinstance(t.get('key'), str) and isinstance(t.get('pct'), (int, float)) and math.isfinite(t['pct'])]
+    if not clean:
+        return 0
+    with search_lock:
+        data = load_search()
+        res = data.get('results', {})
+        changed = []
+        for t in clean:
+            r = res.get(t['key'])
+            if not r:
+                continue
+            lv = r.setdefault('live', {'n': 0, 'sum': 0.0, 'wins': 0, 'real': 0, 'shadow': 0})
+            w = 0.5 if t.get('shadow') else 1.0
+            lv['n'] += w
+            lv['sum'] += t['pct'] * w
+            lv['wins'] += w if t['pct'] > 0 else 0
+            lv['shadow' if t.get('shadow') else 'real'] += 1
+            before = r.get('status')
+            searcher.judge(res)
+            if r.get('status') != before:
+                changed.append((r, before))
+        write_json('search.json', data)
+    for r, before in changed:
+        lv = r['live']
+        if r['status'] == 'bevestigd':
+            think(f"{thoughts.name(r)} heeft zich live bewezen: {lv['real']} echte en {lv['shadow']} schaduwtrades, gemiddeld "
+                  f"{thoughts.pct(lv['sum'] / lv['n'])} per trade. Ik promoveer hem tot bevestigde strategie.", kind='result')
+        elif r['status'] == 'afgevallen':
+            think(f"{thoughts.name(r)} doet het live slecht: gemiddeld {thoughts.pct(lv['sum'] / lv['n'])} per trade over "
+                  f"{lv['real']} echte en {lv['shadow']} schaduwtrades. Ik laat hem vallen en zoek verder.", kind='warn')
+    return len(clean)
 
 
 def search_round():
@@ -568,8 +627,10 @@ def search_round():
             with search_lock:
                 data = load_search()
                 models = {}
+                missing = [r['key'] for r, _ in select_arms(data['results']) if not os.path.exists(path(arm_file(r['key'])))]
                 searcher.run_round(cfg, data['results'], log=log, fetch=fetch, markets=trainer.top_markets,
-                                   progress=set_search_progress, should_stop=lambda: state.get('wantMain'), models_out=models, think=think)
+                                   progress=set_search_progress, should_stop=lambda: state.get('wantMain'), models_out=models, think=think,
+                                   prefer=missing[:2])
                 save_arms(data['results'], models)
                 data['lastRoundAt'] = datetime.now().isoformat(timespec='seconds')
                 data['rounds'] = data.get('rounds', 0) + 1

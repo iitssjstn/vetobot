@@ -92,6 +92,7 @@ def train_result(metrics, good):
 
 WHY = {
     'retest': 'mijn beste strategie tot nu toe, opnieuw testen op de nieuwste koersen: werkt hij nog?',
+    'model': 'een van mijn kandidaten: opnieuw testen zodat de bot er meteen mee kan oefenen (schaduwtrades)',
     'near': 'een variatie op mijn beste strategie tot nu toe, misschien is dit nog beter',
     'fresh': 'iets nieuws dat ik nog nooit geprobeerd heb',
     'old': 'een oude strategie opnieuw, de markt kan veranderd zijn',

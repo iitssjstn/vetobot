@@ -487,14 +487,22 @@ class Arms(unittest.TestCase):
         s.write_json('search.json', {'results': results})
         s.save_arms(results, models)
         arms = s.load_arms()
-        self.assertEqual([a['key'] for a in arms], [key])
+        self.assertEqual(arms[0]['key'], key)
+        self.assertEqual(arms[0]['stage'], 'bevestigd')
+        self.assertEqual(len(arms), 3, 'altijd minstens 3 strategieën om van te leren')
+        self.assertTrue(all(a['stage'] in ('proef', 'verkenning') for a in arms[1:]))
         self.assertEqual(arms[0]['model']['meta']['timeframe'], '5m')
         self.assertEqual(len(arms[0]['model']['features']), len(FEATURES))
-        # Niet meer bevestigd: arm verdwijnt
-        results[key]['status'] = 'niet bevestigd'
-        s.write_json('search.json', {'results': results})
-        s.save_arms(results, {})
-        self.assertEqual(s.load_arms(), [])
+        # Live-test: de bot meldt resultaten; een strategie die live verliest valt af
+        other = arms[1]['key']
+        s.add_arm_results([{'kind': 'arm', 'key': other, 'pct': -1.0, 'shadow': True} for _ in range(30)])
+        self.assertEqual(s.load_search()['results'][other]['status'], 'afgevallen')
+        self.assertNotIn(other, [a['key'] for a in s.load_arms()])
+        # ... en een die live wint wordt bevestigd (als hij op het verleden ook winst gaf)
+        cand = next((k for k, r in s.load_search()['results'].items() if r.get('score') and r['score'] > 0 and r['status'] != 'bevestigd'), None)
+        if cand:
+            s.add_arm_results([{'kind': 'arm', 'key': cand, 'pct': 0.8} for _ in range(20)])
+            self.assertEqual(s.load_search()['results'][cand]['status'], 'bevestigd')
 
     def test_reward_weight(self):
         self.assertEqual(train.reward_weight(3, 3, 0, 45), 1.0)

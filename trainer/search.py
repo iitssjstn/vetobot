@@ -61,10 +61,21 @@ def neighbours(c, cands_by_key):
     return out
 
 
+def live_avg(r):
+    lv = r.get('live') or {}
+    return lv['sum'] / lv['n'] if lv.get('n', 0) >= 5 else None
+
+
 def promising(results, n=3):
-    """De beste strategieën tot nu toe (bevestigd eerst, dan op score), om verder op te bouwen."""
-    rows = [r for r in results.values() if r.get('score') is not None and r['score'] > 0]
-    rows.sort(key=lambda r: (r.get('status') == 'bevestigd', r['score']), reverse=True)
+    """De beste strategieën tot nu toe, om verder op te bouwen: bevestigd eerst, dan wat het live
+    het best doet, dan op score. Ook als er nog niets bevestigd is (dan de beste kandidaten)."""
+    rows = [r for r in results.values() if r.get('score') is not None and r.get('status') != 'afgevallen'
+            and (r['score'] > 0 or (live_avg(r) or 0) > 0)]
+    rows.sort(key=lambda r: (r.get('status') == 'bevestigd', live_avg(r) if live_avg(r) is not None else -9, r['score']), reverse=True)
+    if not rows:
+        # Nog niets met winst: verder bouwen vanaf de minst slechte ideeën (eigen gok).
+        rows = sorted((r for r in results.values() if r.get('score') is not None and r.get('status') != 'afgevallen'),
+                      key=lambda r: r['score'], reverse=True)[:2]
     return rows[:n]
 
 
@@ -98,7 +109,7 @@ def tf_weight(st):
     return max(0.2, min(4.0, 1.0 + st['mean'] * 4 + st['pos'] / st['n']))
 
 
-def pick(cands, results, n, rnd):
+def pick(cands, results, n, rnd, prefer=None):
     """Welke strategieën deze ronde?
 
     - Verder bouwen op wat werkt: strategieën die een stapje (of twee) verschillen van de beste
@@ -116,6 +127,10 @@ def pick(cands, results, n, rnd):
             seen.add(k)
             chosen.append({**c, '_why': why})
 
+    # Strategieën die de bot wil gebruiken maar waarvan nog geen model bewaard is: eerst opnieuw testen.
+    for k in prefer or []:
+        if k in by_key:
+            add(by_key[k], 'model')
     top = promising(results)
     confirmed = any(r.get('status') == 'bevestigd' for r in results.values())
     if top:
@@ -170,7 +185,7 @@ def _split3(n, gap):
     return (0, max(0, a - gap)), (a, max(a, b - gap)), (b, n)
 
 
-def run_round(cfg, results, log=print, fetch=None, markets=None, progress=None, rnd=None, should_stop=None, models_out=None, think=None):
+def run_round(cfg, results, log=print, fetch=None, markets=None, progress=None, rnd=None, should_stop=None, models_out=None, think=None, prefer=None):
     """Eén zoekronde. Werkt `results` (dict key -> uitslag) bij en geeft de geteste keys terug."""
     from sklearn.ensemble import GradientBoostingClassifier
 
@@ -182,7 +197,7 @@ def run_round(cfg, results, log=print, fetch=None, markets=None, progress=None, 
     timeframes = scfg.get('timeframes') or DEFAULT_TIMEFRAMES
     per_round = int(scfg.get('perRound') or 6)
     cands = all_candidates(timeframes, float(cfg['costPct']))
-    chosen = pick(cands, results, per_round, rnd)
+    chosen = pick(cands, results, per_round, rnd, prefer=prefer)
     if not chosen:
         return []
     pairs = cfg.get('pairs') or markets(int(cfg.get('topN', 15)))
@@ -322,7 +337,19 @@ def judge(results):
             r['status'] = 'bevestigd'
         else:
             r['status'] = 'niet bevestigd'
+        # Live-test (echte trades en schaduwtrades van de bot) gaat boven de test op het verleden.
+        lv = r.get('live') or {}
+        if lv.get('n', 0) >= LIVE_MIN:
+            avg = lv['sum'] / lv['n']
+            if avg >= LIVE_GOOD and r['score'] > 0:
+                r['status'] = 'bevestigd'
+            elif avg < 0:
+                r['status'] = 'afgevallen'
     return need
+
+
+LIVE_MIN = 15     # zoveel (gewogen) live-trades voordat de live-test telt
+LIVE_GOOD = 0.1   # gemiddeld minstens zoveel % per trade live om bevestigd te worden
 
 
 def leaderboard(results, limit=20):

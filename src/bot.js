@@ -217,6 +217,7 @@ export class Bot {
     }
     const cost = (this.risk.feePct ?? 0.25) * 2;
     for (const d of this.bandit.settleShadows(prices, cost)) {
+      try { this.onFeedback?.({ kind: 'arm', key: d.key, pct: d.pct, shadow: true }); } catch { /* extraatje */ }
       const est = this.bandit.estimate(d.key).mean;
       this.think(`Schaduwtrade afgelopen (${d.why}): strategie ${d.key.replace(/\|/g, ' · ')} had bij ${d.pair} ` +
         `${d.pct >= 0 ? '+' : ''}${d.pct.toFixed(2).replace('.', ',')}% gehaald. Niet echt gedaan, maar ik leer er wel van: ` +
@@ -232,7 +233,7 @@ export class Bot {
     const want = notes.filter((n) => n.willing > 0);
     if (want.length) return; // die vertellen zelf al wat ze doen
     const closest = notes.filter((n) => n.best).sort((a, b) => (b.best.prob - b.best.min) - (a.best.prob - a.best.min))[0];
-    this.think(`Ik heb ${notes.length} coin${notes.length === 1 ? '' : 's'} bekeken met ${this.activeArms().length} bevestigde strateg${this.activeArms().length === 1 ? 'ie' : 'ieën'}: ` +
+    this.think(`Ik heb ${notes.length} coin${notes.length === 1 ? '' : 's'} bekeken met ${this.activeArms().length} strateg${this.activeArms().length === 1 ? 'ie' : 'ieën'}: ` +
       'geen enkele ziet nu genoeg kans.' + (closest ? ` Dichtstbij: ${closest.pair} met ${closest.best.prob.toFixed(0)}% (nodig: ${closest.best.min.toFixed(0)}%).` : '') +
       ` Open schaduwtrades: ${this.bandit.openShadows()}.`, null, 'info');
   }
@@ -253,7 +254,7 @@ export class Bot {
       on: Boolean(this.strategy.mlBandit), arms: arms.length,
       rows: this.bandit.summary(arms.map((a) => a.key)).map((r) => {
         const a = arms.find((x) => x.key === r.key);
-        return a ? { ...r, timeframe: a.timeframe, targetPct: a.targetPct, stopPct: a.stopPct, holdMinutes: a.holdMinutes } : r;
+        return a ? { ...r, stage: a.stage ?? 'bevestigd', timeframe: a.timeframe, targetPct: a.targetPct, stopPct: a.stopPct, holdMinutes: a.holdMinutes } : r;
       }),
     };
   }
@@ -1035,8 +1036,20 @@ export class Bot {
       this.lastArmReason[pair] = reason;
       return { buy: false, reason };
     }
-    const choice = this.bandit.pick(willing.map((x) => x.a.key));
-    const w = willing.find((x) => x.a.key === choice.key);
+    // Wie mag echt kopen? Bevestigde strategieën altijd; proefstrategieën alleen in paper (als
+    // dat aan staat); verkenning nooit (alleen schaduwtrades).
+    const mayTrade = (a) => !a.stage || a.stage === 'bevestigd' || (a.stage === 'proef' && this.mode === 'paper' && this.strategy.mlTrialPaper !== 0);
+    const traders = willing.filter((x) => mayTrade(x.a));
+    if (!traders.length) {
+      const names = willing.map((x) => `${name(x.a)} (${x.a.stage})`).join('; ');
+      const reason = `Zelflerend: ${willing.length === 1 ? 'een strategie' : `${willing.length} strategieën`} wil kopen, maar alleen als oefening: ${names}. Ik volg het als schaduwtrade.`;
+      this.lastArmReason[pair] = reason;
+      this.think(`${willing.length === 1 ? 'Een kandidaat-strategie' : `${willing.length} kandidaat-strategieën`} ziet een kans: ${names}. ` +
+        `${this.mode === 'live' ? 'Live' : 'Hiermee'} koop ik nog niet echt, maar ik volg ze als schaduwtrade en leer van de uitkomst.`, pair, 'doing');
+      return { buy: false, reason };
+    }
+    const choice = this.bandit.pick(traders.map((x) => x.a.key));
+    const w = traders.find((x) => x.a.key === choice.key);
     this.lastFeatures[pair] = { ts: w.ts, timeframe: w.tf, features: w.f, prob: w.prob, at: Date.now() };
     let why = [];
     try {
@@ -1045,16 +1058,17 @@ export class Bot {
       why = [];
     }
     const reason = `Zelflerend: strategie ${name(w.a)} ziet ${w.prob.toFixed(0)}% kans (min. ${w.min.toFixed(0)}%)` +
-      (willing.length > 1 ? `, gekozen uit ${willing.length} die wilden kopen` : '');
+      (w.a.stage && w.a.stage !== 'bevestigd' ? ` [${w.a.stage}]` : '') +
+      (traders.length > 1 ? `, gekozen uit ${traders.length} die wilden kopen` : '');
     this.lastArmReason[pair] = null;
     const nl = (v, d = 2) => v.toFixed(d).replace('.', ',');
-    this.think(`${willing.length > 1 ? `${willing.length} strategieën willen kopen. Ik kies` : 'Eén strategie wil kopen:'} ${name(w.a)}, ${nl(w.prob, 0)}% kans` +
+    this.think(`${traders.length > 1 ? `${traders.length} strategieën willen kopen. Ik kies` : 'Eén strategie wil kopen:'} ${name(w.a)}${w.a.stage && w.a.stage !== 'bevestigd' ? ` (${w.a.stage}, paper)` : ''}, ${nl(w.prob, 0)}% kans` +
       ` (verwachte beloning ${choice.mean >= 0 ? '+' : ''}${nl(choice.mean)}% per trade, na ${this.bandit.stats(w.a.key).trades} trades).` +
       (why.length ? ` Vooral door: ${Bot.whyText(why)}.` : '') + ' Nu vraag ik de AI om een tweede mening.', pair, 'doing');
     return {
       buy: true, prob: w.prob, why, reason, regime: regimeOf(w.f),
       plan: { key: w.a.key, timeframe: w.tf, stopLossPct: w.a.stopPct, takeProfitPct: w.a.targetPct, maxHoldMinutes: w.a.holdMinutes,
-        minProb: w.min, estimatePct: +choice.mean.toFixed(3), options: willing.length },
+        minProb: w.min, estimatePct: +choice.mean.toFixed(3), options: traders.length, stage: w.a.stage ?? 'bevestigd' },
     };
   }
 
@@ -1406,6 +1420,7 @@ export class Bot {
     if (pos.plan?.key && !/^Handmatig/.test(reason)) {
       const pct = (pnlEur / pos.costEur) * 100;
       this.bandit.reward(pos.plan.key, pct);
+      try { this.onFeedback?.({ kind: 'arm', key: pos.plan.key, pct, shadow: false }); } catch { /* extraatje */ }
       this.#event('info', pair, `Beloning voor strategie ${pos.plan.key.replace(/\|/g, ' · ')}: ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`);
       const est = this.bandit.estimate(pos.plan.key).mean;
       const st = this.bandit.stats(pos.plan.key);

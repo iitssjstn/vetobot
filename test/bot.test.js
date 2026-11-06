@@ -935,3 +935,42 @@ test('orderboek-check: te groot verschil bied/laat → niet kopen; info gaat naa
   assert.match(lastAiPrompt, /Orderboek nu: verschil bied\/laat 0.10%, deze aankoop wordt ~0.05% boven de middenprijs gevuld, binnen 1% van de prijs 50% kopers/);
   assert.equal(ok.store.state.decisions[0].indicators.book.spreadPct, 0.1);
 });
+
+test('zelflerend zonder bevestigde strategie: verkenning alleen schaduw, proef traded in paper, resultaten naar de trainer', async () => {
+  const fixture = JSON.parse(fs.readFileSync(new URL('./fixtures/ml-parity.json', import.meta.url), 'utf8'));
+  const arm = (key, stage) => ({ key, stage, timeframe: '15m', targetPct: 2, stopPct: 1, holdMinutes: 240, minProb: 0.5,
+    model: { ...fixture.model, init: fixture.model.init + 10, meta: { timeframe: '15m' } } });
+  const run = async (arms, trial = 1) => {
+    const { bot, ex } = setup({});
+    await bot.setRisk({ cooldownMinutes: 0 });
+    await bot.setStrategy({ mlMinProb: 0, maxChasePct: 0, mlBandit: 1, mlTrialPaper: trial });
+    bot.getArms = () => arms;
+    bot.fb = [];
+    bot.onFeedback = (t) => bot.fb.push(t);
+    withAi(bot);
+    aiAnswer = 'approve';
+    ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+    await bot.tick();
+    return { bot, ex };
+  };
+  // Alleen verkenning: niet kopen, wel een schaduwtrade
+  const v = await run([arm('15m|2|1|240', 'verkenning')]);
+  assert.equal(v.bot.store.state.positions['BTC/EUR'], undefined);
+  assert.equal(v.bot.bandit.openShadows(), 1);
+  assert.match(v.bot.pairStatus['BTC/EUR'].reason, /alleen als oefening/);
+  assert.ok(v.bot.thoughts.some((t) => /kandidaat-strategie ziet een kans/.test(t.text)));
+  // Schaduwtrade loopt af (doel gehaald) → resultaat naar de trainer
+  v.ex.prices = [...v.ex.prices, v.ex.prices.at(-1) * 1.03];
+  await v.bot.tick();
+  const armFb = v.bot.fb.find((t) => t.kind === 'arm');
+  assert.equal(armFb.key, '15m|2|1|240');
+  assert.equal(armFb.shadow, true);
+  assert.ok(armFb.pct > 0);
+  // Proef in paper: echt kopen
+  const p = await run([arm('15m|2|1|240', 'proef')]);
+  assert.ok(p.bot.store.state.positions['BTC/EUR']);
+  assert.equal(p.bot.banditSummary().rows[0].stage, 'proef');
+  // Proef, maar "alleen schaduwtrades" gekozen: niet kopen
+  const ps = await run([arm('15m|2|1|240', 'proef')], 0);
+  assert.equal(ps.bot.store.state.positions['BTC/EUR'], undefined);
+});
