@@ -187,6 +187,22 @@
   .explain .body { padding: 0 14px 14px; font-size: 13.5px; line-height: 1.55; color: var(--muted); }
   .explain .body p { margin: 0 0 10px; }
   .explain .body b { color: var(--text); font-weight: 600; }
+  .chat { margin-bottom: 14px; }
+  .chat .panel-h .when { color: var(--muted); font-size: 12.5px; font-weight: 400; }
+  .chat-body { padding: 14px 18px 18px; display: flex; flex-direction: column; gap: 12px; }
+  .msgrow { display: flex; gap: 10px; align-items: flex-start; max-width: 860px; }
+  .msgrow.right { flex-direction: row-reverse; margin-left: auto; }
+  .avatar { flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 13px; color: #fff; }
+  .bubble { border: 1px solid var(--line); background: var(--panel-2); border-radius: 12px; padding: 10px 13px; font-size: 14px; line-height: 1.55; }
+  .bubble .txt { white-space: pre-wrap; }
+  .msgrow.right .bubble { border-top-right-radius: 4px; }
+  .msgrow:not(.right) .bubble { border-top-left-radius: 4px; }
+  .bubble .who { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin-bottom: 4px; font-size: 12.5px; }
+  .bubble .who b { font-size: 13px; }
+  .bubble .who span { color: var(--muted); }
+  .bubble.verdict.ok { border-color: color-mix(in srgb, var(--up) 55%, var(--line)); }
+  .bubble.verdict.no { border-color: color-mix(in srgb, var(--down) 55%, var(--line)); }
+  .chat.flash { box-shadow: 0 0 0 2px var(--accent); transition: box-shadow .4s; }
   .an-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--line); border-bottom: 1px solid var(--line); }
   .an-stats > div { background: var(--panel); padding: 12px 16px; }
   .an-stats .k { font-size: 12px; color: var(--muted); }
@@ -322,6 +338,7 @@
   <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></symbol>
   <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol>
   <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.7 12.3 9.3-9.3M17 6l3 3M14 9l2 2"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M4 5h16v10H9l-5 4z"/><path d="M8 9h8M8 12h5"/></symbol>
   <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></symbol>
   <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
   <symbol id="i-menu" viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h18"/></symbol>
@@ -396,6 +413,7 @@
     <button class="nav" data-view="market"><svg class="i"><use href="#i-chart"/></svg>Markt<span class="count" id="c-market"></span></button>
     <button class="nav" data-view="positions"><svg class="i"><use href="#i-brief"/></svg>Posities<span class="count" id="c-positions"></span></button>
     <button class="nav" data-view="signals"><svg class="i"><use href="#i-pulse"/></svg>AI-signalen<span class="count" id="c-signals"></span></button>
+    <button class="nav" data-view="aichat"><svg class="i"><use href="#i-chat"/></svg>AI-chat</button>
     <button class="nav" data-view="trades"><svg class="i"><use href="#i-history"/></svg>Trades<span class="count" id="c-trades"></span></button>
     <button class="nav" data-view="activity"><svg class="i"><use href="#i-list"/></svg>Activiteit</button>
     <button class="nav" data-view="settings"><svg class="i"><use href="#i-gear"/></svg>Instellingen</button>
@@ -475,6 +493,14 @@
           <span class="hint">Elk koopsignaal en wat de risicoregels en de AI ervan vonden</span></div>
         <div class="scroll" id="signals"></div>
       </div>
+    </section>
+
+    <section data-section="aichat" hidden>
+      <div class="panel" style="margin-bottom:14px">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-chat"/></svg>AI-chat</h2><span class="hint" id="chat-hint"></span></div>
+        <div class="panel-b" id="chat-intro"></div>
+      </div>
+      <div id="chats"></div>
     </section>
 
     <section data-section="trades" hidden>
@@ -680,6 +706,8 @@
             <span class="help" style="margin:0" id="ai-count"></span>
           </div>
           <div class="fields" style="margin-top:14px">
+            <div><label for="ai-mode">Werkwijze</label>
+              <select id="ai-mode"><option value="single">Eén model beslist</option><option value="team">Team van drie: analist, criticus, beslisser</option></select></div>
             <div><label for="ai-fail">Als alle modellen falen</label>
               <select id="ai-fail"><option value="reject">Trade afwijzen (veilig)</option><option value="approve">Trade doorlaten</option></select></div>
           </div>
@@ -930,7 +958,7 @@ function table(rows, cols, empty, emptyIcon = 'list', rowAttr) {
 
 // ---------- Views ----------
 let pollTimer, state, me, lastNums = {};
-const titles = { dashboard: 'Dashboard', market: 'Markt', positions: 'Posities', signals: 'AI-signalen',
+const titles = { dashboard: 'Dashboard', market: 'Markt', positions: 'Posities', signals: 'AI-signalen', aichat: 'AI-chat',
   trades: 'Trades', activity: 'Activiteit', settings: 'Instellingen', users: 'Gebruikers' };
 const isOn = (section) => !document.querySelector(`[data-section="${section}"]`).hidden;
 
@@ -976,6 +1004,8 @@ function go(section, anchor) {
   render();
   if (section === 'settings') { renderSettings(); loadMarkets(); loadKeys(); }
   if (section === 'users') loadUsers();
+  if (section === 'aichat' && Date.now() - (chatsLoadedAt ?? 0) > 1000) loadChats();
+  else if (section === 'aichat') renderChats();
   if (anchor) setTimeout(() => $(anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
   else window.scrollTo({ top: 0 });
   history.replaceState(null, '', `#${section}`);
@@ -1195,13 +1225,14 @@ function render() {
   $('pos-hint').textContent = `Koersen live, elke 5 sec · P/L inclusief verkoopfee · Stop-loss ${s.risk.stopLossPct ? `−${s.risk.stopLossPct}%` : 'uit'} · take-profit ${s.risk.takeProfitPct ? `+${s.risk.takeProfitPct}%` : 'uit'}`;
 
   const outcome = { approved: ['Goedgekeurd', 'ok'], vetoed: ['Afgewezen door AI', 'bad'], blocked: ['Geblokkeerd', 'wait'] };
+  if (isOn('aichat') && Date.now() - (chatsLoadedAt ?? 0) > 8000) loadChats();
   if (isOn('signals')) $('signals').innerHTML = table(s.decisions, [
     ['Tijd', d => `<span class="muted">${time(d.at)}</span>`],
     ['Coin', d => pairHtml(d.pair)],
     ['Uitkomst', d => { const [t, c] = outcome[d.outcome] || [d.outcome, 'soft']; return `<span class="badge ${c}">${t}</span>`; }],
     ['Koers', d => `<span class="num">${eur(d.indicators?.close)}</span>`, 'r'],
     ['RSI', d => `<span class="num">${d.indicators?.rsi?.toFixed(1) ?? '–'}</span>`, 'r'],
-    ['Reden', d => `<div class="reason">${esc(d.reason)}${d.aiError ? ' <span class="warnc">(AI-fout)</span>' : ''}</div>`],
+    ['Reden', d => `<div class="reason">${esc(d.reason)}${d.aiError ? ' <span class="warnc">(AI-fout)</span>' : ''}${d.hasChat ? ` <a href="#" data-chat="${esc(d.at)}">Bekijk gesprek</a>` : ''}</div>`],
   ], 'Nog geen koopsignalen. Bij 1h-candles kan dat even duren.', 'pulse');
 
   if (isOn('trades')) { $('analysis').innerHTML = analysisHtml(s.analysis); $('an-hint').textContent = s.analysis?.trades ? `${s.analysis.trades} gesloten trades in ${live ? 'live' : 'paper'}${s.analysis.since ? ` sinds ${time(s.analysis.since)}` : ''}` : ''; }
@@ -1417,6 +1448,7 @@ function renderSettings() {
     aiRows = [{ provider: s.ai.provider, model: s.ai.model ?? '', baseUrl: s.ai.baseUrl ?? '', fromSlot: 1, newKey: '' },
       ...(s.ai.fallbacks ?? []).map((f, i) => ({ ...f, fromSlot: i + 2, newKey: '' }))];
     $('ai-fail').value = s.ai.failMode ?? 'reject';
+    $('ai-mode').value = s.ai.mode ?? 'single';
     renderAiRows();
   }
 }
@@ -1456,6 +1488,61 @@ $('mode-form').addEventListener('submit', async (e) => {
     await load();
   } catch (err) { $('md-error').textContent = err.message; }
   finally { $('md-go').disabled = false; }
+});
+
+// ---------- AI-chat ----------
+let chatsLoadedAt = null, chatData = null, chatFocus = null;
+const ROLE_STYLE = {
+  analyst: { initials: 'AN', color: '#4f7cff', side: 'left' },
+  critic: { initials: 'CR', color: '#e8902a', side: 'right' },
+  decider: { initials: 'BE', color: '#7c5cff', side: 'left' },
+  filters: { initials: 'HF', color: '#6b7280', side: 'left' },
+  error: { initials: '!', color: '#d64545', side: 'left' },
+};
+async function loadChats() {
+  chatsLoadedAt = Date.now();
+  try { chatData = await api('api/aichat'); renderChats(); }
+  catch (err) { $('chats').innerHTML = `<div class="panel"><div class="empty">${esc(err.message)}</div></div>`; }
+}
+function renderChats() {
+  const d = chatData; if (!d) return;
+  const team = d.mode === 'team';
+  $('chat-hint').textContent = team ? 'Team van drie staat aan' : 'Team van drie staat uit';
+  $('chat-intro').innerHTML = team
+    ? `<p style="margin:0">Bij elk koopsignaal overleggen drie AI's: de <b style="color:${ROLE_STYLE.analyst.color}">analist</b> bekijkt het signaal, de <b style="color:${ROLE_STYLE.critic.color}">criticus</b> zoekt wat er mis kan gaan, en de <b style="color:${ROLE_STYLE.decider.color}">beslisser</b> weegt beide af en beslist. Signalen die al op een harde eis afvallen, worden niet besproken. Nieuwste gesprek bovenaan.</p>`
+    : `<p style="margin:0">Hier zie je het overleg van het AI-team. Zet bij Instellingen → AI-veto de werkwijze op <b>Team van drie</b> om het te gebruiken.${d.chats.length ? ' Hieronder staan de gesprekken van toen het nog aan stond.' : ''}</p>`;
+  const html = d.chats.length ? d.chats.map(chatHtml).join('') : `<div class="panel"><div class="empty">${icon('chat')}Nog geen gesprekken. Ze verschijnen bij het eerstvolgende koopsignaal.</div></div>`;
+  if ($('chats')._html !== html) { $('chats')._html = html; $('chats').innerHTML = html; }
+  if (chatFocus) {
+    const el = document.querySelector(`[data-chat-at="${CSS.escape(chatFocus)}"]`);
+    chatFocus = null;
+    if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1600); }
+  }
+}
+function chatHtml(c) {
+  const ok = c.outcome === 'approved';
+  const msgs = (c.team ?? []).map((m) => {
+    const st = ROLE_STYLE[m.role] ?? ROLE_STYLE.filters;
+    const verdict = m.role === 'decider' || m.role === 'filters';
+    const badge = m.decision ? ` <span class="badge ${m.decision === 'approve' ? 'ok' : 'bad'}">${m.decision === 'approve' ? 'kopen' : 'niet kopen'}</span>` : '';
+    return `<div class="msgrow ${st.side === 'right' ? 'right' : ''}">
+      <div class="avatar" style="background:${st.color}" aria-hidden="true">${st.initials}</div>
+      <div class="bubble ${verdict ? `verdict ${m.decision === 'approve' ? 'ok' : 'no'}` : ''}">
+        <div class="who"><b style="color:${st.color}">${esc(m.label)}</b>${badge}<span>${esc(m.model)}${m.ms >= 100 ? ` · ${(m.ms / 1000).toFixed(1).replace('.', ',')} sec` : ''}</span></div><div class="txt">${esc(m.text)}</div></div></div>`;
+  }).join('');
+  return `<div class="panel chat" data-chat-at="${esc(c.at)}">
+    <div class="panel-h"><h2>${pairHtml(c.pair)} <span class="badge ${ok ? 'ok' : 'bad'}">${ok ? 'Gekocht' : 'Niet gekocht'}</span></h2><span class="when">${time(c.at)}</span></div>
+    <div class="chat-body">
+      <div class="muted" style="font-size:13px">Signaal: ${esc(c.strategyReason ?? 'koopsignaal')}</div>
+      ${msgs}
+    </div></div>`;
+}
+document.addEventListener('click', (e) => {
+  const a = e.target.closest('[data-chat]');
+  if (!a) return;
+  e.preventDefault();
+  chatFocus = a.dataset.chat;
+  go('aichat');
 });
 
 // ---------- Resultaatanalyse ----------
@@ -1922,6 +2009,7 @@ const HELP = {
   'r-aievery': 'Hoe vaak de AI per positie opnieuw gevraagd mag worden. Lager = sneller reageren, maar meer AI-calls (let op de limieten van gratis providers zoals Groq). <b>Gebruikelijk:</b> 2 tot 5 minuten.',
   'r-atr': 'Een stop-loss die meebeweegt met de beweeglijkheid van de coin. De ATR is hoeveel een coin gemiddeld per candle beweegt. Bij 2 ligt de stop op instapkoers − 2 × ATR: ruimer bij wilde coins, krapper bij rustige. <b>Vervangt</b> de vaste stop-loss als hij aan staat. <b>Gebruikelijk:</b> 1,5 tot 3. 0 = uit.',
   'paper-start': 'Het nep-saldo waarmee paper trading begint. Kies een bedrag dat lijkt op wat je live zou inzetten, dan zijn de resultaten beter te vergelijken.',
+  'ai-mode': '<b>Eén model</b>: model 1 beslist (de rest is back-up). Snel en zuinig.<br><b>Team van drie</b>: model 1 is de <b>analist</b> (analyseert het signaal), model 2 de <b>criticus</b> (zoekt bewust wat er mis kan gaan) en model 3 de <b>beslisser</b> (weegt beide af en beslist). Heb je minder modellen, dan speelt een model meerdere rollen; faalt een model, dan neemt het volgende de rol over. Valt een signaal al af op een harde eis, dan wordt het team niet gevraagd. Kost ongeveer drie keer zoveel AI-vragen en een paar seconden per signaal. Het gesprek lees je terug op de pagina <b>AI-chat</b>. De winstcheck bij open posities blijft altijd één model.',
   'ai-fail': 'Wat er met een koopsignaal gebeurt als geen enkel AI-model antwoordt (fouten, tegoed op). <b>Afwijzen</b> is het veiligst: geen AI, geen trade. <b>Doorlaten</b> betekent dat alleen je eigen regels beslissen.',
 };
 function initHelp() {
@@ -2286,6 +2374,7 @@ $('ai-add').onclick = () => {
   aiDirty = true; renderAiRows();
 };
 $('ai-fail').onchange = () => { aiDirty = true; };
+$('ai-mode').onchange = () => { aiDirty = true; };
 
 $('ai-form').onsubmit = async (e) => {
   e.preventDefault();
@@ -2296,7 +2385,7 @@ $('ai-form').onsubmit = async (e) => {
   rows.forEach((r, i) => { if (r.newKey?.trim()) newKeys[i + 1] = r.newKey.trim(); });
   try {
     await api('api/settings/ai', {
-      provider: first.provider, model: first.model, baseUrl: first.baseUrl, failMode: $('ai-fail').value,
+      provider: first.provider, model: first.model, baseUrl: first.baseUrl, failMode: $('ai-fail').value, mode: $('ai-mode').value,
       fallbacks: rest.map(r => ({ provider: r.provider, model: r.model, baseUrl: r.baseUrl })),
       keyMap: rows.map(r => r.fromSlot), newKeys,
     });

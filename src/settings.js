@@ -254,7 +254,7 @@ export class Settings {
   }
 
   // fallbacks: maximaal 4 back-upmodellen, op volgorde. Ontbreekt de lijst, dan blijft hij gelijk.
-  setAi({ provider, model, baseUrl, failMode, fallbacks }) {
+  setAi({ provider, model, baseUrl, failMode, fallbacks, mode }) {
     const entry = (e, n) => {
       if (!['gemini', 'openai'].includes(e?.provider)) throw new Error(`Model ${n}: kies Gemini of OpenAI-compatibel`);
       const url = String(e.baseUrl ?? '').trim();
@@ -270,6 +270,8 @@ export class Settings {
       model: String(model ?? '').trim().slice(0, 100),
       baseUrl: String(baseUrl ?? '').trim() || 'https://api.groq.com/openai/v1',
       failMode: AI_FAIL_MODES.includes(failMode) ? failMode : 'reject',
+      // 'single' = één model beslist; 'team' = analist, criticus en beslisser.
+      mode: ['single', 'team'].includes(mode) ? mode : this.data.ai?.mode ?? 'single',
       fallbacks: list.map((e, i) => entry(e, i + 2)),
     };
     this.#save();

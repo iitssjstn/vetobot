@@ -263,7 +263,8 @@ export function createApp({ users, manager, log = console }) {
       positions: open.positions,
       open: { valueEur: open.valueEur, costEur: open.costEur, pnlEur: open.pnlEur, complete: open.complete },
       trades: closed.slice(0, 100),
-      decisions: s.decisions.slice(0, 100),
+      // Zonder het (grote) AI-gesprek; dat haalt de pagina AI-chat apart op.
+      decisions: s.decisions.slice(0, 100).map(({ team, ...d }) => (team ? { ...d, hasChat: true } : d)),
       stats: {
         totalTrades: closed.length,
         winRate: closed.length ? (wins / closed.length) * 100 : null,
@@ -290,6 +291,13 @@ export function createApp({ users, manager, log = console }) {
       serverTime: new Date().toISOString(),
     });
   });
+
+  // Gesprekken van het AI-team, nieuwste eerst.
+  app.get('/api/aichat', wrap((req, { bot, settings }) => ({
+    mode: settings.ai.mode ?? 'single',
+    chats: bot.store.state.decisions.filter((d) => d.team).slice(0, 60)
+      .map((d) => ({ at: d.at, pair: d.pair, outcome: d.outcome, reason: d.reason, provider: d.provider, strategyReason: d.strategyReason, team: d.team })),
+  })));
 
   app.post('/api/pause', wrap((_req, { bot }) => {
     bot.store.state.halted = { at: new Date().toISOString(), reason: 'Handmatig gepauzeerd', manual: true };

@@ -1,6 +1,6 @@
 import { evaluate } from './strategy.js';
 import { ema } from './indicators.js';
-import { askVetoChain, askExitChain, testChain, listModels, writeSummaryChain, aiLabel } from './ai.js';
+import { askVetoChain, askTeamChain, askExitChain, testChain, listModels, writeSummaryChain, aiLabel } from './ai.js';
 import { TIMEFRAME_MINUTES, fmtInterval, LIVE_MIN_STAKE_EUR } from './settings.js';
 import { cleanSuggestions, currentValues, applySuggestions } from './suggest.js';
 import { fetchClosedCandles, fetchPrice, hasTradingKeys } from './exchange.js';
@@ -758,9 +758,11 @@ export class Bot {
       return;
     }
 
-    this.#step(`${pair}: AI om oordeel vragen`);
+    const team = this.settings.ai.mode === 'team' && this.settings.ai.provider !== 'none';
+    this.#step(team ? `${pair}: AI-team overlegt (analist, criticus, beslisser)` : `${pair}: AI om oordeel vragen`);
     if (this.tickStats && this.settings.ai.provider !== 'none') this.tickStats.aiCalls++;
-    const veto = await askVetoChain(this.aiChain(), this.settings.ai.failMode ?? this.config.ai.failMode, {
+    const ask = team ? askTeamChain : askVetoChain;
+    const veto = await ask(this.aiChain(), this.settings.ai.failMode ?? this.config.ai.failMode, {
       pair,
       timeframe,
       indicators: result.indicators,
@@ -788,7 +790,10 @@ export class Bot {
       aiError: Boolean(veto.error),
       strategyReason: result.reason,
       indicators: result.indicators,
+      // Het gesprek van het AI-team, voor de pagina AI-chat.
+      ...(veto.transcript ? { team: veto.transcript } : {}),
     });
+    this.#trimTranscripts();
     this.#event(veto.decision === 'approve' ? 'info' : 'warn', pair,
       `AI (${veto.provider}) ${veto.decision === 'approve' ? 'keurt goed' : 'wijst af'}: ${veto.reason}`);
     const errList = (list) => list.map((x) => `**${x.slot}. ${x.label}**: ${x.error}`).join('\n');
@@ -833,6 +838,15 @@ export class Bot {
   entryRisk() {
     const risk = this.risk;
     return { ...risk, stakeEur: this.stakeInfo(risk).effective };
+  }
+
+  // Gesprekken zijn groot; bewaar ze alleen bij de laatste 60 beslissingen (state blijft klein).
+  #trimTranscripts() {
+    let n = 0;
+    for (const d of this.store.state.decisions) {
+      if (!d.team) continue;
+      if (++n > 60) delete d.team;
+    }
   }
 
   // ---------- Gegevens voor de AI ----------
