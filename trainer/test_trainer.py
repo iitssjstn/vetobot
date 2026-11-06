@@ -183,6 +183,38 @@ class FetchRange(unittest.TestCase):
         self.assertEqual([r[0] for r in rows], sorted(r[0] for r in rows))
 
 
+class CacheShortHistory(unittest.TestCase):
+    def test_remembers_that_bitvavo_has_no_older_candles(self):
+        M = 60_000
+        now = 100_000 * M
+        listed = now - 40 * 1440 * M  # coin heeft maar 40 dagen geschiedenis
+        calls = []
+
+        def fake(pair, tf, start, end):
+            calls.append((start, end))
+            s = max(start, listed)
+            return [[t, 1, 1, 1, 1, 1] for t in range(s - s % M, end, M)]
+        d = tempfile.mkdtemp()
+        logs = []
+        train.fetch_candles('X/EUR', '1m', 60, cache_dir=d, now_ms=now, fetch=fake)
+        calls.clear()
+        out = train.fetch_candles('X/EUR', '1m', 60, cache_dir=d, now_ms=now + 30 * M, fetch=fake, log=logs.append)
+        self.assertEqual(len(calls), 1, 'alleen de nieuwe candles, niet steeds opnieuw het oudere stuk')
+        self.assertEqual(len(out), 40 * 1440 + 30)
+        self.assertEqual(logs, ['X/EUR 1m: 30 nieuw opgehaald, 57.600 uit opslag'])
+
+    def test_new_part_must_connect(self):
+        M = 60_000
+        now = 100_000 * M
+        d = tempfile.mkdtemp()
+        full = lambda p, tf, s, e: [[t, 1, 1, 1, 1, 1] for t in range(s - s % M, e, M)]
+        train.fetch_candles('Y/EUR', '1m', 2, cache_dir=d, now_ms=now, fetch=full)
+        # Halverwege mislukt: alleen het nieuwste stuk kwam binnen -> niet gebruiken (geen gat)
+        gap = lambda p, tf, s, e: [[t, 1, 1, 1, 1, 1] for t in range(e - 100 * M, e, M)]
+        out = train.fetch_candles('Y/EUR', '1m', 2, cache_dir=d, now_ms=now + 500 * M, fetch=gap)
+        self.assertEqual(out[-1][0], now - M)
+
+
 class StrategySearch(unittest.TestCase):
     def test_round_leaderboard_and_strictness(self):
         import search

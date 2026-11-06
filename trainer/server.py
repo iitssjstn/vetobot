@@ -232,7 +232,7 @@ def run_training(reason):
             cfg = config()
             log(f'Training gestart ({reason}): {cfg["timeframe"]}, {cfg["days"]} dagen, doel +{cfg["targetPct"]}% / stop -{cfg["stopPct"]}%')
             cache = os.path.join(DATA, 'candles')
-            fetch = lambda pair, tf, days: trainer.fetch_candles(pair, tf, days, cache_dir=cache)
+            fetch = lambda pair, tf, days: trainer.fetch_candles(pair, tf, days, cache_dir=cache, log=log)
             model, report = trainer.train(cfg, log=log, progress=set_progress, fetch=fetch, feedback=load_feedback())
             report['startedAt'] = started
             report['finishedAt'] = datetime.now().isoformat(timespec='seconds')
@@ -311,7 +311,7 @@ def cache_info():
     out = []
     try:
         for name in sorted(os.listdir(d)):
-            if not name.endswith('.json'):
+            if not name.endswith('.json') or name.endswith('.meta.json'):
                 continue
             try:
                 with open(os.path.join(d, name)) as f:

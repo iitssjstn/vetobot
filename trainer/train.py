@@ -88,17 +88,19 @@ def fetch_range(pair, timeframe, start, end):
     return [out[k] for k in sorted(out)]
 
 
-def fetch_candles(pair, timeframe, days, cache_dir=None, now_ms=None, fetch=fetch_range):
+def fetch_candles(pair, timeframe, days, cache_dir=None, now_ms=None, fetch=fetch_range, log=None):
     """Candles van de afgelopen `days` dagen, oud -> nieuw, alleen gesloten candles.
 
     Met cache_dir worden de koersen bewaard: een volgende keer worden alleen de nieuwe candles
     opgehaald, en als je meer dagen wilt alleen het ontbrekende oudere stuk. Zo groeit de
-    geschiedenis zonder elke keer alles opnieuw te downloaden.
+    geschiedenis zonder elke keer alles opnieuw te downloaden. Heeft Bitvavo geen oudere candles
+    (coin is nieuwer, of Bitvavo bewaart niet zo ver terug), dan onthouden we dat en vragen we
+    het niet elke keer opnieuw.
     """
     step = TF_MS[timeframe]
     now = now_ms or int(time.time() * 1000)
     start = now - int(days) * 86_400_000
-    cached = []
+    cached, meta = [], {}
     file = None
     if cache_dir:
         os.makedirs(cache_dir, exist_ok=True)
@@ -108,17 +110,40 @@ def fetch_candles(pair, timeframe, days, cache_dir=None, now_ms=None, fetch=fetc
                 cached = json.load(f)
         except (OSError, ValueError):
             cached = []
+        try:
+            with open(file[:-5] + '.meta.json') as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            meta = {}
     by_ts = {c[0]: c for c in cached}
+    fetched = 0
     if cached:
         oldest, newest = cached[0][0], cached[-1][0]
-        if oldest > start + step:  # meer geschiedenis gevraagd: alleen het oudere stuk aanvullen
-            for c in fetch(pair, timeframe, start, oldest - 1):
+        known_start = meta.get('earliest')
+        if oldest > start + step and not (known_start and known_start >= oldest - step):
+            # Meer geschiedenis gevraagd: alleen het oudere stuk aanvullen.
+            older = [c for c in fetch(pair, timeframe, start, oldest - 1) if c[0] < oldest]
+            for c in older:
                 by_ts[c[0]] = c
-        for c in fetch(pair, timeframe, newest - step, now):  # alleen nieuwe candles
-            by_ts[c[0]] = c
+            fetched += len(older)
+            # Kwam er niet alles? Dan heeft Bitvavo niet verder terug: onthouden.
+            first = older[0][0] if older else oldest
+            if first > start + step:
+                meta['earliest'] = first
+        new = fetch(pair, timeframe, newest - step, now)  # alleen nieuwe candles
+        # Alleen gebruiken als het aansluit op wat we al hadden (anders ontstaat er een gat);
+        # lukt het niet, dan volgende keer opnieuw.
+        if new and new[0][0] <= newest:
+            for c in new:
+                by_ts[c[0]] = c
+            fetched += sum(1 for c in new if c[0] > newest)
     else:
-        for c in fetch(pair, timeframe, start, now):
+        rows = fetch(pair, timeframe, start, now)
+        for c in rows:
             by_ts[c[0]] = c
+        fetched = len(rows)
+        if rows and rows[0][0] > start + step:
+            meta['earliest'] = rows[0][0]
     candles = [by_ts[k] for k in sorted(by_ts) if by_ts[k][0] + step <= now]
     if file:
         # Bewaren tot maximaal 400 dagen, zodat de cache niet eindeloos groeit.
@@ -127,7 +152,13 @@ def fetch_candles(pair, timeframe, days, cache_dir=None, now_ms=None, fetch=fetc
         with open(tmp, 'w') as f:
             json.dump([c for c in candles if c[0] >= keep_from], f)
         os.replace(tmp, file)
-    return [c for c in candles if c[0] >= start]
+        with open(file[:-5] + '.meta.json', 'w') as f:
+            json.dump(meta, f)
+    out = [c for c in candles if c[0] >= start]
+    if log and cache_dir:
+        nl = lambda n: f'{n:,}'.replace(',', '.')
+        log(f'{pair} {timeframe}: {nl(fetched)} nieuw opgehaald, {nl(max(0, len(out) - fetched))} uit opslag')
+    return out
 
 
 def build_dataset(candles, cfg, step=2, ctx=None):
