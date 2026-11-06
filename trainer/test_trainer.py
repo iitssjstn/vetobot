@@ -140,8 +140,32 @@ if __name__ == '__main__':
     unittest.main()
 
 
+class FetchRange(unittest.TestCase):
+    def test_pages_back_and_keeps_partial_on_error(self):
+        import train
+        calls = []
+        def fake_get(url, tries=3):
+            calls.append(url)
+            self.assertNotIn('start=', url)  # alleen end + limit, geen groot bereik
+            if len(calls) == 3:
+                raise train.BitvavoError('HTTP 400 van Bitvavo: test')
+            end = int(url.split('end=')[1])
+            return [[end - i * 60_000, '1', '1', '1', '1', '1'] for i in range(1440)]
+        orig, orig_sleep = train._get, train.time.sleep
+        train._get = fake_get
+        train.time.sleep = lambda s: None
+        try:
+            now = 10_000 * 86_400_000
+            rows = train.fetch_range('DOGE/EUR', '1m', now - 5 * 86_400_000, now)
+        finally:
+            train._get, train.time.sleep = orig, orig_sleep
+        self.assertEqual(len(rows), 2 * 1440)  # twee pagina's binnen, derde mislukt -> houden wat er is
+        self.assertEqual([r[0] for r in rows], sorted(r[0] for r in rows))
+
+
 class Schedule(unittest.TestCase):
     def setUp(self):
+        os.environ.setdefault('DATA_DIR', tempfile.mkdtemp())
         import server
         self.s = server
         self.now = __import__('datetime').datetime(2026, 11, 6, 14, 30)

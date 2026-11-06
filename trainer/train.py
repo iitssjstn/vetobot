@@ -12,6 +12,7 @@ import json
 import math
 import os
 import time
+import urllib.error
 import urllib.request
 
 from features import FEATURES, WARMUP, features_at, label_at, series
@@ -21,10 +22,33 @@ TF_MS = {'1m': 60_000, '5m': 300_000, '15m': 900_000, '30m': 1_800_000, '1h': 3_
          '2h': 7_200_000, '4h': 14_400_000, '1d': 86_400_000}
 
 
-def _get(url):
+class BitvavoError(Exception):
+    pass
+
+
+def _get(url, tries=3):
+    """GET met nette foutmelding (inclusief wat Bitvavo terugzegt) en een paar herkansingen."""
     req = urllib.request.Request(url, headers={'User-Agent': 'vetobot-trainer'})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read())
+    for attempt in range(tries):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            body = ''
+            try:
+                body = e.read().decode('utf-8', 'replace')[:200]
+            except Exception:
+                pass
+            # 429 (te veel verzoeken) en 5xx: even wachten en opnieuw proberen
+            if (e.code == 429 or e.code >= 500) and attempt < tries - 1:
+                time.sleep(2 * (attempt + 1))
+                continue
+            raise BitvavoError(f'HTTP {e.code} van Bitvavo: {body or e.reason}') from None
+        except (urllib.error.URLError, TimeoutError) as e:
+            if attempt < tries - 1:
+                time.sleep(2 * (attempt + 1))
+                continue
+            raise BitvavoError(f'Bitvavo niet bereikbaar: {getattr(e, "reason", e)}') from None
 
 
 def top_markets(n):
@@ -36,18 +60,28 @@ def top_markets(n):
 
 
 def fetch_range(pair, timeframe, start, end):
-    """Candles tussen start en end (ms), oud -> nieuw. Bladert terug in stappen van 1440."""
+    """Candles tussen start en end (ms), oud -> nieuw.
+
+    Bladert terug met alleen `end` en `limit=1440` per verzoek (geen groot start-end-bereik in
+    één keer, dat weigert Bitvavo). Gaat het halverwege mis, dan houden we wat al binnen is.
+    """
     market = pair.replace('/', '-')
     out = {}
     while end > start:
-        rows = _get(f'{BITVAVO}/{market}/candles?interval={timeframe}&limit=1440&start={start}&end={end}')
+        try:
+            rows = _get(f'{BITVAVO}/{market}/candles?interval={timeframe}&limit=1440&end={end}')
+        except BitvavoError:
+            if out:
+                break  # deel binnen: daarmee verder, volgende keer vult de cache het aan
+            raise
         if not rows:
             break
         for r in rows:
             ts = int(r[0])
-            out[ts] = [ts, float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])]
+            if ts >= start:
+                out[ts] = [ts, float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])]
         oldest = min(int(r[0]) for r in rows)
-        if oldest >= end:
+        if oldest >= end or len(rows) < 2:
             break
         end = oldest - 1
         time.sleep(0.15)  # netjes binnen de rate limit van Bitvavo blijven
