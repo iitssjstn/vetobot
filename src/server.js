@@ -461,6 +461,25 @@ export function createApp({ users, manager, log = console }) {
     return { ok: true, started, config: cfg };
   }));
 
+  // Live status voor de pagina Trainer.
+  app.get('/api/admin/trainer/status', adminOnly, wrap(async () => {
+    const ml = manager.ml;
+    const base = { configured: Boolean(manager.trainerAccess()), model: ml.model?.meta ?? null, fetchedAt: ml.fetchedAt, fetchError: ml.error };
+    if (!base.configured) return base;
+    try {
+      const trainer = (await manager.trainerRequest('/status')).data;
+      // Heeft de trainer een nieuwer model dan de bot? Dan nu meteen ophalen in plaats van
+      // te wachten op de volgende halfuurlijkse controle.
+      if (trainer?.model?.trainedAt && trainer.model.trainedAt !== ml.model?.meta?.trainedAt) {
+        await manager.refreshModel();
+        Object.assign(base, { model: manager.ml.model?.meta ?? null, fetchedAt: manager.ml.fetchedAt, fetchError: manager.ml.error });
+      }
+      return { ...base, trainer };
+    } catch (err) {
+      return { ...base, trainerError: err.message };
+    }
+  }));
+
   app.post('/api/admin/trainer/fetch', adminOnly, wrap(async () => {
     const ml = await manager.refreshModel();
     if (ml.error) throw new Error(ml.error);

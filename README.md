@@ -210,6 +210,8 @@ Start hem met `docker compose up -d` en kijk in de logs (`docker compose logs ve
 
 **In vetobot** (als admin): Instellingen → **Eigen model** → vul het adres van de trainer (bijv. `https://trainer.jouwdomein.nl` of `http://IP-van-je-VPS:8787`) en de code in, en klik op **Nu trainen met mijn instellingen**. De bot stuurt dan je candle-tijd, stop-loss, take-profit (of maximale tijd in positie), kosten en coinlijst naar de trainer. Na een paar minuten zie je het resultaat op de testperiode, met de aanbevolen minimale modelkans. Het model wordt alleen gebruikt als het getraind is op dezelfde candle-tijd als je bot.
 
+Op de pagina **Trainer** (alleen voor de admin) zie je live wat de trainer doet: welke stap (coins kiezen, koersen ophalen, model trainen, testen), een voortgangsbalk, het logboek, het huidige model en alle eerdere trainingen met hun resultaat. Zodra de trainer een nieuw model heeft, haalt de bot het meteen op.
+
 Gebruik bij voorkeur HTTPS (bijv. via Nginx Proxy Manager op de VPS), zodat de code niet onversleuteld over internet gaat. Het model is gedeeld: alle gebruikers van je vetobot gebruiken hetzelfde model.
 
 ## Meerdere gebruikers

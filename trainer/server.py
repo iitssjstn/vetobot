@@ -33,7 +33,7 @@ LIMITS = {'days': (7, 365), 'targetPct': (0.2, 50), 'stopPct': (0.2, 50), 'horiz
           'costPct': (0, 5), 'topN': (1, 50)}
 
 os.makedirs(DATA, exist_ok=True)
-state = {'running': False, 'history': [], 'log': []}
+state = {'running': False, 'history': [], 'log': [], 'progress': None}
 lock = threading.Lock()
 
 
@@ -69,7 +69,12 @@ def token():
 def log(msg):
     line = f'{datetime.now().strftime("%Y-%m-%d %H:%M:%S")} {msg}'
     print(line, flush=True)
-    state['log'] = (state['log'] + [line])[-200:]
+    state['log'] = (state['log'] + [line])[-300:]
+
+
+def set_progress(phase, done, total, text):
+    p = state.get('progress') or {}
+    state['progress'] = {**p, 'phase': phase, 'done': done, 'total': total, 'text': text, 'at': datetime.now().isoformat(timespec='seconds')}
 
 
 def config():
@@ -105,10 +110,11 @@ def run_training(reason):
         state['running'] = True
     def job():
         started = datetime.now().isoformat(timespec='seconds')
+        state['progress'] = {'startedAt': started, 'reason': reason, 'phase': 'start', 'done': 0, 'total': 1, 'text': 'Starten'}
         try:
             cfg = config()
             log(f'Training gestart ({reason}): {cfg["timeframe"]}, {cfg["days"]} dagen, doel +{cfg["targetPct"]}% / stop -{cfg["stopPct"]}%')
-            model, report = trainer.train(cfg, log=log)
+            model, report = trainer.train(cfg, log=log, progress=set_progress)
             report['startedAt'] = started
             report['finishedAt'] = datetime.now().isoformat(timespec='seconds')
             if model:
@@ -189,8 +195,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/status':
             model = read_json('model.json', None)
             return self.send(200, {
-                'running': state['running'], 'config': config(), 'nextRunAt': next_run().isoformat(timespec='minutes'),
-                'model': model and model.get('meta'), 'history': state['history'], 'log': state['log'][-30:],
+                'running': state['running'], 'progress': state['progress'] if state['running'] else None,
+                'config': config(), 'nextRunAt': next_run().isoformat(timespec='minutes'), 'trainHour': TRAIN_HOUR,
+                'model': model and model.get('meta'), 'history': state['history'], 'log': state['log'][-150:],
             })
         self.send(404, {'error': 'Niet gevonden'})
 

@@ -187,6 +187,19 @@
   .explain .body { padding: 0 14px 14px; font-size: 13.5px; line-height: 1.55; color: var(--muted); }
   .explain .body p { margin: 0 0 10px; }
   .explain .body b { color: var(--text); font-weight: 600; }
+  .tr-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .tr-grid > .panel { margin-top: 14px; }
+  @media (max-width: 860px) { .tr-grid { grid-template-columns: 1fr; } }
+  .tr-bar { height: 10px; border-radius: 6px; background: var(--line); overflow: hidden; margin: 10px 0 6px; }
+  .tr-bar i { display: block; height: 100%; background: var(--accent); transition: width .6s; }
+  .tr-steps { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+  .tr-steps span { font-size: 12px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .tr-steps span.done { color: var(--up); border-color: color-mix(in srgb, var(--up) 40%, var(--line)); }
+  .tr-steps span.now { color: var(--accent); border-color: var(--accent); font-weight: 600; }
+  .tr-log { margin: 0; padding: 12px 16px; max-height: 360px; overflow: auto; font: 12.5px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); white-space: pre-wrap; background: var(--panel-2); }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; font-size: 13.5px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; }
   .chat { margin-bottom: 14px; }
   .chat .panel-h .when { color: var(--muted); font-size: 12.5px; font-weight: 400; }
   .chat-body { padding: 14px 18px 18px; display: flex; flex-direction: column; gap: 12px; }
@@ -417,6 +430,7 @@
     <button class="nav" data-view="trades"><svg class="i"><use href="#i-history"/></svg>Trades<span class="count" id="c-trades"></span></button>
     <button class="nav" data-view="activity"><svg class="i"><use href="#i-list"/></svg>Activiteit</button>
     <button class="nav" data-view="settings"><svg class="i"><use href="#i-gear"/></svg>Instellingen</button>
+    <button class="nav" data-view="trainer" id="nav-trainer" hidden><svg class="i"><use href="#i-cpu"/></svg>Trainer<span class="count" id="c-trainer"></span></button>
     <button class="nav" data-view="users" id="nav-users" hidden><svg class="i"><use href="#i-users"/></svg>Gebruikers<span class="count" id="c-users"></span></button>
     <div class="aside-foot">
       <div id="side-mode"></div>
@@ -492,6 +506,25 @@
         <div class="panel-h"><h2><svg class="i"><use href="#i-pulse"/></svg>AI-beslissingen</h2>
           <span class="hint">Elk koopsignaal en wat de risicoregels en de AI ervan vonden</span></div>
         <div class="scroll" id="signals"></div>
+      </div>
+    </section>
+
+    <section data-section="trainer" hidden>
+      <div class="panel">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-cpu"/></svg>Wat doet de trainer?</h2><span class="hint" id="tr-badge"></span></div>
+        <div class="panel-b" id="tr-now"></div>
+      </div>
+      <div class="tr-grid">
+        <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Huidig model</h2></div><div class="panel-b" id="tr-model"></div></div>
+        <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-gear"/></svg>Instellingen van de trainer</h2></div><div class="panel-b" id="tr-config"></div></div>
+      </div>
+      <div class="panel gap">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-list"/></svg>Logboek</h2><span class="hint">live, nieuwste onderaan</span></div>
+        <pre class="tr-log" id="tr-log"></pre>
+      </div>
+      <div class="panel gap">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-history"/></svg>Eerdere trainingen</h2></div>
+        <div class="scroll" id="tr-history"></div>
       </div>
     </section>
 
@@ -984,7 +1017,7 @@ function table(rows, cols, empty, emptyIcon = 'list', rowAttr) {
 
 // ---------- Views ----------
 let pollTimer, state, me, lastNums = {};
-const titles = { dashboard: 'Dashboard', market: 'Markt', positions: 'Posities', signals: 'AI-signalen', aichat: 'AI-chat',
+const titles = { dashboard: 'Dashboard', market: 'Markt', positions: 'Posities', signals: 'AI-signalen', aichat: 'AI-chat', trainer: 'Trainer',
   trades: 'Trades', activity: 'Activiteit', settings: 'Instellingen', users: 'Gebruikers' };
 const isOn = (section) => !document.querySelector(`[data-section="${section}"]`).hidden;
 
@@ -1030,6 +1063,7 @@ function go(section, anchor) {
   render();
   if (section === 'settings') { renderSettings(); loadMarkets(); loadKeys(); loadModel(); }
   if (section === 'users') loadUsers();
+  if (section === 'trainer') loadTrainer();
   if (section === 'aichat' && Date.now() - (chatsLoadedAt ?? 0) > 1000) loadChats();
   else if (section === 'aichat') renderChats();
   if (anchor) setTimeout(() => $(anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
@@ -1151,6 +1185,7 @@ function render() {
   me = s.user ?? me;
   $('side-user').textContent = me?.username ?? '';
   $('nav-users').hidden = me?.role !== 'admin';
+  $('nav-trainer').hidden = me?.role !== 'admin';
   $('pause').innerHTML = s.halted?.manual ? `${icon('play')}<span>Hervatten</span>` : `${icon('pause')}<span>Pauzeren</span>`;
   $('c-market').textContent = s.pairs.length;
   $('c-positions').textContent = s.positions.length || '';
@@ -1596,6 +1631,106 @@ $('ml-fetch').onclick = async () => {
   try { const r = await api('api/admin/trainer/fetch', {}); mlMsg(r.meta ? 'Model opgehaald.' : 'Verbonden, maar er is nog geen model.', 'ok'); loadModel(); }
   catch (err) { mlMsg(err.message, 'err'); }
 };
+
+// ---------- Pagina Trainer ----------
+let trData = null, trTimer = null;
+const TR_PHASES = [['markets', 'Coins kiezen'], ['fetch', 'Koersen ophalen'], ['train', 'Model trainen'], ['test', 'Testen']];
+async function loadTrainer() {
+  clearTimeout(trTimer);
+  try { trData = await api('api/admin/trainer/status'); renderTrainer(); }
+  catch (err) { $('tr-now').innerHTML = `<div class="msg err">${esc(err.message)}</div>`; }
+  // Tijdens een training elke 3 sec bijwerken, anders elke 20 sec.
+  if (isOn('trainer')) trTimer = setTimeout(loadTrainer, trData?.trainer?.running ? 3000 : 20000);
+}
+function renderTrainer() {
+  const d = trData; if (!d) return;
+  const nl = (v, dd = 1) => v == null ? '–' : Number(v).toFixed(dd).replace('.', ',');
+  const when = (iso) => iso ? esc(String(iso).replace('T', ' ').slice(0, 16)) : '–';
+  if (!d.configured) {
+    $('tr-badge').innerHTML = '<span class="badge soft">niet gekoppeld</span>';
+    $('tr-now').innerHTML = `<p style="margin:0">Er is nog geen trainer gekoppeld. Zet de trainer op je VPS (zie de README onder "Eigen model") en vul het adres en de code in bij <a href="#" data-go="settings">Instellingen → Eigen model</a>.</p>`;
+    ['tr-model', 'tr-config', 'tr-log', 'tr-history'].forEach((id) => { $(id).innerHTML = ''; });
+    return;
+  }
+  const t = d.trainer;
+  if (!t) {
+    $('tr-badge').innerHTML = '<span class="badge bad">onbereikbaar</span>';
+    $('tr-now').innerHTML = `<div class="alert err" style="margin:0">${icon('alert')}<div>${esc(d.trainerError ?? 'De trainer is niet bereikbaar.')} Het laatst opgehaalde model blijft in gebruik.</div></div>`;
+  } else if (t.running && t.progress) {
+    const p = t.progress;
+    // Totale voortgang: coins kiezen 0-3%, ophalen 3-45%, trainen 45-95%, testen 95-100%.
+    const frac = (p.total ? p.done / p.total : 0);
+    const pct = p.phase === 'markets' ? 2 : p.phase === 'fetch' ? 3 + frac * 42 : p.phase === 'train' ? 45 + frac * 50 : p.phase === 'test' ? 97 : 1;
+    const idx = TR_PHASES.findIndex(([k]) => k === p.phase);
+    const elapsed = p.startedAt ? Math.max(0, Math.round((Date.now() - Date.parse(p.startedAt)) / 1000)) : null;
+    $('tr-badge').innerHTML = '<span class="badge wait">bezig met trainen</span>';
+    $('tr-now').innerHTML = `<div style="font-size:15px"><b>${esc(p.text ?? '')}</b>${p.phase === 'fetch' ? ` <span class="muted">(${p.done + 1} van ${p.total})</span>` : ''}${p.phase === 'train' ? ` <span class="muted">(${p.done} van ${p.total} beslisbomen)</span>` : ''}</div>
+      <div class="tr-bar" role="progressbar" aria-valuenow="${Math.round(pct)}" aria-valuemin="0" aria-valuemax="100"><i style="width:${pct.toFixed(1)}%"></i></div>
+      <div class="muted" style="font-size:13px">${Math.round(pct)}% · bezig sinds ${when(p.startedAt).slice(11)}${elapsed != null ? ` (${elapsed >= 60 ? `${Math.floor(elapsed / 60)} min ` : ''}${elapsed % 60} sec)` : ''} · aanleiding: ${esc(p.reason ?? '')}</div>
+      <div class="tr-steps">${TR_PHASES.map(([k, label], i) => `<span class="${i < idx ? 'done' : i === idx ? 'now' : ''}">${i < idx ? '✓ ' : ''}${label}</span>`).join('')}</div>`;
+  } else {
+    const last = t.history?.[0];
+    $('tr-badge').innerHTML = '<span class="badge ok">wacht</span>';
+    $('tr-now').innerHTML = `<p style="margin:0 0 4px">De trainer staat klaar. Volgende nachtelijke training: <b>${when(t.nextRunAt)}</b>.</p>
+      ${last ? `<p class="muted" style="margin:0;font-size:13.5px">Laatste training ${when(last.finishedAt ?? last.startedAt)}: ${last.published ? '<span class="up">nieuw model gepubliceerd</span>' : `<span class="warnc">geen nieuw model</span> — ${esc(last.reason ?? '')}`}</p>` : ''}
+      <div class="row-actions"><button class="btn primary" type="button" id="tr-train">Nu trainen met mijn instellingen</button><span class="msg" id="tr-msg"></span></div>`;
+    $('tr-train').onclick = async () => {
+      $('tr-msg').className = 'msg'; $('tr-msg').textContent = 'Starten…';
+      try { await api('api/admin/trainer/train', { days: Number($('ml-days')?.value) || 60 }); setTimeout(loadTrainer, 800); }
+      catch (err) { $('tr-msg').className = 'msg err'; $('tr-msg').textContent = err.message; }
+    };
+  }
+  $('c-trainer').textContent = t?.running ? '●' : '';
+
+  // Huidig model (zoals de bot het gebruikt)
+  const m = d.model;
+  $('tr-model').innerHTML = m ? `<dl class="kv">
+      <dt>Getraind</dt><dd>${m.trainedAt ? time(m.trainedAt) : '–'}</dd>
+      <dt>Candles</dt><dd>${esc(m.timeframe)}, ${m.days} dagen, ${m.pairs?.length ?? '?'} coins</dd>
+      <dt>Voorspelt</dt><dd>eerst +${nl(m.targetPct)}% voordat −${nl(m.stopPct)}%, binnen ${m.horizon} candles</dd>
+      <dt>Voorbeelden</dt><dd>${(m.trainSamples ?? 0).toLocaleString('nl-NL')} trainen, ${(m.testSamples ?? 0).toLocaleString('nl-NL')} testen</dd>
+      <dt>Kwaliteit (AUC)</dt><dd>${nl(m.metrics?.auc, 3)} <span class="muted">(0,5 = gokken)</span></dd>
+      <dt>Beste drempel</dt><dd>${m.metrics?.best ? `≥ ${Math.round(m.metrics.best.minProb * 100)}%: ${nl(m.metrics.best.winRate, 0)}% gewonnen, gem. ${m.metrics.best.avgReturnPct > 0 ? '+' : ''}${nl(m.metrics.best.avgReturnPct, 2)}% per trade` : '–'}</dd>
+      <dt>Zomaar kopen</dt><dd>${m.metrics?.base ? `${nl(m.metrics.base.winRate, 0)}% gewonnen, gem. ${nl(m.metrics.base.avgReturnPct, 2)}% per trade` : '–'}</dd>
+      <dt>Opgehaald door bot</dt><dd>${d.fetchedAt ? time(d.fetchedAt) : '–'}${d.fetchError ? ` <span class="warnc">(${esc(d.fetchError)})</span>` : ''}</dd>
+    </dl><div class="help">Alle cijfers per drempel staan bij <a href="#" data-go="settings">Instellingen → Eigen model</a>.</div>`
+    : '<p class="muted" style="margin:0">Nog geen model. Na de eerste geslaagde training verschijnt het hier.</p>';
+
+  // Instellingen die de trainer gebruikt
+  const c = t?.config;
+  $('tr-config').innerHTML = c ? `<dl class="kv">
+      <dt>Candles</dt><dd>${esc(c.timeframe)}, ${c.days} dagen geschiedenis</dd>
+      <dt>Winstdoel / stop</dt><dd>+${nl(c.targetPct)}% / −${nl(c.stopPct)}%</dd>
+      <dt>Maximale duur</dt><dd>${c.horizon} candles</dd>
+      <dt>Kosten per ronde</dt><dd>${nl(c.costPct, 2)}%</dd>
+      <dt>Coins</dt><dd>${c.pairs?.length ? c.pairs.map((p) => esc(p.replace('/EUR', ''))).join(', ') : `automatisch: top ${c.topN} op volume`}</dd>
+      <dt>Elke nacht om</dt><dd>${String(t.trainHour ?? 3).padStart(2, '0')}:00</dd>
+    </dl><div class="help">Deze komen van je bot. Wijzig je strategie of risico, klik dan op "Nu trainen met mijn instellingen".</div>` : '';
+
+  // Logboek: nieuwste onderaan; alleen meescrollen als je al onderaan stond.
+  const logEl = $('tr-log');
+  const atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 30;
+  const text = (t?.log ?? []).join('\n') || 'Nog geen meldingen.';
+  if (logEl.textContent !== text) { logEl.textContent = text; if (atBottom) logEl.scrollTop = logEl.scrollHeight; }
+
+  // Geschiedenis
+  const dur = (h) => h.startedAt && h.finishedAt ? Math.round((Date.parse(h.finishedAt) - Date.parse(h.startedAt)) / 1000) : null;
+  $('tr-history').innerHTML = table(t?.history ?? [], [
+    ['Wanneer', (h) => `<span class="muted">${when(h.finishedAt ?? h.startedAt)}</span>`],
+    ['Duur', (h) => { const s2 = dur(h); return s2 == null ? '–' : `${s2 >= 60 ? `${Math.floor(s2 / 60)} min ` : ''}${s2 % 60} sec`; }],
+    ['Coins', (h) => `<span class="num">${h.pairs?.length ?? '–'}</span>`, 'r'],
+    ['Voorbeelden', (h) => `<span class="num">${h.trainSamples ? `${h.trainSamples.toLocaleString('nl-NL')} / ${h.testSamples.toLocaleString('nl-NL')}` : '–'}</span>`, 'r'],
+    ['AUC', (h) => `<span class="num">${nl(h.metrics?.auc, 3)}</span>`, 'r'],
+    ['Beste drempel', (h) => h.metrics?.best ? `≥ ${Math.round(h.metrics.best.minProb * 100)}%: ${nl(h.metrics.best.winRate, 0)}% gewonnen, ${h.metrics.best.avgReturnPct > 0 ? '+' : ''}${nl(h.metrics.best.avgReturnPct, 2)}%` : '–'],
+    ['Resultaat', (h) => h.published ? '<span class="badge ok">gepubliceerd</span>' : `<span class="badge soft">niet gebruikt</span> <span class="muted" style="font-size:12.5px">${esc(h.reason ?? '')}</span>`],
+  ], 'Nog geen trainingen.', 'history');
+}
+document.addEventListener('click', (e) => {
+  const a = e.target.closest('[data-go]');
+  if (!a) return;
+  e.preventDefault();
+  go(a.dataset.go);
+});
 
 // ---------- AI-chat ----------
 let chatsLoadedAt = null, chatData = null, chatFocus = null;

@@ -52,8 +52,13 @@ class Labels(unittest.TestCase):
 class Training(unittest.TestCase):
     def test_learns_momentum_market_and_export_matches(self):
         fake = {p: market(9000, i, momentum=0.6) for i, p in enumerate(CFG['pairs'])}
-        model, report = train.train(CFG, log=lambda *_: None, fetch=lambda p, tf, d: fake[p], markets=lambda n: CFG['pairs'])
+        self._phases = []
+        model, report = train.train(CFG, log=lambda *_: None, fetch=lambda p, tf, d: fake[p], markets=lambda n: CFG['pairs'],
+                                    progress=lambda ph, d, t, txt: self._phases.append(ph))
         self.assertTrue(report['published'], report.get('reason'))
+        self.assertEqual(self._phases[:1], ['fetch'])
+        self.assertIn('train', self._phases)
+        self.assertEqual(self._phases[-1], 'test')
         self.assertGreater(report['metrics']['auc'], 0.55)
         self.assertEqual(model['features'], FEATURES)
         self.assertIn('suggestedMinProb', model['meta'])

@@ -143,15 +143,23 @@ def evaluate(probs, y, ret, cfg):
     return {'auc': auc, 'base': base, 'buckets': buckets, 'best': best, 'minTrades': min_n}
 
 
-def train(cfg, log=print, fetch=fetch_candles, markets=top_markets):
-    """Volledige training. Geeft (model_json_of_None, rapport)."""
+def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=None):
+    """Volledige training. Geeft (model_json_of_None, rapport).
+
+    progress(fase, gedaan, totaal, tekst) wordt aangeroepen zodat de status-pagina kan laten
+    zien waar de training is.
+    """
     from sklearn.ensemble import GradientBoostingClassifier
 
+    step = progress or (lambda *a: None)
     started = time.time()
+    if not cfg.get('pairs'):
+        step('markets', 0, 1, 'Coins met het meeste volume opzoeken')
     pairs = cfg.get('pairs') or markets(int(cfg.get('topN', 15)))
     tr_X, tr_y, te_X, te_y, te_ret = [], [], [], [], []
     used = []
-    for pair in pairs:
+    for n, pair in enumerate(pairs):
+        step('fetch', n, len(pairs), f'Koersen ophalen: {pair}')
         try:
             candles = fetch(pair, cfg['timeframe'], int(cfg['days']))
         except Exception as e:  # één coin die faalt mag de training niet stoppen
@@ -190,9 +198,15 @@ def train(cfg, log=print, fetch=fetch_candles, markets=top_markets):
     tr_X = _impute(tr_X, medians)
     te_X = _impute(te_X, medians)
 
-    model = GradientBoostingClassifier(n_estimators=150, max_depth=3, learning_rate=0.05,
-                                       subsample=0.8, min_samples_leaf=100, random_state=7)
-    model.fit(tr_X, tr_y)
+    # In stappen van 10 bomen trainen (warm_start), zodat de voortgang zichtbaar is.
+    total_trees = 150
+    model = GradientBoostingClassifier(n_estimators=10, max_depth=3, learning_rate=0.05,
+                                       subsample=0.8, min_samples_leaf=100, random_state=7, warm_start=True)
+    for k in range(10, total_trees + 1, 10):
+        step('train', k - 10, total_trees, f'Model trainen op {len(tr_X):,} voorbeelden'.replace(',', '.'))
+        model.n_estimators = k
+        model.fit(tr_X, tr_y)
+    step('test', 0, 1, f'Testen op {len(te_X):,} voorbeelden uit de laatste periode'.replace(',', '.'))
     probs = list(model.predict_proba(te_X)[:, 1])
     metrics = evaluate(probs, te_y, te_ret, cfg)
     exported = export_model(model, medians, te_X)
