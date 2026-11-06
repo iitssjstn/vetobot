@@ -92,7 +92,7 @@ def train_result(metrics, good):
 
 WHY = {
     'retest': 'mijn beste strategie tot nu toe, opnieuw testen op de nieuwste koersen: werkt hij nog?',
-    'near': 'een kleine variatie op wat goed werkte, misschien is dit nog beter',
+    'near': 'een variatie op mijn beste strategie tot nu toe, misschien is dit nog beter',
     'fresh': 'iets nieuws dat ik nog nooit geprobeerd heb',
     'old': 'een oude strategie opnieuw, de markt kan veranderd zijn',
 }
@@ -146,6 +146,13 @@ def search_insights(results, need, n_scored):
                      f"{low[1]}-candles het slechtst ({pct(low[0])}).")
         if low[0] < 0 and low[1] in ('1m', '5m'):
             lines.append(f'Op {low[1]} eten de kosten bijna alle winst op; de bewegingen zijn te klein.')
+    from search import tf_stats, tf_weight
+    for tf, st in sorted(tf_stats(results).items()):
+        if tf_weight(st) <= 0.1:
+            lines.append(f"{tf}-candles probeer ik voortaan bijna niet meer: {st['n']} van {st['n']} strategieën gaven verlies.")
+    best = sorted((r for r in results.values() if r.get('status') == 'bevestigd'), key=lambda r: -r['score'])
+    if best:
+        lines.append(f"Ik bouw nu vooral verder op {name(best[0])}: 2/3 van elke ronde zijn variaties daarop.")
     longs = [r for r in results.values() if r.get('score') is not None and r['holdMinutes'] >= 480]
     shorts = [r for r in results.values() if r.get('score') is not None and r['holdMinutes'] <= 120]
     if len(longs) >= 3 and len(shorts) >= 3:

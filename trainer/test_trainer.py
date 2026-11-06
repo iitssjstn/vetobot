@@ -275,6 +275,30 @@ class BuildOnBest(unittest.TestCase):
         self.assertGreaterEqual(len(set(keys[1:]) & near), 3, 'ongeveer de helft bouwt verder op de beste')
         self.assertEqual(len(keys), 6)
 
+    def test_learns_which_timeframes_work_and_builds_on_confirmed(self):
+        import search
+        cands = search.all_candidates(['1m', '30m'], 0.5)
+        results = {}
+        mk = lambda c, v, st='niet goed genoeg': {**c, 'key': search.key_of(c), 'score': v, 'status': st, 'testedAt': '2099-01-01T00:00:00Z',
+                                                  'val': {'best': {'avgReturnPct': v}}}
+        ones = [c for c in cands if c['timeframe'] == '1m'][:15]
+        for c in ones:
+            results[search.key_of(c)] = mk(c, -0.3)
+        good = next(c for c in cands if c['timeframe'] == '30m' and c['targetPct'] == 4.0 and c['stopPct'] == 2.0 and c['holdMinutes'] == 720)
+        results[search.key_of(good)] = mk(good, 0.8, 'bevestigd')
+        self.assertEqual(search.tf_weight(search.tf_stats(results)['1m']), 0.1)
+        n1m = 0
+        for seed in range(20):
+            chosen = search.pick(cands, results, 9, random.Random(seed))
+            whys = [c['_why'] for c in chosen]
+            self.assertEqual(whys.count('near'), 6, 'met een bevestigde strategie: 2/3 verder bouwen')
+            n1m += sum(1 for c in chosen if c['_why'] == 'fresh' and c['timeframe'] == '1m')
+        self.assertLess(n1m, 12, f'1m (alles verlies) bijna niet meer geprobeerd: {n1m} van 60')
+        from thoughts import search_insights
+        txt = search_insights(results, 0.3, 16)
+        self.assertIn('1m-candles probeer ik voortaan bijna niet meer', txt)
+        self.assertIn('Ik bouw nu vooral verder op 30m-candles', txt)
+
     def test_champion_switching(self):
         import search
         r = lambda k, score, st: {'key': k, 'score': score, 'status': st}

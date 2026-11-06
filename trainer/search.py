@@ -68,13 +68,41 @@ def promising(results, n=3):
     return rows[:n]
 
 
+def tf_stats(results):
+    """Wat heeft de zoeker per candle-tijd geleerd: hoeveel beoordeeld, hoeveel met winst, gemiddelde."""
+    out = {}
+    for r in results.values():
+        if r.get('score') is None or not r.get('val', {}).get('best'):
+            continue
+        st = out.setdefault(r['timeframe'], {'n': 0, 'pos': 0, 'sum': 0.0})
+        v = r['val']['best']['avgReturnPct']
+        st['n'] += 1
+        st['pos'] += v > 0
+        st['sum'] += v
+    for st in out.values():
+        st['mean'] = st['sum'] / st['n']
+    return out
+
+
+def tf_weight(st):
+    """Hoe graag nieuwe ideeën op deze candle-tijd proberen. Leert van wat al geprobeerd is:
+    een candle-tijd waar na 12+ pogingen nog niets winst gaf, krijgt nog maar weinig kansen
+    (nooit nul: de markt kan veranderen)."""
+    if not st or st['n'] < 4:
+        return 1.0
+    if st['n'] >= 12 and st['pos'] == 0:
+        return 0.1
+    return max(0.2, min(4.0, 1.0 + st['mean'] * 4 + st['pos'] / st['n']))
+
+
 def pick(cands, results, n, rnd):
     """Welke strategieën deze ronde?
 
-    - Ongeveer de helft: "verder bouwen" op wat goed werkt, door strategieën te proberen die
-      één stapje verschillen van de beste tot nu toe (iets hoger doel, iets ruimere stop, ...).
+    - Verder bouwen op wat werkt: strategieën die een stapje (of twee) verschillen van de beste
+      tot nu toe. Is er al een bevestigde strategie, dan is dat 2/3 van de ronde, anders de helft.
     - De beste wordt af en toe opnieuw getest op de nieuwste koersen (werkt hij nog steeds?).
-    - De rest: nog nooit geteste strategieën (ontdekken), daarna de langst geleden geteste.
+    - De rest: nieuwe ideeën, vaker op candle-tijden die tot nu toe goed werkten en zelden op
+      candle-tijden waar alles verlies gaf. Daarna de langst geleden geteste.
     """
     by_key = {key_of(c): c for c in cands}
     chosen, seen = [], set()
@@ -86,18 +114,26 @@ def pick(cands, results, n, rnd):
             chosen.append({**c, '_why': why})
 
     top = promising(results)
+    confirmed = any(r.get('status') == 'bevestigd' for r in results.values())
     if top:
         # De nummer 1 opnieuw testen als dat al even geleden is (de markt verandert).
         best = top[0]
         if best['key'] in by_key and best.get('testedAt', '') < time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() - 6 * 3600)):
             add(by_key[best['key']], 'retest')
+        share = max(1, (n * 2) // 3 if confirmed else n // 2)
         near = [c for t in top if t['key'] in by_key for c in neighbours(by_key[t['key']], by_key)]
         fresh_near = [c for c in near if key_of(c) not in results]
+        if len(fresh_near) < share:
+            # Directe buren al geprobeerd: een stap verder kijken (buren van de buren).
+            far = [c2 for c in near for c2 in neighbours(c, by_key)]
+            fresh_near += [c for c in far if key_of(c) not in results and c not in fresh_near]
         rnd.shuffle(fresh_near)
-        for c in fresh_near[:max(1, n // 2)]:
+        for c in fresh_near[:share]:
             add(c, 'near')
+    stats = tf_stats(results)
     fresh = [c for c in cands if key_of(c) not in results]
-    rnd.shuffle(fresh)
+    # Gewogen loting: candle-tijden die beter werkten vaker.
+    fresh.sort(key=lambda c: rnd.random() ** (1.0 / tf_weight(stats.get(c['timeframe']))), reverse=True)
     old = sorted((c for c in cands if key_of(c) in results), key=lambda c: results[key_of(c)].get('testedAt', ''))
     for c in fresh:
         add(c, 'fresh')
