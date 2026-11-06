@@ -207,6 +207,36 @@ export class Bot {
     return (this.getArms?.() ?? []).filter((a) => a.model);
   }
 
+  // Schaduwtrades afrekenen tegen de huidige prijzen.
+  async #settleShadows() {
+    if (!this.bandit.openShadows()) return;
+    const pairs = [...new Set(this.bandit.state.shadows.map((x) => x.pair))];
+    const prices = {};
+    for (const p of pairs) {
+      try { prices[p] = (await this.ex.fetchTicker(p))?.last; } catch { /* volgende keer */ }
+    }
+    const cost = (this.risk.feePct ?? 0.25) * 2;
+    for (const d of this.bandit.settleShadows(prices, cost)) {
+      const est = this.bandit.estimate(d.key).mean;
+      this.think(`Schaduwtrade afgelopen (${d.why}): strategie ${d.key.replace(/\|/g, ' · ')} had bij ${d.pair} ` +
+        `${d.pct >= 0 ? '+' : ''}${d.pct.toFixed(2).replace('.', ',')}% gehaald. Niet echt gedaan, maar ik leer er wel van: ` +
+        `mijn verwachting voor deze strategie is nu ${est >= 0 ? '+' : ''}${est.toFixed(2).replace('.', ',')}% per trade.`, d.pair, d.pct > 0 ? 'result' : 'warn');
+    }
+  }
+
+  // Na elke check waarin de strategieën gekeken hebben: één samenvatting (waarom wel/geen koop).
+  #armSummary() {
+    const notes = this.armNotes ?? [];
+    this.armNotes = [];
+    if (!notes.length) return;
+    const want = notes.filter((n) => n.willing > 0);
+    if (want.length) return; // die vertellen zelf al wat ze doen
+    const closest = notes.filter((n) => n.best).sort((a, b) => (b.best.prob - b.best.min) - (a.best.prob - a.best.min))[0];
+    this.think(`Ik heb ${notes.length} coin${notes.length === 1 ? '' : 's'} bekeken met ${this.activeArms().length} bevestigde strateg${this.activeArms().length === 1 ? 'ie' : 'ieën'}: ` +
+      'geen enkele ziet nu genoeg kans.' + (closest ? ` Dichtstbij: ${closest.pair} met ${closest.best.prob.toFixed(0)}% (nodig: ${closest.best.min.toFixed(0)}%).` : '') +
+      ` Open schaduwtrades: ${this.bandit.openShadows()}.`, null, 'info');
+  }
+
   // Het model "praat": korte zinnen over wat de bot met het model doet en waarom (dashboard).
   think(text, pair = null, kind = 'info') {
     this.thoughts = [...this.thoughts, { at: new Date().toISOString(), text, pair, kind }].slice(-60);
@@ -643,6 +673,8 @@ export class Bot {
           this.#notify('errors', { title: 'Saldo ophalen bij Bitvavo mislukt', message: err.message, level: 'error' });
         });
       }
+      await this.#settleShadows();
+      this.#armSummary();
       this.lastTickAt = new Date().toISOString();
       if (!errors) this.lastError = null;
       this.store.save();
@@ -971,6 +1003,7 @@ export class Bot {
       const ts = candles?.at(-1)?.[0];
       if (!ts || this.lastArmTs[`${pair}|${tf}`] === ts) continue; // deze candle al bekeken
       this.lastArmTs[`${pair}|${tf}`] = ts;
+      (this.lastArmClose ??= {})[`${pair}|${tf}`] = candles.at(-1)[4];
       const btc = pair === 'BTC/EUR' ? candles : await fetchClosedCandles(this.ex, 'BTC/EUR', tf, CANDLES_NEEDED).catch(() => null);
       const f = computeFeatures(candles, { btc, micro: this.getMicro?.(pair) });
       if (!f) continue;
@@ -986,6 +1019,14 @@ export class Bot {
       }
     }
     if (!evaluated) return { buy: false, reason: this.lastArmReason[pair] ?? 'Zelflerend: wacht op een nieuwe candle' };
+    // Elke strategie die wil kopen krijgt een schaduwtrade: daar leert de bandit ook van.
+    for (const x of willing) {
+      const entry = x.f && this.lastArmClose?.[`${pair}|${x.tf}`];
+      if (entry) this.bandit.addShadow({ key: x.a.key, pair, entry, at: Date.now(), targetPct: x.a.targetPct, stopPct: x.a.stopPct, holdMinutes: x.a.holdMinutes });
+    }
+    // Voor de samenvatting na deze check.
+    this.armNotes ??= [];
+    this.armNotes.push({ pair, willing: willing.length, best });
     const hold = (m) => (m >= 60 ? `${+(m / 60).toFixed(1)} uur` : `${m} min`);
     const name = (a) => `${a.timeframe} +${a.targetPct}% / −${a.stopPct}%, max ${hold(a.holdMinutes)}`;
     if (!willing.length) {

@@ -48,3 +48,25 @@ test('bandit: past zich aan als een strategie ineens slecht wordt', () => {
   for (let i = 0; i < 100; i++) if (b.pick(['a', 'b'], rnd).key === 'a') a++;
   assert.ok(a < 30, `a nog ${a}× gekozen`);
 });
+
+test('schaduwtrades: leren van trades die niet echt gedaan zijn', () => {
+  const b = new Bandit(null);
+  const t0 = 1_000_000;
+  assert.equal(b.addShadow({ key: 'a', pair: 'X/EUR', entry: 100, at: t0, targetPct: 2, stopPct: 1, holdMinutes: 60 }), true);
+  assert.equal(b.addShadow({ key: 'a', pair: 'X/EUR', entry: 101, at: t0, targetPct: 2, stopPct: 1, holdMinutes: 60 }), false, 'één tegelijk per strategie en coin');
+  b.addShadow({ key: 'b', pair: 'X/EUR', entry: 100, at: t0, targetPct: 5, stopPct: 1, holdMinutes: 60 });
+  b.addShadow({ key: 'c', pair: 'Y/EUR', entry: 10, at: t0, targetPct: 5, stopPct: 5, holdMinutes: 30 });
+  assert.deepEqual(b.settleShadows({ 'X/EUR': 101 }, 0.5, t0 + 60000), [], 'nog niets geraakt');
+  const done = b.settleShadows({ 'X/EUR': 102.1, 'Y/EUR': 10.2 }, 0.5, t0 + 31 * 60000);
+  assert.deepEqual(done.map((d) => [d.key, d.why, +d.pct.toFixed(2)]), [['a', 'doel gehaald', 1.5], ['c', 'maximale duur', 1.5]]);
+  assert.equal(b.openShadows(), 1);
+  const s = b.stats('a');
+  assert.equal(s.trades, 0, 'geen echte trade');
+  assert.equal(s.shadowTrades, 1);
+  assert.equal(s.n, 0.5, 'telt half');
+  assert.ok(b.estimate('a').mean > 0);
+  const stop = b.settleShadows({ 'X/EUR': 98.9 }, 0.5, t0 + 32 * 60000);
+  assert.equal(stop[0].why, 'stop geraakt');
+  assert.equal(+stop[0].pct.toFixed(2), -1.5);
+  assert.equal(b.summary(['a', 'b'])[0].shadowTrades, 1);
+});

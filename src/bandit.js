@@ -16,6 +16,7 @@ const DECAY = 0.97;        // per nieuwe trade van dezelfde strategie: ±33 trad
 const PRIOR_TRADES = 2;    // denkbeeldige trades met beloning 0: voorzichtig beginnen
 const MIN_SD = 0.5;        // minimale spreiding van de beloning (in %)
 const MAX_RECENT = 100;
+export const SHADOW_WEIGHT = 0.5; // een schaduwtrade telt half zo zwaar als een echte
 
 function gauss(rnd = Math.random) {
   let u = 0;
@@ -26,10 +27,10 @@ function gauss(rnd = Math.random) {
 export class Bandit {
   constructor(file) {
     this.file = file;
-    this.state = { arms: {}, recent: [] };
+    this.state = { arms: {}, recent: [], shadows: [] };
     try {
       const s = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (s && typeof s.arms === 'object') this.state = { arms: s.arms, recent: Array.isArray(s.recent) ? s.recent : [] };
+      if (s && typeof s.arms === 'object') this.state = { arms: s.arms, recent: Array.isArray(s.recent) ? s.recent : [], shadows: Array.isArray(s.shadows) ? s.shadows : [] };
     } catch {
       // nog niets geleerd
     }
@@ -75,20 +76,65 @@ export class Bandit {
     return best;
   }
 
-  // Beloning na een gesloten trade (winst/verlies in %, na kosten).
-  reward(key, pct) {
+  // Beloning na een gesloten trade (winst/verlies in %, na kosten). weight < 1 voor een
+  // schaduwtrade (niet echt gedaan, wel uitgerekend): telt mee, maar minder zwaar.
+  reward(key, pct, weight = 1) {
     if (!key || !Number.isFinite(pct)) return;
     const s = this.stats(key);
+    const d = DECAY ** weight;
+    const shadow = weight < 1;
     this.state.arms[key] = {
-      n: s.n * DECAY + 1,
-      sum: s.sum * DECAY + pct,
-      sumSq: s.sumSq * DECAY + pct * pct,
-      trades: (s.trades ?? 0) + 1,
-      total: (s.total ?? 0) + pct,
+      n: s.n * d + weight,
+      sum: s.sum * d + pct * weight,
+      sumSq: s.sumSq * d + pct * pct * weight,
+      trades: (s.trades ?? 0) + (shadow ? 0 : 1),
+      total: (s.total ?? 0) + (shadow ? 0 : pct),
+      shadowTrades: (s.shadowTrades ?? 0) + (shadow ? 1 : 0),
+      shadowTotal: (s.shadowTotal ?? 0) + (shadow ? pct : 0),
       lastPct: pct,
       lastAt: new Date().toISOString(),
     };
     this.#save();
+  }
+
+  // ---------- Schaduwtrades ----------
+  // Elke keer dat een strategie wil kopen, volgt de bandit "in gedachten" een trade met haar
+  // regels (doel, stop, maximale duur), ook als de bot hem niet echt doet: omdat een andere
+  // strategie gekozen werd, de AI nee zei, er al een positie open stond, of er geen geld was.
+  // Zo leert hij veel sneller welke strategie werkt dan alleen van echte trades.
+  addShadow(sh) {
+    const list = this.state.shadows;
+    if (list.some((x) => x.key === sh.key && x.pair === sh.pair)) return false; // al eentje open
+    list.push(sh);
+    if (list.length > 300) list.splice(0, list.length - 300);
+    this.#save();
+    return true;
+  }
+
+  // Schaduwtrades afrekenen met de huidige prijzen. prices: { pair: prijs }. costPct: kosten
+  // per ronde. Geeft de afgeronde schaduwtrades terug.
+  settleShadows(prices, costPct, now = Date.now(), weight = SHADOW_WEIGHT) {
+    const done = [];
+    this.state.shadows = this.state.shadows.filter((sh) => {
+      const p = prices[sh.pair];
+      if (!p) return now - sh.at < 7 * 86400000; // geen prijs: bewaren (maar niet eeuwig)
+      const chg = (p / sh.entry - 1) * 100;
+      let pct = null;
+      let why = '';
+      if (chg >= sh.targetPct) { pct = sh.targetPct - costPct; why = 'doel gehaald'; }
+      else if (chg <= -sh.stopPct) { pct = -sh.stopPct - costPct; why = 'stop geraakt'; }
+      else if (now - sh.at >= sh.holdMinutes * 60000) { pct = chg - costPct; why = 'maximale duur'; }
+      if (pct == null) return true;
+      this.reward(sh.key, pct, weight);
+      done.push({ ...sh, pct, why });
+      return false;
+    });
+    if (done.length) this.#save();
+    return done;
+  }
+
+  openShadows() {
+    return this.state.shadows.length;
   }
 
   // Overzicht voor het dashboard.
@@ -101,6 +147,8 @@ export class Bandit {
       return {
         key, active: keys ? keys.includes(key) : true, trades: s.trades ?? 0, totalPct: s.total ?? 0,
         avgPct: s.trades ? s.total / s.trades : null, estimatePct: mean, uncertaintyPct: sd,
+        shadowTrades: s.shadowTrades ?? 0, shadowAvgPct: s.shadowTrades ? s.shadowTotal / s.shadowTrades : null,
+        openShadows: this.state.shadows.filter((x) => x.key === key).length,
         chosenShare: recent.length ? recent.filter((k) => k === key).length / recent.length * 100 : 0,
         lastPct: s.lastPct ?? null, lastAt: s.lastAt ?? null,
       };

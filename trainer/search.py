@@ -69,18 +69,21 @@ def promising(results, n=3):
 
 
 def tf_stats(results):
-    """Wat heeft de zoeker per candle-tijd geleerd: hoeveel beoordeeld, hoeveel met winst, gemiddelde."""
+    """Wat heeft de zoeker per candle-tijd geleerd: hoeveel geprobeerd, hoeveel met winst, gemiddelde.
+    Strategieën zonder bruikbare drempel tellen ook mee als poging zonder winst."""
     out = {}
     for r in results.values():
-        if r.get('score') is None or not r.get('val', {}).get('best'):
+        if r.get('status') in (None, 'te weinig data'):
             continue
-        st = out.setdefault(r['timeframe'], {'n': 0, 'pos': 0, 'sum': 0.0})
-        v = r['val']['best']['avgReturnPct']
+        st = out.setdefault(r['timeframe'], {'n': 0, 'pos': 0, 'sum': 0.0, 'm': 0})
         st['n'] += 1
-        st['pos'] += v > 0
-        st['sum'] += v
+        best = (r.get('val') or {}).get('best')
+        if best:
+            st['m'] += 1
+            st['sum'] += best['avgReturnPct']
+            st['pos'] += (r.get('score') or 0) > 0 and best['avgReturnPct'] > 0
     for st in out.values():
-        st['mean'] = st['sum'] / st['n']
+        st['mean'] = st['sum'] / st['m'] if st['m'] else -0.2
     return out
 
 
@@ -90,8 +93,8 @@ def tf_weight(st):
     (nooit nul: de markt kan veranderen)."""
     if not st or st['n'] < 4:
         return 1.0
-    if st['n'] >= 12 and st['pos'] == 0:
-        return 0.1
+    if st['n'] >= 8 and st['pos'] == 0:
+        return 0.05
     return max(0.2, min(4.0, 1.0 + st['mean'] * 4 + st['pos'] / st['n']))
 
 

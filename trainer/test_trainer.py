@@ -280,13 +280,13 @@ class BuildOnBest(unittest.TestCase):
         cands = search.all_candidates(['1m', '30m'], 0.5)
         results = {}
         mk = lambda c, v, st='niet goed genoeg': {**c, 'key': search.key_of(c), 'score': v, 'status': st, 'testedAt': '2099-01-01T00:00:00Z',
-                                                  'val': {'best': {'avgReturnPct': v}}}
+                                                  'val': {'best': {'avgReturnPct': v}} if v is not None else {}}
         ones = [c for c in cands if c['timeframe'] == '1m'][:15]
-        for c in ones:
-            results[search.key_of(c)] = mk(c, -0.3)
+        for i, c in enumerate(ones):
+            results[search.key_of(c)] = mk(c, -0.3) if i % 2 else {**mk(c, None), 'status': 'geen bruikbare drempel'}
         good = next(c for c in cands if c['timeframe'] == '30m' and c['targetPct'] == 4.0 and c['stopPct'] == 2.0 and c['holdMinutes'] == 720)
         results[search.key_of(good)] = mk(good, 0.8, 'bevestigd')
-        self.assertEqual(search.tf_weight(search.tf_stats(results)['1m']), 0.1)
+        self.assertEqual(search.tf_weight(search.tf_stats(results)['1m']), 0.05)
         n1m = 0
         for seed in range(20):
             chosen = search.pick(cands, results, 9, random.Random(seed))

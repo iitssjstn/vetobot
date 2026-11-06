@@ -1880,7 +1880,7 @@ function renderBandit(nl) {
   const sign = (v) => v == null ? '–' : `${v > 0 ? '+' : ''}${nl(v, 2)}%`;
   $('bd-hint').textContent = b.on ? `aan · ${b.arms} bevestigde strategie${b.arms === 1 ? '' : 'ën'}` : 'uit';
   $('bd-body').innerHTML = `<p class="muted" style="margin:0;font-size:13.5px">${b.on
-    ? (b.arms ? 'De bevestigde strategieën bepalen nu zelf wanneer er gekocht wordt, elk op haar eigen candle-tijd (los van je eigen candle-instelling). Willen er meerdere kopen, dan kiest de bot er één. Na het sluiten krijgt die strategie de echte winst of het verlies als beloning; wat geld oplevert kiest hij vaker. Met weinig trades probeert hij nog veel; hoe meer trades, hoe vaker hij de beste kiest.' : 'Staat aan, maar de strategie-zoeker heeft nog geen bevestigde strategie gevonden. Tot die er is, handelt de bot met je eigen instellingen. Zorg dat de strategie-zoeker aan staat (met meerdere candle-tijden); zodra er een strategie bevestigd is, neemt dit het over.')
+    ? (b.arms ? 'De bevestigde strategieën bepalen nu zelf wanneer er gekocht wordt, elk op haar eigen candle-tijd (los van je eigen candle-instelling). Willen er meerdere kopen, dan kiest de bot er één. Na het sluiten krijgt die strategie de echte winst of het verlies als beloning; wat geld oplevert kiest hij vaker. Daarnaast volgt hij elke keer dat een strategie wil kopen een <b>schaduwtrade</b>: ook als hij die niet echt doet (andere strategie gekozen, AI zei nee, al een positie open), rekent hij uit hoe die afloopt en leert ervan (half zo zwaar als een echte trade). Zo leert hij veel sneller.' : 'Staat aan, maar de strategie-zoeker heeft nog geen bevestigde strategie gevonden. Tot die er is, handelt de bot met je eigen instellingen. Zorg dat de strategie-zoeker aan staat (met meerdere candle-tijden); zodra er een strategie bevestigd is, neemt dit het over.')
     : 'Staat uit. Zet hem aan bij Instellingen → Strategie → "Kiezen tussen strategieën" om de bot zelf te laten leren welke strategie het meeste oplevert.'}</p>`;
   const hold = (m) => m == null ? '' : m >= 60 ? `${nl(m / 60, m % 60 ? 1 : 0)} uur` : `${m} min`;
   $('bd-table').innerHTML = b.rows?.length ? table(b.rows, [
@@ -1888,6 +1888,7 @@ function renderBandit(nl) {
     ['Trades', (r) => `<span class="num">${r.trades}</span>`, 'r'],
     ['Beloning totaal', (r) => `<span class="num ${r.totalPct > 0 ? 'up' : r.totalPct < 0 ? 'down' : ''}">${r.trades ? sign(r.totalPct) : '–'}</span>`, 'r'],
     ['Gem. per trade', (r) => `<span class="num">${sign(r.avgPct)}</span>`, 'r'],
+    ['Schaduwtrades', (r) => `<span class="num">${r.shadowTrades ? `${r.shadowTrades} · ${sign(r.shadowAvgPct)}` : '–'}${r.openShadows ? ` <span class="muted">(${r.openShadows} open)</span>` : ''}</span>`, 'r'],
     ['Verwachting', (r) => `<span class="num">${sign(r.estimatePct)} <span class="muted">± ${nl(r.uncertaintyPct, 2)}</span></span>`, 'r'],
     ['Gekozen', (r) => `<span class="num">${nl(r.chosenShare, 0)}%</span>`, 'r'],
   ], '', 'target') : '';

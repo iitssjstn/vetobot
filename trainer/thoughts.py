@@ -148,8 +148,8 @@ def search_insights(results, need, n_scored):
             lines.append(f'Op {low[1]} eten de kosten bijna alle winst op; de bewegingen zijn te klein.')
     from search import tf_stats, tf_weight
     for tf, st in sorted(tf_stats(results).items()):
-        if tf_weight(st) <= 0.1:
-            lines.append(f"{tf}-candles probeer ik voortaan bijna niet meer: {st['n']} van {st['n']} strategieën gaven verlies.")
+        if tf_weight(st) <= 0.05:
+            lines.append(f"{tf}-candles probeer ik voortaan bijna niet meer: geen van de {st['n']} strategieën gaf winst.")
     best = sorted((r for r in results.values() if r.get('status') == 'bevestigd'), key=lambda r: -r['score'])
     if best:
         lines.append(f"Ik bouw nu vooral verder op {name(best[0])}: 2/3 van elke ronde zijn variaties daarop.")
