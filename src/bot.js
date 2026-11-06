@@ -905,10 +905,14 @@ export class Bot {
 
     const g = result.indicators?.agent;
     const agentPlan = g ? { stopLossPct: g.safetyStopPct, takeProfitPct: 0, maxHoldMinutes: g.maxHoldMinutes } : null;
+    // AI-trader zonder AI-controleur: de AI-trader beslist dan helemaal zelf.
+    const skipVeto = Boolean(g) && Number(this.strategy.agentVeto ?? 1) === 0;
     const team = this.settings.ai.mode === 'team' && this.settings.ai.provider !== 'none';
-    this.#step(team ? `${pair}: AI-team overlegt (analist, criticus, beslisser)` : `${pair}: AI om oordeel vragen`);
-    if (this.tickStats && this.settings.ai.provider !== 'none') this.tickStats.aiCalls++;
-    const ask = team ? askTeamChain : askVetoChain;
+    if (!skipVeto) this.#step(team ? `${pair}: AI-team overlegt (analist, criticus, beslisser)` : `${pair}: AI om oordeel vragen`);
+    if (this.tickStats && this.settings.ai.provider !== 'none' && !skipVeto) this.tickStats.aiCalls++;
+    const ask = skipVeto
+      ? async () => ({ decision: 'approve', reason: 'De AI-trader beslist zelf (AI-controleur staat uit voor de AI-trader)', provider: 'AI-trader' })
+      : team ? askTeamChain : askVetoChain;
     const veto = await ask(this.aiChain(), this.settings.ai.failMode ?? this.config.ai.failMode, {
       pair,
       timeframe,

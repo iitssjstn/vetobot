@@ -983,7 +983,7 @@ test('AI-trader: koopt en verkoopt zelf, uitkomst naar de trainer; live pas na b
   const run = async (agent, mode = 'paper') => {
     const { bot, ex } = setup({});
     await bot.setRisk({ cooldownMinutes: 0 });
-    await bot.setStrategy({ maxChasePct: 0, agentMode: 1 });
+    await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 1 });
     if (mode === 'live') bot.settings.data.mode = 'live';
     bot.getAgent = () => agent;
     bot.fb = [];
@@ -1043,4 +1043,20 @@ test('AI-trader: handelt alleen de coins die hij zelf gekozen heeft, ook buiten 
   assert.match(bot.pairStatus['BTC/EUR'].reason, /handelt deze coin niet/);
   assert.ok(bot.store.state.positions['ETH/EUR'], 'zelf gekozen coin, niet in de eigen lijst');
   assert.equal(bot.store.state.positions['ETH/EUR'].agent.recipe, '15m|1|4|200|5');
+});
+
+test('AI-trader zonder AI-controleur: geen AI-vraag, de AI-trader beslist zelf', async () => {
+  const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
+  const { bot, ex } = setup({});
+  await bot.setRisk({ cooldownMinutes: 0 });
+  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0 });
+  bot.getAgent = () => ({ ...fx.agent, stage: 'getest', entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 } });
+  withAi(bot);
+  aiAnswer = 'reject';
+  lastAiPrompt = '';
+  ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+  await bot.tick();
+  assert.ok(bot.store.state.positions['BTC/EUR'], 'gekocht ondanks dat de AI nee zou zeggen');
+  assert.equal(lastAiPrompt, '', 'AI-controleur niet gevraagd');
+  assert.match(bot.store.state.decisions[0].reason, /De AI-trader beslist zelf/);
 });

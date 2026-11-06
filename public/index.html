@@ -798,6 +798,7 @@
             <div><label for="st-confirm">Verkoopsignaal bevestigen (candles)</label><input id="st-confirm" type="number" min="1" max="20" step="1" required></div>
             <div><label for="st-hold">Minimaal in positie (candles, 0 = uit)</label><input id="st-hold" type="number" min="0" max="500" step="1" required></div>
             <div><label for="st-agent">AI-trader</label><select id="st-agent"><option value="0">Uit</option><option value="1">Aan: de AI-trader beslist zelf</option></select></div>
+            <div data-agentonly><label for="st-agentveto">AI-controleur bij de AI-trader</label><select id="st-agentveto"><option value="1">Aan: de AI-controleur mag nee zeggen</option><option value="0">Uit: de AI-trader beslist alleen</option></select></div>
             <div><label for="st-mltrial">Oefenen in paper</label><select id="st-mltrial"><option value="1">Aan: ook oefenen als hij nog niet bewezen is</option><option value="0">Uit: alleen als hij getest/bewezen is</option></select></div>
             <div data-noagent><label for="st-mlmin">Minimale modelkans (%, 0 = uit)</label><input id="st-mlmin" type="number" min="0" max="100" step="any" required></div>
             <div data-noagent><label for="st-mlregime">Marktfase waarin het model verliest</label><select id="st-mlregime"><option value="0">Alleen de AI waarschuwen</option><option value="1">Overslaan</option></select></div>
@@ -1579,6 +1580,7 @@ function renderSettings() {
     $('st-mlregime').value = String(s.strategy.mlSkipBadRegime ?? 0);
     $('st-mlbandit').value = String(s.strategy.mlBandit ?? 0);
     $('st-agent').value = String(s.strategy.agentMode ?? 0);
+    $('st-agentveto').value = String(s.strategy.agentVeto ?? 1);
     $('st-mltrial').value = String(s.strategy.mlTrialPaper ?? 1);
     agentFields();
     $('st-hold').value = s.strategy.minHoldCandles ?? 0;
@@ -1882,6 +1884,7 @@ document.querySelectorAll('details.trgroup').forEach((d) => {
 function agentFields() {
   const on = $('st-agent')?.value === '1';
   document.querySelectorAll('[data-noagent]').forEach((el) => { el.hidden = on; });
+  document.querySelectorAll('[data-agentonly]').forEach((el) => { el.hidden = !on; });
 }
 $('st-agent')?.addEventListener('change', agentFields);
 let agDirty = false;
@@ -2645,6 +2648,7 @@ const HELP = {
   'st-open': 'Normaal kijkt de bot alleen naar gesloten candles, zodat een signaal vaststaat. Met <b>Ja</b> telt ook de candle die nog loopt mee: je ziet een kruising tot een hele candle eerder, maar hij kan binnen die candle ook weer verdwijnen, waardoor je vaker te vroeg koopt. Vooral nuttig bij lange candles (1 uur of meer). Een kortere candle-tijd bij Planning is meestal de betere manier om sneller te zijn.',
   'st-mlbandit': 'Zelflerend: de bevestigde strategieën van de strategie-zoeker bepalen zelf wanneer er gekocht wordt, elk op haar eigen candle-tijd en met een eigen model, doel, stop en maximale duur (los van je eigen candle-instelling en EMA-kruisingen). Willen er meerdere kopen, dan kiest de bot er één. Na elke gesloten trade krijgt die strategie een beloning: de echte winst of het verlies. Strategieën die geld opleverden kiest hij daarna vaker; de andere probeert hij af en toe opnieuw, want het kan geluk geweest zijn of de markt kan veranderd zijn. Recente trades tellen zwaarder. De gekozen strategie bepaalt voor die trade de stop, het winstdoel en de maximale duur (jouw ATR-stop en trailing stop gelden dan niet). Zolang er nog geen bevestigde strategie is, gelden gewoon je eigen instellingen. Een positie van een strategie wordt alleen gesloten op haar eigen stop, doel of maximale duur (of handmatig). Paper en live delen hetzelfde geheugen.',
   'st-agent': 'De AI-trader van de trainer beslist zelf wanneer hij koopt en wanneer hij verkoopt: geen EMA-kruisingen, winstdoelen of vaste strategieën. Hij kijkt op zijn eigen candle-tijd (die hij zelf kiest) en verkoopt zodra hij van langer vasthouden niets meer verwacht. Alleen de noodstop (instelbaar op de pagina Trainer) en een maximale duur gelden als vangnet. Je AI (bij AI) blijft als controleur meekijken, en de orderboek-check blijft gelden. Live handelt hij pas als hij zich in de praktijk bewezen heeft; in paper zodra hij in de test winst maakte (of eerder als oefening, als "Oefenen in paper" aan staat). Staat dit aan, dan gelden minimale modelkans, marktfase en de oude strategie-keuze niet (die worden verborgen).',
+  'st-agentveto': 'Aan: elke aankoop van de AI-trader gaat eerst langs de AI-controleur (het taalmodel bij AI). Die kan nee zeggen, bijvoorbeeld bij slecht nieuws of een rare grafiek: een extra rem, maar hij kan ook goede trades tegenhouden. Uit: de AI-trader beslist helemaal zelf, sneller en zonder Groq-limieten, en leert ook van de trades die anders tegengehouden waren. Verkopen doet de AI-trader altijd zelf. De noodstop, dagelijkse verlieslimiet en orderboek-check blijven altijd gelden. Bij "Samenwerking AI + model" op de pagina Trainer zie je wie vaker gelijk had.',
   'st-mltrial': 'Alleen voor paper. Aan: de AI-trader (en bij de oude methode de proefstrategieën) handelt in paper ook als hij in de test nog geen winst maakte, zodat hij oefent en van zijn eigen trades leert. Uit: pas als hij in de test winst maakte. Live handelt hij hoe dan ook pas als hij zich in de praktijk bewezen heeft.',
   'st-mlregime': 'Het model herkent het soort markt van een coin: stijgend, zijwaarts of dalend (de trend over een langere periode, vergeleken met hoe hard de coin normaal beweegt). De trainer houdt bij hoe de trades die het model zou nemen het in elk soort markt deden op de testperiode. Verloor het model in de huidige soort markt geld (minstens 30 testtrades), dan krijgt de AI een waarschuwing. Met "Overslaan" slaat de bot zo\'n signaal helemaal over.',
   'st-btc': 'Bijna alle coins bewegen mee met Bitcoin. Met dit filter koopt de bot geen andere coins zolang BTC onder zijn gemiddelde van 50 candles ligt. BTC zelf wordt niet gefilterd.',
@@ -2824,7 +2828,7 @@ $('strat-form').onsubmit = async (e) => {
   const strategy = { emaFast: $('st-fast').value, emaSlow: $('st-slow').value, rsiPeriod: $('st-rsi').value, rsiMaxEntry: $('st-rsimax').value,
     trendEma: $('st-trend').value, adxMin: $('st-adx').value, volumeMult: $('st-vol').value, btcFilter: $('st-btc').value,
     maxChasePct: $('st-chase').value, useOpenCandle: $('st-open').value,
-    sellConfirmCandles: $('st-confirm').value, minHoldCandles: $('st-hold').value, aiStrictness: $('st-strict').value, mlMinProb: $('st-mlmin').value, mlSkipBadRegime: $('st-mlregime').value, mlBandit: $('st-mlbandit').value, mlTrialPaper: $('st-mltrial').value, agentMode: $('st-agent').value };
+    sellConfirmCandles: $('st-confirm').value, minHoldCandles: $('st-hold').value, aiStrictness: $('st-strict').value, mlMinProb: $('st-mlmin').value, mlSkipBadRegime: $('st-mlregime').value, mlBandit: $('st-mlbandit').value, mlTrialPaper: $('st-mltrial').value, agentMode: $('st-agent').value, agentVeto: $('st-agentveto').value };
   if (state.mode === 'live' && !$('st-pass').value) { $('strat-msg').className = 'msg err'; $('strat-msg').textContent = 'Vul je wachtwoord in'; return; }
   try {
     await api('api/settings/strategy', { strategy, password: $('st-pass').value });

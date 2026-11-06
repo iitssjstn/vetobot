@@ -50,6 +50,8 @@ export const config = {
     mlTrialPaper: num('ML_TRIAL_PAPER', 1),
     // 1 = de AI-trader van de trainer beslist zelf wanneer kopen en verkopen.
     agentMode: num('AGENT_MODE', 0),
+    // 1 = de AI-controleur (taalmodel) keurt ook aankopen van de AI-trader; 0 = de AI-trader beslist alleen.
+    agentVeto: num('AGENT_VETO', 1),
   },
 
   // Harde limieten. De AI kan hier nooit aan komen.
