@@ -1,6 +1,7 @@
 import json
 import os
 import random
+import re
 import tempfile
 import threading
 import time
@@ -318,6 +319,31 @@ class AutoApply(unittest.TestCase):
         self.assertEqual(s.search_info()['rounds'], 1)
         # Zelf andere instellingen kiezen: dan is het niet meer de strategie van de zoeker
         self.assertIsNone(s.validate_config({'targetPct': 3})['strategy'])
+
+
+class Thoughts(unittest.TestCase):
+    def test_model_explains_what_it_does(self):
+        import search
+        fake = {p: market(9000, i, momentum=0.6) for i, p in enumerate(CFG['pairs'])}
+        fake['BTC/EUR'] = market(9000, 99, momentum=0.3)
+        said = []
+        think = lambda text, kind='info': said.append((kind, text))
+        model, report = train.train(CFG, log=lambda *_: None, fetch=lambda p, tf, d: fake[p], markets=lambda n: CFG['pairs'], think=think)
+        texts = ' '.join(t for _, t in said)
+        self.assertIn('Ik ga een nieuw model trainen op 5m-candles', texts)
+        self.assertIn('Waar ik het meest op let', texts)
+        self.assertIn('Op de testperiode', texts)
+        self.assertIn('ik ga dit model gebruiken' if report['published'] else 'vorige model', texts)
+        said.clear()
+        cfg = {**CFG, 'search': {'enabled': True, 'timeframes': ['5m'], 'perRound': 2}, 'maxSamples': 60000}
+        search.run_round(cfg, {}, log=lambda *_: None, fetch=lambda p, tf, d: fake[p], markets=lambda n: CFG['pairs'],
+                         rnd=random.Random(3), think=think)
+        kinds = [k for k, _ in said]
+        self.assertEqual(kinds.count('doing'), 2)
+        self.assertIn('iets nieuws dat ik nog nooit geprobeerd heb', said[0][1])
+        self.assertEqual(kinds[-1], 'insight')
+        self.assertIn('eis ik minstens', said[-1][1])
+        self.assertIsNone(re.search(r'\d\.\d+%', ' '.join(t for _, t in said)), 'Nederlandse komma, geen punt')
 
 
 class Arms(unittest.TestCase):

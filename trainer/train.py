@@ -341,7 +341,7 @@ def feedback_rows(feedback, timeframe):
     return rows
 
 
-def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=None, feedback=None):
+def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=None, feedback=None, think=None):
     """Volledige training. Geeft (model_json_of_None, rapport).
 
     feedback: echte trades van de bot (zie feedback_rows). Trades van vóór de testperiode leert
@@ -353,7 +353,10 @@ def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=Non
     from sklearn.ensemble import GradientBoostingClassifier
 
     step = progress or (lambda *a: None)
+    say = think or (lambda *a, **k: None)
+    import thoughts as T
     started = time.time()
+    say(T.train_start(cfg, TF_MS.get(cfg['timeframe'], 60_000) // 60_000))
     if not cfg.get('pairs'):
         step('markets', 0, 1, 'Coins met het meeste volume opzoeken')
     pairs = cfg.get('pairs') or markets(int(cfg.get('topN', 15)))
@@ -435,6 +438,7 @@ def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=Non
     te_raw = te_X
     te_X = _impute(te_X, medians)
 
+    say(T.train_data(used, len(tr_X), len(te_X), sum(tr_y) / len(tr_y) * 100, len(fb_train)))
     # In stappen van 10 bomen trainen (warm_start), zodat de voortgang zichtbaar is.
     total_trees = 150
     model = GradientBoostingClassifier(n_estimators=10, max_depth=3, learning_rate=0.05,
@@ -443,6 +447,9 @@ def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=Non
         step('train', k - 10, total_trees, f'Model trainen op {len(tr_X):,} voorbeelden'.replace(',', '.'))
         model.n_estimators = k
         model.fit(tr_X, tr_y, sample_weight=tr_w)
+    imp = T.importance(model, FEATURES)
+    if imp:
+        say(imp)
     step('test', 0, 1, f'Testen op {len(te_X):,} voorbeelden uit de laatste periode'.replace(',', '.'))
     probs = list(model.predict_proba(te_X)[:, 1])
     metrics = evaluate(probs, te_y, te_ret, cfg)
@@ -475,6 +482,7 @@ def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=Non
         'metrics': metrics, 'seconds': round(time.time() - started, 1), 'published': good,
         'reason': None if good else 'Het model maakte op de testperiode geen duidelijke winst na kosten; het vorige model blijft in gebruik',
     })
+    say(T.train_result(metrics, good), kind='result' if good else 'warn')
     if not good:
         return None, report
     model_json = {

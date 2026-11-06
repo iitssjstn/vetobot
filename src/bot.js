@@ -47,6 +47,7 @@ export class Bot {
     this.nextTickAt = null;
     this.pairStatus = {};
     this.lastFeatures = {};
+    this.thoughts = [];
     this.activity = [];
   }
 
@@ -203,6 +204,15 @@ export class Bot {
   // Bevestigde strategieën van de trainer (elke candle-tijd), met hun eigen model.
   activeArms() {
     return (this.getArms?.() ?? []).filter((a) => a.model);
+  }
+
+  // Het model "praat": korte zinnen over wat de bot met het model doet en waarom (dashboard).
+  think(text, pair = null, kind = 'info') {
+    this.thoughts = [...this.thoughts, { at: new Date().toISOString(), text, pair, kind }].slice(-60);
+  }
+
+  static whyText(why, n = 3) {
+    return (why ?? []).slice(0, n).map((w) => `${w.label} ${w.text} (${w.effect > 0 ? '+' : ''}${Math.round(w.effect)})`).join(', ');
   }
 
   // Overzicht voor het dashboard.
@@ -738,6 +748,7 @@ export class Bot {
     if (result.signal === 'buy' && !result.armSignal) {
       const ml = await this.#modelProbability(pair, useOpen ? candles.slice(0, -1) : candles, timeframe);
       if (ml && result.indicators) { result.indicators.mlProb = ml.prob; result.indicators.mlRegime = ml.regime; result.indicators.mlWhy = ml.why; }
+      if (ml) this.think(`Kruising gezien. Mijn winstkans: ${ml.prob.toFixed(0)}%.` + (ml.why?.length ? ` Vooral door: ${Bot.whyText(ml.why)}.` : ''), pair, 'doing');
       if (ml && strategy.mlMinProb > 0 && ml.prob < strategy.mlMinProb) {
         result = { ...result, signal: 'none', filtered: true,
           reason: `Kruising, maar het eigen model geeft maar ${ml.prob.toFixed(0)}% winstkans (minimaal ${strategy.mlMinProb}%)` };
@@ -868,6 +879,12 @@ export class Bot {
     this.#trimTranscripts();
     this.#event(veto.decision === 'approve' ? 'info' : 'warn', pair,
       `AI (${veto.provider}) ${veto.decision === 'approve' ? 'keurt goed' : 'wijst af'}: ${veto.reason}`);
+    if (result.indicators?.mlProb != null) {
+      this.think(veto.decision === 'approve'
+        ? `De AI is het met me eens en keurt de aankoop goed: "${veto.reason}"`
+        : `De AI is het niet met me eens (ik gaf ${result.indicators.mlProb.toFixed(0)}%) en wijst af: "${veto.reason}". Later reken ik uit wie gelijk had.`,
+      pair, veto.decision === 'approve' ? 'result' : 'warn');
+    }
     const errList = (list) => list.map((x) => `**${x.slot}. ${x.label}**: ${x.error}`).join('\n');
     if (veto.error && veto.chainErrors) {
       this.#notify('aiFailed', {
@@ -965,6 +982,10 @@ export class Bot {
     const reason = `Zelflerend: strategie ${name(w.a)} ziet ${w.prob.toFixed(0)}% kans (min. ${w.min.toFixed(0)}%)` +
       (willing.length > 1 ? `, gekozen uit ${willing.length} die wilden kopen` : '');
     this.lastArmReason[pair] = null;
+    const nl = (v, d = 2) => v.toFixed(d).replace('.', ',');
+    this.think(`${willing.length > 1 ? `${willing.length} strategieën willen kopen. Ik kies` : 'Eén strategie wil kopen:'} ${name(w.a)}, ${nl(w.prob, 0)}% kans` +
+      ` (verwachte beloning ${choice.mean >= 0 ? '+' : ''}${nl(choice.mean)}% per trade, na ${this.bandit.stats(w.a.key).trades} trades).` +
+      (why.length ? ` Vooral door: ${Bot.whyText(why)}.` : '') + ' Nu vraag ik de AI om een tweede mening.', pair, 'doing');
     return {
       buy: true, prob: w.prob, why, reason, regime: regimeOf(w.f),
       plan: { key: w.a.key, timeframe: w.tf, stopLossPct: w.a.stopPct, takeProfitPct: w.a.targetPct, maxHoldMinutes: w.a.holdMinutes,
@@ -1321,6 +1342,13 @@ export class Bot {
       const pct = (pnlEur / pos.costEur) * 100;
       this.bandit.reward(pos.plan.key, pct);
       this.#event('info', pair, `Beloning voor strategie ${pos.plan.key.replace(/\|/g, ' · ')}: ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`);
+      const est = this.bandit.estimate(pos.plan.key).mean;
+      const st = this.bandit.stats(pos.plan.key);
+      this.think(`Trade gesloten met ${pct >= 0 ? '+' : ''}${pct.toFixed(2).replace('.', ',')}% (${reason}). ` +
+        (pct > 0 ? 'Dat is een beloning: ' : 'Dat is een straf: ') +
+        `ik ga strategie ${pos.plan.key.replace(/\|/g, ' · ')} ${pct > 0 ? 'vaker' : 'minder vaak'} kiezen. ` +
+        `Mijn verwachting voor deze strategie is nu ${est >= 0 ? '+' : ''}${est.toFixed(2).replace('.', ',')}% per trade (na ${st.trades} trades).`,
+      pair, pct > 0 ? 'result' : 'warn');
     }
     // Echte uitkomst naar de trainer (winst/verlies na kosten), zodat het model van eigen trades leert.
     if (pos.ml) {

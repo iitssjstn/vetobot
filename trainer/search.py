@@ -79,28 +79,30 @@ def pick(cands, results, n, rnd):
     by_key = {key_of(c): c for c in cands}
     chosen, seen = [], set()
 
-    def add(c):
+    def add(c, why):
         k = key_of(c)
         if k not in seen and len(chosen) < n:
             seen.add(k)
-            chosen.append(c)
+            chosen.append({**c, '_why': why})
 
     top = promising(results)
     if top:
         # De nummer 1 opnieuw testen als dat al even geleden is (de markt verandert).
         best = top[0]
         if best['key'] in by_key and best.get('testedAt', '') < time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() - 6 * 3600)):
-            add(by_key[best['key']])
+            add(by_key[best['key']], 'retest')
         near = [c for t in top if t['key'] in by_key for c in neighbours(by_key[t['key']], by_key)]
         fresh_near = [c for c in near if key_of(c) not in results]
         rnd.shuffle(fresh_near)
         for c in fresh_near[:max(1, n // 2)]:
-            add(c)
+            add(c, 'near')
     fresh = [c for c in cands if key_of(c) not in results]
     rnd.shuffle(fresh)
     old = sorted((c for c in cands if key_of(c) in results), key=lambda c: results[key_of(c)].get('testedAt', ''))
-    for c in fresh + old:
-        add(c)
+    for c in fresh:
+        add(c, 'fresh')
+    for c in old:
+        add(c, 'old')
     return chosen
 
 
@@ -129,12 +131,14 @@ def _split3(n, gap):
     return (0, max(0, a - gap)), (a, max(a, b - gap)), (b, n)
 
 
-def run_round(cfg, results, log=print, fetch=None, markets=None, progress=None, rnd=None, should_stop=None, models_out=None):
+def run_round(cfg, results, log=print, fetch=None, markets=None, progress=None, rnd=None, should_stop=None, models_out=None, think=None):
     """Eén zoekronde. Werkt `results` (dict key -> uitslag) bij en geeft de geteste keys terug."""
     from sklearn.ensemble import GradientBoostingClassifier
 
     rnd = rnd or random.Random()
     step = progress or (lambda *a: None)
+    say = think or (lambda *a, **k: None)
+    import thoughts as T
     scfg = cfg.get('search') or {}
     timeframes = scfg.get('timeframes') or DEFAULT_TIMEFRAMES
     per_round = int(scfg.get('perRound') or 6)
@@ -185,6 +189,7 @@ def run_round(cfg, results, log=print, fetch=None, markets=None, progress=None, 
                 return tested
             hold = f"{c['holdMinutes'] / 60:g} uur" if c['holdMinutes'] >= 60 else f"{c['holdMinutes']} min"
             step('search', n, len(group), f"Strategie {n + 1}/{len(group)}: {tf}, +{c['targetPct']:g}% / −{c['stopPct']:g}%, max {hold}".replace('.', ','))
+            say(T.search_try(c, c.get('_why')), kind='doing')
             started = time.time()
             parts = {'tr': ([], []), 'va': ([], [], []), 'ho': ([], [], [])}
             for pair, candles, idx, X in data:
@@ -200,7 +205,7 @@ def run_round(cfg, results, log=print, fetch=None, markets=None, progress=None, 
             trX, trY = parts['tr']
             vaX, vaY, vaR = parts['va']
             hoX, hoY, hoR = parts['ho']
-            entry = {**c, 'key': key_of(c), 'testedAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+            entry = {**{k: v for k, v in c.items() if k != '_why'}, 'key': key_of(c), 'testedAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
                      'days': cfg['days'], 'pairs': len(data)}
             if len(trX) < 1500 or len(vaX) < 200 or len(hoX) < 200 or len(set(trY)) < 2:
                 entry.update({'status': 'te weinig data', 'score': None})
@@ -248,9 +253,17 @@ def run_round(cfg, results, log=print, fetch=None, markets=None, progress=None, 
                 entry['holdout'] = ho
             results[entry['key']] = entry
             tested.append(entry['key'])
+            say(T.search_result(c, va))
             log(f"Zoeker: {tf} +{c['targetPct']:g}%/-{c['stopPct']:g}% max {c['holdMinutes']} min -> "
                 + (f"{best['avgReturnPct']:+.2f}% per trade bij >= {best['minProb']:.0%} (zomaar kopen {va['base']['avgReturnPct']:+.2f}%)" if best else 'geen bruikbare drempel'))
-    judge(results)
+    need = judge(results)
+    for k in tested:
+        msg = T.search_status(results[k], need)
+        if msg:
+            say(f"{T.name(results[k])}: {msg}", kind='result' if results[k].get('status') == 'bevestigd' else 'info')
+    n_scored = sum(1 for r in results.values() if r.get('score') is not None)
+    if tested:
+        say(T.search_insights(results, need, n_scored), kind='insight')
     return tested
 
 

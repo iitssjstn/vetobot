@@ -881,6 +881,8 @@ test('zelflerend kiezen: strategieën op elke candle-tijd bepalen zelf de aankoo
   assert.match(lastAiPrompt, /Zelflerend: strategie 15m \+2% \/ −1%, max 4 uur ziet 100% kans/);
   assert.match(lastAiPrompt, /1R \(verlies tot stop\): 1\.00%/, 'AI krijgt het plan van de gekozen strategie');
   assert.equal(bot.banditSummary().arms, 2);
+  assert.ok(bot.thoughts.some((t) => /Eén strategie wil kopen: 15m \+2% \/ −1%, max 4 uur, 100% kans/.test(t.text) && t.pair === 'BTC/EUR'), JSON.stringify(bot.thoughts));
+  assert.ok(bot.thoughts.some((t) => /De AI is het met me eens/.test(t.text)));
   // EMA-verkoopsignaal telt niet voor een strategie-positie; take-profit (2%) wel
   ex.prices = [...seq, seq.at(-1) * 1.025];
   await bot.tick();
@@ -890,6 +892,7 @@ test('zelflerend kiezen: strategieën op elke candle-tijd bepalen zelf de aankoo
   assert.equal(st.trades, 1);
   assert.ok(st.total > 0, 'beloning = de winst');
   assert.ok(bot.activity.some((a) => /Beloning voor strategie/.test(JSON.stringify(a))));
+  assert.ok(bot.thoughts.some((t) => /Trade gesloten met \+\d+,\d+%.*Dat is een beloning: ik ga strategie 15m · 2 · 1 · 240 vaker kiezen/.test(t.text)), JSON.stringify(bot.thoughts.map((t) => t.text)));
   // Nieuwe candle: mag opnieuw; daarna dezelfde candle nog eens: niet nog een keer beoordelen
   await bot.tick();
   if (bot.store.state.positions['BTC/EUR']) await bot.closeManual('BTC/EUR');

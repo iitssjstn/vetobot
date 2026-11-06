@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import search as searcher
+import thoughts
 import train as trainer
 
 DATA = os.environ.get('DATA_DIR', '/data')
@@ -81,6 +82,18 @@ def log(msg):
     line = f'{datetime.now().strftime("%Y-%m-%d %H:%M:%S")} {msg}'
     print(line, flush=True)
     state['log'] = (state['log'] + [line])[-300:]
+
+
+def think(text, kind='info'):
+    """Het model "praat": een gedachte in gewoon Nederlands (zie thoughts.py)."""
+    if not text:
+        return
+    item = {'at': datetime.now().isoformat(timespec='seconds'), 'text': text, 'kind': kind}
+    state['thoughts'] = (state.get('thoughts', []) + [item])[-200:]
+    try:
+        write_json('thoughts.json', state['thoughts'])
+    except Exception:
+        pass
 
 
 def set_progress(phase, done, total, text):
@@ -341,7 +354,7 @@ def run_training(reason):
             log(f'Training gestart ({reason}): {cfg["timeframe"]}, {cfg["days"]} dagen, doel +{cfg["targetPct"]}% / stop -{cfg["stopPct"]}%')
             cache = os.path.join(DATA, 'candles')
             fetch = lambda pair, tf, days: trainer.fetch_candles(pair, tf, days, cache_dir=cache, log=log)
-            model, report = trainer.train(cfg, log=log, progress=set_progress, fetch=fetch, feedback=load_feedback())
+            model, report = trainer.train(cfg, log=log, progress=set_progress, fetch=fetch, feedback=load_feedback(), think=think)
             report['startedAt'] = started
             report['finishedAt'] = datetime.now().isoformat(timespec='seconds')
             if model:
@@ -470,7 +483,7 @@ def search_round():
                 data = load_search()
                 models = {}
                 searcher.run_round(cfg, data['results'], log=log, fetch=fetch, markets=trainer.top_markets,
-                                   progress=set_search_progress, should_stop=lambda: state.get('wantMain'), models_out=models)
+                                   progress=set_search_progress, should_stop=lambda: state.get('wantMain'), models_out=models, think=think)
                 save_arms(data['results'], models)
                 data['lastRoundAt'] = datetime.now().isoformat(timespec='seconds')
                 data['rounds'] = data.get('rounds', 0) + 1
@@ -491,6 +504,7 @@ def search_round():
             except Exception as e:
                 log(f'Scorebord AI + model bijwerken mislukt: {e}')
     if switch:
+        think(thoughts.champion(switch, cfg['search']['autoApply']), kind='result')
         log(f"Nieuwe beste strategie gevonden: {switch['timeframe']} +{switch['targetPct']:g}% / -{switch['stopPct']:g}%, "
             f"max {switch['holdMinutes']} min ({switch['val']['best']['avgReturnPct']:+.2f}% per trade, controle {switch['holdout']['avgReturnPct']:+.2f}%)")
         if cfg['search']['autoApply']:
@@ -610,7 +624,7 @@ class Handler(BaseHTTPRequestHandler):
                 'running': state['running'], 'progress': state['progress'] if state['running'] else None,
                 'config': config(), 'nextRunAt': None if state['running'] else next_run().isoformat(timespec='minutes'), 'trainHour': TRAIN_HOUR,
                 'cache': state.get('cache', []), 'feedback': feedback_info(), 'search': search_info(),
-                'teamwork': read_json('teamwork.json', {'total': 0}),
+                'teamwork': read_json('teamwork.json', {'total': 0}), 'thoughts': state.get('thoughts', [])[-120:],
                 'model': model and model.get('meta'), 'history': state['history'], 'log': state['log'][-150:],
             })
         self.send(404, {'error': 'Niet gevonden'})
@@ -644,6 +658,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     state['history'] = read_json('history.json', [])
+    state['thoughts'] = read_json('thoughts.json', [])
     state['cache'] = cache_info()
     t = token()
     print('=' * 70, flush=True)
