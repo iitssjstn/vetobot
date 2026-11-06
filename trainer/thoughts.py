@@ -34,13 +34,16 @@ def num(n):
 
 def hold(minutes):
     if minutes >= 60:
-        h = minutes / 60
+        h = round(minutes / 60, 1)
         return f'{h:g} uur'.replace('.', ',')
-    return f'{minutes} min'
+    return f'{int(round(minutes))} min'
 
 
 def name(c):
     return f"{c['timeframe']}-candles, doel {pct(c['targetPct'], 1)} / stop {pct(-c['stopPct'], 1)}, max {hold(c['holdMinutes'])}"
+
+
+ADJ = {'stijgend': 'stijgende', 'zijwaarts': 'zijwaartse', 'dalend': 'dalende'}
 
 
 # ---------- Training ----------
@@ -80,8 +83,8 @@ def train_result(metrics, good):
     bad_r = [k for k, v in regimes.items() if v.get('avgReturnPct') is not None and v.get('nSelected', 0) >= 30 and v['avgReturnPct'] <= 0]
     if good_r or bad_r:
         s += ' ' + ' '.join(filter(None, [
-            f"In een {' en '.join(good_r)} markt doe ik het goed." if good_r else '',
-            f"In een {' en '.join(bad_r)} markt maak ik verlies, daar moet ik voorzichtig zijn." if bad_r else '',
+            f"In een {' en '.join(ADJ.get(k, k) for k in good_r)} markt doe ik het goed." if good_r else '',
+            f"In een {' en '.join(ADJ.get(k, k) for k in bad_r)} markt maak ik verlies, daar moet ik voorzichtig zijn." if bad_r else '',
         ]))
     s += (' Dat is goed genoeg: ik ga dit model gebruiken.' if good else
           ' Dat is niet overtuigend genoeg, dus ik blijf het vorige model gebruiken.')

@@ -153,6 +153,15 @@
   .alert svg { color: var(--warn); margin-top: 1px; }
   .alert.err { border-color: color-mix(in srgb, var(--down) 40%, transparent); background: var(--down-soft); }
   .alert.err svg { color: var(--down); }
+  details.trgroup { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+  details.trgroup > summary { list-style: none; cursor: pointer; padding: 14px 18px; display: flex; flex-direction: column; gap: 2px; }
+  details.trgroup > summary::-webkit-details-marker { display: none; }
+  details.trgroup > summary .tg-title { font-weight: 700; font-size: 14px; letter-spacing: .02em; text-transform: uppercase; }
+  details.trgroup > summary .tg-title::before { content: '▸'; display: inline-block; width: 1.1em; transition: transform .15s; color: var(--muted); }
+  details.trgroup[open] > summary .tg-title::before { transform: rotate(90deg); }
+  details.trgroup > summary .tg-sub { color: var(--muted); font-size: 13px; padding-left: 1.1em; }
+  details.trgroup > .panel, details.trgroup > .tr-grid { margin: 0 12px 12px; }
+  details.trgroup > .tr-grid .panel { margin: 0; }
   .think { max-height: 460px; overflow-y: auto; padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
   .tk { border: 1px solid var(--line); border-left: 3px solid var(--muted); border-radius: 10px; padding: 8px 12px; background: var(--panel-2, transparent); }
   .tk.doing { border-left-color: #8b7cf6; }
@@ -540,29 +549,26 @@
           <div class="row-actions"><button class="btn primary" type="submit">Opslaan</button><span class="msg" id="ag-msg"></span></div>
         </form>
       </div>
-      <div class="tr-grid">
-        <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Huidig model</h2></div><div class="panel-b" id="tr-model"></div></div>
-        <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-gear"/></svg>Instellingen van de trainer</h2></div><div class="panel-b" id="tr-config"></div></div>
+      <div class="panel gap" id="tr-think-panel" hidden>
+        <div class="panel-h"><h2><svg class="i"><use href="#i-chat"/></svg>Wat denkt het model?</h2><span class="hint">nieuwste onderaan</span></div>
+        <div class="think" id="think-list"></div>
+      </div>
+      <div class="panel gap" id="tr-team-panel" hidden>
+        <div class="panel-h"><h2><svg class="i"><use href="#i-pulse"/></svg>Samenwerking AI + model</h2><span class="hint" id="tw-hint"></span></div>
+        <div class="panel-b" id="tw-body"></div>
       </div>
       <div class="panel gap" id="tr-micro-panel" hidden>
         <div class="panel-h"><h2><svg class="i"><use href="#i-list"/></svg>Orderboek en transacties</h2><span class="hint" id="mc-hint"></span></div>
         <div class="panel-b" id="mc-body"></div>
         <div class="scroll" id="mc-table"></div>
       </div>
-      <div class="panel gap" id="tr-think-panel" hidden>
-        <div class="panel-h"><h2><svg class="i"><use href="#i-chat"/></svg>Wat denkt het model?</h2><span class="hint">nieuwste onderaan</span></div>
-        <div class="think" id="think-list"></div>
+      <details class="trgroup gap" id="tg-model">
+        <summary><span class="tg-title">Voorspelmodel voor de AI</span><span class="tg-sub">het model dat de AI bij elk signaal een winstkans geeft · instellingen, schema en eerdere trainingen</span></summary>
+        <div class="tr-grid">
+        <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Huidig model</h2></div><div class="panel-b" id="tr-model"></div></div>
+        <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-gear"/></svg>Instellingen van de trainer</h2></div><div class="panel-b" id="tr-config"></div></div>
       </div>
-      <div class="panel gap" id="tr-bandit-panel" hidden>
-        <div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Zelflerend kiezen (beloning)</h2><span class="hint" id="bd-hint"></span></div>
-        <div class="panel-b" id="bd-body" style="padding-bottom:6px"></div>
-        <div class="scroll" id="bd-table"></div>
-      </div>
-      <div class="panel gap" id="tr-team-panel" hidden>
-        <div class="panel-h"><h2><svg class="i"><use href="#i-pulse"/></svg>Samenwerking AI + model</h2><span class="hint" id="tw-hint"></span></div>
-        <div class="panel-b" id="tw-body"></div>
-      </div>
-      <div class="panel gap" id="tr-sched-panel">
+        <div class="panel gap" id="tr-sched-panel">
         <div class="panel-h"><h2><svg class="i"><use href="#i-history"/></svg>Wanneer trainen</h2><span class="hint" id="tr-next"></span></div>
         <form class="panel-b" id="tr-sched">
           <div class="fields">
@@ -578,8 +584,14 @@
           <div class="row-actions"><button class="btn primary" type="submit">Opslaan</button><span class="msg" id="ts-msg"></span></div>
         </form>
       </div>
-
-      <div class="panel gap" id="tr-search-panel" hidden>
+        <div class="panel gap">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-history"/></svg>Eerdere trainingen</h2></div>
+        <div class="scroll" id="tr-history"></div>
+      </div>
+      </details>
+      <details class="trgroup gap" id="tg-old">
+        <summary><span class="tg-title">Oude methode: strategie-zoeker</span><span class="tg-sub">vervangen door de AI-trader; alleen in gebruik als de AI-trader uit staat</span></summary>
+        <div class="panel gap" id="tr-search-panel" hidden>
         <div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Strategie-zoeker</h2><span class="hint" id="ss-hint"></span></div>
         <form class="panel-b" id="tr-search">
           <div class="fields">
@@ -595,15 +607,19 @@
         <div class="panel-b" id="ss-champ" style="padding-top:0"></div>
         <div class="scroll" id="ss-board"></div>
       </div>
-
-      <div class="panel gap">
+        <div class="panel gap" id="tr-bandit-panel" hidden>
+        <div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Zelflerend kiezen (beloning)</h2><span class="hint" id="bd-hint"></span></div>
+        <div class="panel-b" id="bd-body" style="padding-bottom:6px"></div>
+        <div class="scroll" id="bd-table"></div>
+      </div>
+      </details>
+      <details class="trgroup gap" id="tg-log">
+        <summary><span class="tg-title">Logboek</span><span class="tg-sub">technische regels van de trainer, live</span></summary>
+        <div class="panel gap">
         <div class="panel-h"><h2><svg class="i"><use href="#i-list"/></svg>Logboek</h2><span class="hint">live, nieuwste onderaan</span></div>
         <pre class="tr-log" id="tr-log"></pre>
       </div>
-      <div class="panel gap">
-        <div class="panel-h"><h2><svg class="i"><use href="#i-history"/></svg>Eerdere trainingen</h2></div>
-        <div class="scroll" id="tr-history"></div>
-      </div>
+      </details>
     </section>
 
     <section data-section="aichat" hidden>
@@ -780,11 +796,11 @@
             <div><label for="st-chase">Max. stijging na signaal (%)</label><input id="st-chase" type="number" min="0" max="50" step="any" required></div>
             <div><label for="st-confirm">Verkoopsignaal bevestigen (candles)</label><input id="st-confirm" type="number" min="1" max="20" step="1" required></div>
             <div><label for="st-hold">Minimaal in positie (candles, 0 = uit)</label><input id="st-hold" type="number" min="0" max="500" step="1" required></div>
-            <div><label for="st-mlmin">Minimale modelkans (%, 0 = uit)</label><input id="st-mlmin" type="number" min="0" max="100" step="any" required></div>
             <div><label for="st-agent">AI-trader</label><select id="st-agent"><option value="0">Uit</option><option value="1">Aan: de AI-trader beslist zelf</option></select></div>
-            <div><label for="st-mlbandit">Kiezen tussen strategieën</label><select id="st-mlbandit"><option value="0">Uit: mijn eigen instellingen</option><option value="1">Zelflerend (beloning)</option></select></div>
-            <div><label for="st-mltrial">Proefstrategieën in paper</label><select id="st-mltrial"><option value="1">Ook echt traden (paper)</option><option value="0">Alleen schaduwtrades</option></select></div>
-            <div><label for="st-mlregime">Marktfase waarin het model verliest</label><select id="st-mlregime"><option value="0">Alleen de AI waarschuwen</option><option value="1">Overslaan</option></select></div>
+            <div><label for="st-mltrial">Oefenen in paper</label><select id="st-mltrial"><option value="1">Aan: ook oefenen als hij nog niet bewezen is</option><option value="0">Uit: alleen als hij getest/bewezen is</option></select></div>
+            <div data-noagent><label for="st-mlmin">Minimale modelkans (%, 0 = uit)</label><input id="st-mlmin" type="number" min="0" max="100" step="any" required></div>
+            <div data-noagent><label for="st-mlregime">Marktfase waarin het model verliest</label><select id="st-mlregime"><option value="0">Alleen de AI waarschuwen</option><option value="1">Overslaan</option></select></div>
+            <div data-noagent><label for="st-mlbandit">Kiezen tussen strategieën (oude methode)</label><select id="st-mlbandit"><option value="0">Uit: mijn eigen instellingen</option><option value="1">Zelflerend (beloning)</option></select></div>
             <div><label for="st-strict">AI-strengheid</label><select id="st-strict"><option value="0">Streng: weinig, sterke trades</option><option value="1">Normaal</option><option value="2">Soepel: meer trades</option></select></div>
             <div><label for="st-open">Lopende candle meenemen</label><select id="st-open"><option value="0">Nee (aanbevolen)</option><option value="1">Ja, sneller</option></select></div>
             <div id="st-pass-wrap"><label for="st-pass">Je wachtwoord (verplicht in live)</label><input id="st-pass" type="password" autocomplete="current-password"></div>
@@ -841,11 +857,11 @@
       </div>
 
       <div class="panel gap" id="mlpanel">
-        <div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Eigen model</h2><span class="hint" id="ml-hint"></span></div>
+        <div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Trainer en eigen model</h2><span class="hint" id="ml-hint"></span></div>
         <div class="panel-b">
-          <p class="muted" style="margin:0 0 6px;font-size:13.5px">Een eigen voorspelmodel, getraind op maanden koersgeschiedenis door <b>vetobot-trainer</b> op je VPS.
-            Bij elk koopsignaal rekent de bot uit hoe groot de kans is dat de koers eerst je winstdoel haalt voordat hij je stop raakt.
-            Die kans krijgt de AI als extra argument, en met <b>Minimale modelkans</b> (bij Strategie) kun je er ook op filteren.</p>
+          <p class="muted" style="margin:0 0 6px;font-size:13.5px"><b>vetobot-trainer</b> op je VPS leert van maanden koersgeschiedenis en van je eigen trades. Hij maakt twee dingen:
+            de <b>AI-trader</b>, die zelf beslist wanneer hij koopt en verkoopt (aanzetten bij Strategie), en een <b>voorspelmodel</b> dat de AI bij elk signaal een winstkans geeft.
+            Alles wat de trainer doet en denkt zie je op de pagina <a href="#" data-go="trainer">Trainer</a>.</p>
           <form id="ml-form" data-admin>
             <div class="fields" style="margin-top:12px">
               <div><label for="ml-url">Adres van de trainer <span class="kstate" id="st-trainerUrl"></span></label>
@@ -855,7 +871,7 @@
             </div>
             <div class="row-actions">
               <button class="btn" type="submit">Opslaan</button>
-              <button class="btn primary" type="button" id="ml-train">Nu trainen met mijn instellingen</button>
+              <button class="btn primary" type="button" id="ml-train">Voorspelmodel nu trainen met mijn instellingen</button>
               <button class="btn" type="button" id="ml-fetch">Model nu ophalen</button>
               <span class="msg" id="ml-msg"></span>
             </div>
@@ -1563,6 +1579,7 @@ function renderSettings() {
     $('st-mlbandit').value = String(s.strategy.mlBandit ?? 0);
     $('st-agent').value = String(s.strategy.agentMode ?? 0);
     $('st-mltrial').value = String(s.strategy.mlTrialPaper ?? 1);
+    agentFields();
     $('st-hold').value = s.strategy.minHoldCandles ?? 0;
   }
   if (!document.activeElement?.closest('#risk-form') && !riskDirty) {
@@ -1737,7 +1754,7 @@ function renderTrainer() {
   const when = (iso) => iso ? esc(String(iso).replace('T', ' ').slice(0, 16)) : '–';
   if (!d.configured) {
     $('tr-badge').innerHTML = '<span class="badge soft">niet gekoppeld</span>';
-    $('tr-now').innerHTML = `<p style="margin:0">Er is nog geen trainer gekoppeld. Zet de trainer op je VPS (zie de README onder "Eigen model") en vul het adres en de code in bij <a href="#" data-go="settings">Instellingen → Eigen model</a>.</p>`;
+    $('tr-now').innerHTML = `<p style="margin:0">Er is nog geen trainer gekoppeld. Zet de trainer op je VPS (zie de README onder "Eigen model") en vul het adres en de code in bij <a href="#" data-go="settings">Instellingen → Trainer en eigen model</a>.</p>`;
     ['tr-model', 'tr-config', 'tr-log', 'tr-history'].forEach((id) => { $(id).innerHTML = ''; });
     return;
   }
@@ -1760,9 +1777,13 @@ function renderTrainer() {
   } else {
     const last = t.history?.[0];
     $('tr-badge').innerHTML = t.agent?.busy ? '<span class="badge wait">AI-trader leert</span>' : t.search?.searching ? '<span class="badge wait">zoekt strategieën</span>' : '<span class="badge ok">wacht</span>';
-    $('tr-now').innerHTML = `<p style="margin:0 0 4px">${t.agent?.busy ? `De AI-trader leert: ${esc(t.agent.progress?.text ?? '')}. ` : t.search?.searching ? `De strategie-zoeker is bezig: ${esc(t.search.progress?.text ?? '')}. ` : 'De trainer staat klaar. '}Volgende training: <b>${when(t.nextRunAt)}</b>.</p>
-      ${last ? `<p class="muted" style="margin:0;font-size:13.5px">Laatste training ${when(last.finishedAt ?? last.startedAt)}: ${last.published ? '<span class="up">nieuw model gepubliceerd</span>' : `<span class="warnc">geen nieuw model</span> — ${esc(last.reason ?? '')}`}</p>` : ''}
-      <div class="row-actions"><button class="btn primary" type="button" id="tr-train">Nu trainen met mijn instellingen</button><span class="msg" id="tr-msg"></span></div>`;
+    const ag = t.agent;
+    $('tr-now').innerHTML = `<p style="margin:0 0 4px">${ag?.enabled
+        ? (ag.busy ? `<b>AI-trader leert:</b> ${esc(ag.progress?.text ?? '')}.` : `<b>AI-trader:</b> leert doorlopend${ag.nextAt ? `, volgende leerronde ${when(ag.nextAt)}` : ''}${ag.published ? ` · in gebruik: ${esc(ag.published.timeframe)}-candles` : ''}.`)
+        : t.search?.searching ? `De strategie-zoeker is bezig: ${esc(t.search.progress?.text ?? '')}.` : '<b>AI-trader:</b> staat uit.'}</p>
+      <p style="margin:0 0 4px"><b>Voorspelmodel voor de AI:</b> volgende training ${when(t.nextRunAt)}.</p>
+      ${last ? `<p class="muted" style="margin:0;font-size:13.5px">Laatste training van het voorspelmodel ${when(last.finishedAt ?? last.startedAt)}: ${last.published ? '<span class="up">nieuw model gepubliceerd</span>' : `<span class="warnc">geen nieuw model</span> — ${esc(last.reason ?? '')}`}</p>` : ''}
+      <div class="row-actions"><button class="btn primary" type="button" id="tr-train">Voorspelmodel nu trainen met mijn instellingen</button><span class="msg" id="tr-msg"></span></div>`;
     $('tr-train').onclick = async () => {
       $('tr-msg').className = 'msg'; $('tr-msg').textContent = 'Starten…';
       try { await api('api/admin/trainer/train', {}); setTimeout(loadTrainer, 800); }
@@ -1785,7 +1806,7 @@ function renderTrainer() {
         ${m.metrics.live.selectedAvgReturnPct != null ? `Die het model zou nemen (${m.metrics.live.nSelected}): ${m.metrics.live.selectedAvgReturnPct > 0 ? '+' : ''}${nl(m.metrics.live.selectedAvgReturnPct, 2)}%` : ''}${m.metrics.live.skippedAvgReturnPct != null ? `, die het zou overslaan: ${m.metrics.live.skippedAvgReturnPct > 0 ? '+' : ''}${nl(m.metrics.live.skippedAvgReturnPct, 2)}%` : ''}</dd>` : ''}
       ${m.metrics?.regimes ? `<dt>Per soort markt</dt><dd>${Object.entries(m.metrics.regimes).map(([k, v]) => `<span style="white-space:nowrap">${esc(k)}: ${v.avgReturnPct == null ? '–' : `<span class="${v.avgReturnPct > 0 ? 'up' : 'down'}">${v.avgReturnPct > 0 ? '+' : ''}${nl(v.avgReturnPct, 2)}%</span>`} <span class="muted">(${v.nSelected} trades)</span></span>`).join(' · ')}</dd>` : ''}
       <dt>Opgehaald door bot</dt><dd>${d.fetchedAt ? time(d.fetchedAt) : '–'}${d.fetchError ? ` <span class="warnc">(${esc(d.fetchError)})</span>` : ''}</dd>
-    </dl><div class="help">Alle cijfers per drempel staan bij <a href="#" data-go="settings">Instellingen → Eigen model</a>.</div>`
+    </dl><div class="help">Alle cijfers per drempel staan bij <a href="#" data-go="settings">Instellingen → Trainer en eigen model</a>.</div>`
     : '<p class="muted" style="margin:0">Nog geen model. Na de eerste geslaagde training verschijnt het hier.</p>';
 
   // Schema (niet overschrijven terwijl je aan het typen bent)
@@ -1851,6 +1872,17 @@ function renderTrainer() {
 }
 // Datum/tijd kort (buiten renderTrainer; 'when' bestaat daar niet en is in de browser iets anders).
 const whenAt = (iso) => iso ? esc(String(iso).replace('T', ' ').slice(0, 16)) : '–';
+// Ingeklapte groepen op de pagina Trainer onthouden (per browser).
+document.querySelectorAll('details.trgroup').forEach((d) => {
+  try { const v = localStorage.getItem(`vb-${d.id}`); if (v != null) d.open = v === '1'; } catch { /* geen opslag */ }
+  d.addEventListener('toggle', () => { try { localStorage.setItem(`vb-${d.id}`, d.open ? '1' : '0'); } catch { /* geen opslag */ } });
+});
+// Instellingen die niet gelden als de AI-trader zelf beslist: verbergen.
+function agentFields() {
+  const on = $('st-agent')?.value === '1';
+  document.querySelectorAll('[data-noagent]').forEach((el) => { el.hidden = on; });
+}
+$('st-agent')?.addEventListener('change', agentFields);
 let agDirty = false;
 const AG_STAGE = { bewezen: ['ok', 'bewezen: mag ook live'], getest: ['wait', 'getest: handelt in paper'], oefenen: ['soft', 'oefent: nog geen winst in de test'] };
 function renderAgent(t, nl) {
@@ -2608,8 +2640,8 @@ const HELP = {
   'st-hold': 'Hoeveel candles een positie minimaal open blijft voordat het verkoopsignaal mag verkopen. Geeft een nieuwe positie de tijd om te bewegen. Stop-loss, trailing stop, take-profit en de AI-winstcheck werken altijd direct, dus je verlies blijft begrensd. <b>Gebruikelijk:</b> 3 tot 6. 0 = uit.',
   'st-open': 'Normaal kijkt de bot alleen naar gesloten candles, zodat een signaal vaststaat. Met <b>Ja</b> telt ook de candle die nog loopt mee: je ziet een kruising tot een hele candle eerder, maar hij kan binnen die candle ook weer verdwijnen, waardoor je vaker te vroeg koopt. Vooral nuttig bij lange candles (1 uur of meer). Een kortere candle-tijd bij Planning is meestal de betere manier om sneller te zijn.',
   'st-mlbandit': 'Zelflerend: de bevestigde strategieën van de strategie-zoeker bepalen zelf wanneer er gekocht wordt, elk op haar eigen candle-tijd en met een eigen model, doel, stop en maximale duur (los van je eigen candle-instelling en EMA-kruisingen). Willen er meerdere kopen, dan kiest de bot er één. Na elke gesloten trade krijgt die strategie een beloning: de echte winst of het verlies. Strategieën die geld opleverden kiest hij daarna vaker; de andere probeert hij af en toe opnieuw, want het kan geluk geweest zijn of de markt kan veranderd zijn. Recente trades tellen zwaarder. De gekozen strategie bepaalt voor die trade de stop, het winstdoel en de maximale duur (jouw ATR-stop en trailing stop gelden dan niet). Zolang er nog geen bevestigde strategie is, gelden gewoon je eigen instellingen. Een positie van een strategie wordt alleen gesloten op haar eigen stop, doel of maximale duur (of handmatig). Paper en live delen hetzelfde geheugen.',
-  'st-agent': 'De AI-trader van de trainer beslist zelf wanneer hij koopt en wanneer hij verkoopt: geen EMA-kruisingen, winstdoelen of vaste strategieën. Hij kijkt op zijn eigen candle-tijd (die hij zelf kiest) en verkoopt zodra hij van langer vasthouden niets meer verwacht. Alleen de noodstop (instelbaar op de pagina Trainer) en een maximale duur gelden als vangnet. Je AI (bij AI) blijft als controleur meekijken, en de orderboek-check blijft gelden. Live handelt hij pas als hij zich in de praktijk bewezen heeft; in paper zodra hij in de test winst maakte (of eerder als oefening, als "Proefstrategieën in paper" aan staat). Staat dit aan, dan vervangt hij "Kiezen tussen strategieën".',
-  'st-mltrial': 'Proefstrategieën zijn strategieën die de trainer zelf bedacht heeft en die op het verleden veelbelovend waren, maar nog niet bevestigd. Met "Ook echt traden (paper)" doet de bot er in paper echte (paper-)trades mee, zodat ze zich sneller kunnen bewijzen. Live traden ze nooit; daar alleen schaduwtrades. Wie het live goed doet wordt bevestigd.',
+  'st-agent': 'De AI-trader van de trainer beslist zelf wanneer hij koopt en wanneer hij verkoopt: geen EMA-kruisingen, winstdoelen of vaste strategieën. Hij kijkt op zijn eigen candle-tijd (die hij zelf kiest) en verkoopt zodra hij van langer vasthouden niets meer verwacht. Alleen de noodstop (instelbaar op de pagina Trainer) en een maximale duur gelden als vangnet. Je AI (bij AI) blijft als controleur meekijken, en de orderboek-check blijft gelden. Live handelt hij pas als hij zich in de praktijk bewezen heeft; in paper zodra hij in de test winst maakte (of eerder als oefening, als "Oefenen in paper" aan staat). Staat dit aan, dan gelden minimale modelkans, marktfase en de oude strategie-keuze niet (die worden verborgen).',
+  'st-mltrial': 'Alleen voor paper. Aan: de AI-trader (en bij de oude methode de proefstrategieën) handelt in paper ook als hij in de test nog geen winst maakte, zodat hij oefent en van zijn eigen trades leert. Uit: pas als hij in de test winst maakte. Live handelt hij hoe dan ook pas als hij zich in de praktijk bewezen heeft.',
   'st-mlregime': 'Het model herkent het soort markt van een coin: stijgend, zijwaarts of dalend (de trend over een langere periode, vergeleken met hoe hard de coin normaal beweegt). De trainer houdt bij hoe de trades die het model zou nemen het in elk soort markt deden op de testperiode. Verloor het model in de huidige soort markt geld (minstens 30 testtrades), dan krijgt de AI een waarschuwing. Met "Overslaan" slaat de bot zo\'n signaal helemaal over.',
   'st-btc': 'Bijna alle coins bewegen mee met Bitcoin. Met dit filter koopt de bot geen andere coins zolang BTC onder zijn gemiddelde van 50 candles ligt. BTC zelf wordt niet gefilterd.',
   'r-trail': 'De stop schuift mee omhoog met de koers. Bij 2% verkoopt de bot zodra de koers 2% onder het hoogste punt sinds aankoop zakt. Zo laat je winnaars doorlopen en zet je winst vast. Werkt naast de stop-loss en take-profit; zet de take-profit op 0 om winnaars echt te laten lopen. 0 = uit.',
