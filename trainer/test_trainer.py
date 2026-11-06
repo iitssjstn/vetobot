@@ -261,16 +261,76 @@ class StrategySearch(unittest.TestCase):
         self.assertEqual(search.leaderboard(res)[0], good)
 
 
+class BuildOnBest(unittest.TestCase):
+    def test_pick_explores_near_the_best_and_retests_it(self):
+        import search
+        cands = search.all_candidates(['15m', '1h'], 0.5)
+        best = next(c for c in cands if c['timeframe'] == '15m' and c['targetPct'] == 4.0 and c['stopPct'] == 2.0 and c['holdMinutes'] == 480)
+        results = {search.key_of(best): {**best, 'key': search.key_of(best), 'score': 0.3, 'status': 'niet bevestigd', 'testedAt': '2020-01-01T00:00:00Z'}}
+        chosen = search.pick(cands, results, 6, random.Random(1))
+        keys = [search.key_of(c) for c in chosen]
+        self.assertEqual(keys[0], search.key_of(best), 'de beste wordt opnieuw getest')
+        near = {search.key_of(c) for c in search.neighbours(best, {search.key_of(c): c for c in cands})}
+        self.assertGreaterEqual(len(set(keys[1:]) & near), 3, 'ongeveer de helft bouwt verder op de beste')
+        self.assertEqual(len(keys), 6)
+
+    def test_champion_switching(self):
+        import search
+        r = lambda k, score, st: {'key': k, 'score': score, 'status': st}
+        res = {'a': r('a', 0.4, 'bevestigd'), 'b': r('b', 0.42, 'bevestigd'), 'c': r('c', 0.9, 'niet bevestigd')}
+        self.assertEqual(search.choose_champion(res, None), 'b')
+        self.assertIsNone(search.choose_champion(res, 'a'), 'net iets beter is geen reden om over te stappen')
+        res['b']['score'] = 0.6
+        self.assertEqual(search.choose_champion(res, 'a'), 'b')
+        res['b']['status'] = 'niet bevestigd'
+        res['a']['status'] = 'niet bevestigd'
+        self.assertIsNone(search.choose_champion(res, 'a'))
+
+
+class AutoApply(unittest.TestCase):
+    def setUp(self):
+        os.environ.setdefault('DATA_DIR', tempfile.mkdtemp())
+        import server
+        self.s = server
+        server.write_json('search.json', {'results': {}})
+
+    def test_new_champion_switches_trainer_config_and_trains(self):
+        s = self.s
+        s.write_json('config.json', {**s.config(), 'search': {'enabled': True, 'timeframes': ['15m'], 'perRound': 2, 'pauseMinutes': 1, 'autoApply': True}})
+        found = {'key': '15m|4|2|480', 'timeframe': '15m', 'targetPct': 4.0, 'stopPct': 2.0, 'holdMinutes': 480, 'horizon': 32,
+                 'score': 0.5, 'status': 'bevestigd', 'val': {'best': {'avgReturnPct': 0.5, 'minProb': 0.6}}, 'holdout': {'avgReturnPct': 0.3}}
+        started = []
+        orig_round, orig_train = s.searcher.run_round, s.run_training
+        def fake_round(cfg, results, **kw):
+            results[found['key']] = dict(found)
+            return [found['key']]
+        s.searcher.run_round, s.run_training = fake_round, lambda reason: started.append(reason)
+        try:
+            s.search_round()
+        finally:
+            s.searcher.run_round, s.run_training = orig_round, orig_train
+        cfg = s.config()
+        self.assertEqual((cfg['timeframe'], cfg['targetPct'], cfg['stopPct'], cfg['horizon']), ('15m', 4.0, 2.0, 32))
+        self.assertEqual(cfg['strategy']['key'], found['key'])
+        self.assertTrue(cfg['strategy']['autoApply'])
+        self.assertEqual(started, ['nieuwe beste strategie'])
+        self.assertEqual(s.load_search()['champion']['key'], found['key'])
+        self.assertEqual(s.search_info()['rounds'], 1)
+        # Zelf andere instellingen kiezen: dan is het niet meer de strategie van de zoeker
+        self.assertIsNone(s.validate_config({'targetPct': 3})['strategy'])
+
+
 class Feedback(unittest.TestCase):
     def setUp(self):
         os.environ.setdefault('DATA_DIR', tempfile.mkdtemp())
         import server
         self.s = server
         server.write_json('feedback.json', [])
+        server.write_json('config.json', {})
 
     def test_search_config_validation(self):
         cfg = self.s.validate_config({'search': {'enabled': True, 'timeframes': ['5m', '15m'], 'perRound': 4}})
-        self.assertEqual(cfg['search'], {'enabled': True, 'timeframes': ['5m', '15m'], 'perRound': 4})
+        self.assertEqual(cfg['search'], {'enabled': True, 'timeframes': ['5m', '15m'], 'perRound': 4, 'pauseMinutes': 1, 'autoApply': False})
         with self.assertRaises(ValueError):
             self.s.validate_config({'search': {'timeframes': ['3m']}})
         with self.assertRaises(ValueError):

@@ -16,9 +16,10 @@ import time
 from features import FEATURES, WARMUP, context, features_at, label_at, series
 from train import TF_MS, _impute, evaluate, regime_of, REGIMES
 
-TARGETS = [0.8, 1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0]
-STOPS = [0.8, 1.2, 1.6, 2.0, 2.5, 3.5]
-HOLD_MINUTES = [30, 60, 120, 240, 480]
+TARGETS = [0.8, 1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0]
+STOPS = [0.8, 1.2, 1.6, 2.0, 2.5, 3.5, 5.0]
+HOLD_MINUTES = [30, 60, 120, 240, 480, 720, 1440]
+TF_ORDER = ['1m', '5m', '15m', '30m', '1h', '2h', '4h']
 TF_MIN = {'1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120, '4h': 240}
 
 
@@ -43,12 +44,77 @@ def all_candidates(timeframes, cost_pct):
     return out
 
 
+def neighbours(c, cands_by_key):
+    """Strategieën die één stapje verschillen (doel, stop, duur of candle-tijd)."""
+    out = []
+    for field, grid in (('targetPct', TARGETS), ('stopPct', STOPS), ('holdMinutes', HOLD_MINUTES), ('timeframe', TF_ORDER)):
+        if c[field] not in grid:
+            continue
+        i = grid.index(c[field])
+        for j in (i - 1, i + 1):
+            if 0 <= j < len(grid):
+                k = key_of({**c, field: grid[j]})
+                if k in cands_by_key:
+                    out.append(cands_by_key[k])
+    return out
+
+
+def promising(results, n=3):
+    """De beste strategieën tot nu toe (bevestigd eerst, dan op score), om verder op te bouwen."""
+    rows = [r for r in results.values() if r.get('score') is not None and r['score'] > 0]
+    rows.sort(key=lambda r: (r.get('status') == 'bevestigd', r['score']), reverse=True)
+    return rows[:n]
+
+
 def pick(cands, results, n, rnd):
-    """Eerst nog nooit geteste strategieën (willekeurig), daarna de langst geleden geteste."""
+    """Welke strategieën deze ronde?
+
+    - Ongeveer de helft: "verder bouwen" op wat goed werkt, door strategieën te proberen die
+      één stapje verschillen van de beste tot nu toe (iets hoger doel, iets ruimere stop, ...).
+    - De beste wordt af en toe opnieuw getest op de nieuwste koersen (werkt hij nog steeds?).
+    - De rest: nog nooit geteste strategieën (ontdekken), daarna de langst geleden geteste.
+    """
+    by_key = {key_of(c): c for c in cands}
+    chosen, seen = [], set()
+
+    def add(c):
+        k = key_of(c)
+        if k not in seen and len(chosen) < n:
+            seen.add(k)
+            chosen.append(c)
+
+    top = promising(results)
+    if top:
+        # De nummer 1 opnieuw testen als dat al even geleden is (de markt verandert).
+        best = top[0]
+        if best['key'] in by_key and best.get('testedAt', '') < time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() - 6 * 3600)):
+            add(by_key[best['key']])
+        near = [c for t in top if t['key'] in by_key for c in neighbours(by_key[t['key']], by_key)]
+        fresh_near = [c for c in near if key_of(c) not in results]
+        rnd.shuffle(fresh_near)
+        for c in fresh_near[:max(1, n // 2)]:
+            add(c)
     fresh = [c for c in cands if key_of(c) not in results]
     rnd.shuffle(fresh)
     old = sorted((c for c in cands if key_of(c) in results), key=lambda c: results[key_of(c)].get('testedAt', ''))
-    return (fresh + old)[:n]
+    for c in fresh + old:
+        add(c)
+    return chosen
+
+
+def choose_champion(results, current):
+    """Nieuwe beste strategie? Alleen bevestigde tellen. Overstappen als er nog geen is, als de
+    huidige niet meer bevestigd is (bij opnieuw testen), of als een andere duidelijk beter is."""
+    ok = [r for r in results.values() if r.get('status') == 'bevestigd']
+    if not ok:
+        return None
+    best = max(ok, key=lambda r: r['score'])
+    cur = results.get(current) if current else None
+    if not cur or cur.get('status') != 'bevestigd':
+        return best['key']
+    if best['key'] != current and best['score'] >= cur['score'] + 0.05:
+        return best['key']
+    return None
 
 
 def required_edge(n_tested):
@@ -61,7 +127,7 @@ def _split3(n, gap):
     return (0, max(0, a - gap)), (a, max(a, b - gap)), (b, n)
 
 
-def run_round(cfg, results, log=print, fetch=None, markets=None, progress=None, rnd=None):
+def run_round(cfg, results, log=print, fetch=None, markets=None, progress=None, rnd=None, should_stop=None):
     """Eén zoekronde. Werkt `results` (dict key -> uitslag) bij en geeft de geteste keys terug."""
     from sklearn.ensemble import GradientBoostingClassifier
 
@@ -111,7 +177,12 @@ def run_round(cfg, results, log=print, fetch=None, markets=None, progress=None, 
             log(f'Zoeker: geen bruikbare koersen voor {tf}')
             continue
         for n, c in enumerate(group):
-            step('search', n, len(group), f"Strategie {n + 1}/{len(group)}: {tf}, +{c['targetPct']:g}% / -{c['stopPct']:g}%, max {c['holdMinutes']} min")
+            if should_stop and should_stop():
+                log('Zoeker: gepauzeerd voor een training')
+                judge(results)
+                return tested
+            hold = f"{c['holdMinutes'] / 60:g} uur" if c['holdMinutes'] >= 60 else f"{c['holdMinutes']} min"
+            step('search', n, len(group), f"Strategie {n + 1}/{len(group)}: {tf}, +{c['targetPct']:g}% / −{c['stopPct']:g}%, max {hold}".replace('.', ','))
             started = time.time()
             parts = {'tr': ([], []), 'va': ([], [], []), 'ho': ([], [], [])}
             for pair, candles, idx, X in data:

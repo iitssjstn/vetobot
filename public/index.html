@@ -153,6 +153,8 @@
   .alert svg { color: var(--warn); margin-top: 1px; }
   .alert.err { border-color: color-mix(in srgb, var(--down) 40%, transparent); background: var(--down-soft); }
   .alert.err svg { color: var(--down); }
+  .alert.ok { border-color: color-mix(in srgb, var(--up) 40%, transparent); background: var(--up-soft); }
+  .alert.ok svg { color: var(--up); }
   #alerts { display: grid; gap: 8px; margin-bottom: 16px; }
   #alerts:empty { display: none; }
 
@@ -540,13 +542,16 @@
         <div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Strategie-zoeker</h2><span class="hint" id="ss-hint"></span></div>
         <form class="panel-b" id="tr-search">
           <div class="fields">
-            <div><label for="ss-on">Zoeker</label><select id="ss-on"><option value="0">Uit</option><option value="1">Aan: na elke training andere strategieën proberen</option></select></div>
+            <div><label for="ss-on">Zoeker</label><select id="ss-on"><option value="0">Uit</option><option value="1">Aan: doorlopend strategieën proberen</option></select></div>
+            <div><label for="ss-auto">Beste strategie gevonden</label><select id="ss-auto"><option value="0">Alleen tonen, ik kies zelf</option><option value="1">Automatisch overstappen</option></select></div>
             <div><label for="ss-per">Strategieën per ronde</label><input id="ss-per" type="number" min="1" max="30" step="1"></div>
+            <div><label for="ss-pause">Pauze tussen rondes (min)</label><input id="ss-pause" type="number" min="0" max="720" step="1"></div>
             <div><label>Candle-tijden om te proberen</label><div class="chips" id="ss-tfs" style="margin:0"><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="1m"> 1m</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="5m"> 5m</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="15m"> 15m</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="30m"> 30m</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="1h"> 1h</label></div></div>
           </div>
           <div class="help" id="ss-help"></div>
           <div class="row-actions"><button class="btn primary" type="submit">Opslaan</button><span class="msg" id="ss-msg"></span></div>
         </form>
+        <div class="panel-b" id="ss-champ" style="padding-top:0"></div>
         <div class="scroll" id="ss-board"></div>
       </div>
 
@@ -1667,7 +1672,7 @@ $('ml-fetch').onclick = async () => {
 
 // ---------- Pagina Trainer ----------
 let trData = null, trTimer = null;
-const TR_PHASES = [['markets', 'Coins kiezen'], ['fetch', 'Koersen ophalen'], ['train', 'Model trainen'], ['test', 'Testen'], ['search', 'Strategieën proberen']];
+const TR_PHASES = [['markets', 'Coins kiezen'], ['fetch', 'Koersen ophalen'], ['train', 'Model trainen'], ['test', 'Testen']];
 async function loadTrainer() {
   clearTimeout(trTimer);
   try { trData = await api('api/admin/trainer/status'); renderTrainer(); }
@@ -1698,14 +1703,13 @@ function renderTrainer() {
     const elapsed = p.startedAt ? Math.max(0, Math.round((Date.now() - Date.parse(p.startedAt)) / 1000)) : null;
     $('tr-badge').innerHTML = '<span class="badge wait">bezig met trainen</span>';
     $('tr-now').innerHTML = `<div style="font-size:15px"><b>${esc(p.text ?? '')}</b>${p.phase === 'fetch' ? ` <span class="muted">(${p.done + 1} van ${p.total})</span>` : ''}${p.phase === 'train' ? ` <span class="muted">(${p.done} van ${p.total} beslisbomen)</span>` : ''}</div>
-      ${p.phase === 'search' ? '<div class="muted" style="font-size:13px">Het model is klaar; de strategie-zoeker probeert nu andere strategieën. De balk hieronder is de voortgang van deze ronde.</div>' : ''}
       <div class="tr-bar" role="progressbar" aria-valuenow="${Math.round(pct)}" aria-valuemin="0" aria-valuemax="100"><i style="width:${pct.toFixed(1)}%"></i></div>
       <div class="muted" style="font-size:13px">${Math.round(pct)}% · bezig sinds ${when(p.startedAt).slice(11)}${elapsed != null ? ` (${elapsed >= 60 ? `${Math.floor(elapsed / 60)} min ` : ''}${elapsed % 60} sec)` : ''} · aanleiding: ${esc(p.reason ?? '')}</div>
       <div class="tr-steps">${TR_PHASES.map(([k, label], i) => `<span class="${i < idx ? 'done' : i === idx ? 'now' : ''}">${i < idx ? '✓ ' : ''}${label}</span>`).join('')}</div>`;
   } else {
     const last = t.history?.[0];
-    $('tr-badge').innerHTML = '<span class="badge ok">wacht</span>';
-    $('tr-now').innerHTML = `<p style="margin:0 0 4px">De trainer staat klaar. Volgende training: <b>${when(t.nextRunAt)}</b>.</p>
+    $('tr-badge').innerHTML = t.search?.searching ? '<span class="badge wait">zoekt strategieën</span>' : '<span class="badge ok">wacht</span>';
+    $('tr-now').innerHTML = `<p style="margin:0 0 4px">${t.search?.searching ? `De strategie-zoeker is bezig: ${esc(t.search.progress?.text ?? '')}. ` : 'De trainer staat klaar. '}Volgende training: <b>${when(t.nextRunAt)}</b>.</p>
       ${last ? `<p class="muted" style="margin:0;font-size:13.5px">Laatste training ${when(last.finishedAt ?? last.startedAt)}: ${last.published ? '<span class="up">nieuw model gepubliceerd</span>' : `<span class="warnc">geen nieuw model</span> — ${esc(last.reason ?? '')}`}</p>` : ''}
       <div class="row-actions"><button class="btn primary" type="button" id="tr-train">Nu trainen met mijn instellingen</button><span class="msg" id="tr-msg"></span></div>`;
     $('tr-train').onclick = async () => {
@@ -1800,15 +1804,25 @@ function renderSearch(t, nl) {
   if (!ssDirty) {
     $('ss-on').value = sc.enabled ? '1' : '0';
     $('ss-per').value = sc.perRound ?? 6;
+    $('ss-pause').value = sc.pauseMinutes ?? 1;
+    $('ss-auto').value = sc.autoApply ? '1' : '0';
     const tfs = sc.timeframes?.length ? sc.timeframes : [state?.timeframe ?? t.config?.timeframe];
     document.querySelectorAll('#ss-tfs input').forEach((el) => { el.checked = tfs.includes(el.value); });
   }
-  $('ss-hint').textContent = sc.enabled ? `${se.tested ?? 0} van ${se.possible ?? '?'} getest` : 'uit';
+  $('ss-hint').textContent = !sc.enabled ? 'uit' : se.searching ? `zoekt · ${se.tested ?? 0} van ${se.possible ?? '?'} getest` : `${se.tested ?? 0} van ${se.possible ?? '?'} getest · ${se.rounds ?? 0} rondes`;
+  const champ = se.champion && (se.leaderboard ?? []).find((x) => x.key === se.champion.key);
+  const holdTxt = (m) => m >= 60 ? `${nl(m / 60, m % 60 ? 1 : 0)} uur` : `${m} min`;
+  const sp = se.progress;
+  $('ss-champ').innerHTML = (sc.enabled ? `<p style="margin:0 0 6px">${se.searching && sp ? `<b>Bezig:</b> ${esc(sp.text ?? '')}` : se.nextRoundAt ? `Volgende ronde: <b>${when(se.nextRoundAt)}</b>` : 'Wacht tot de training klaar is.'}</p>` : '')
+    + (champ ? `<div class="alert ok" style="margin:0">${icon('target')}<div><b>Beste strategie:</b> ${esc(champ.timeframe)}-candles, +${nl(champ.targetPct)}% / −${nl(champ.stopPct)}%, max ${holdTxt(champ.holdMinutes)} — ${champ.val?.best ? `${nl(champ.val.best.avgReturnPct, 2)}% per trade, controle ${nl(champ.holdout?.avgReturnPct, 2)}%` : ''}.
+        ${t.config?.strategy?.key === champ.key ? (sc.autoApply ? ' Het model wordt hierop getraind en de bot neemt hem over zodra het klaar is.' : '') : sc.autoApply ? ' Wordt zo overgenomen.' : ' Klik op Toepassen in de ranglijst om over te stappen.'}</div></div>`
+      : sc.enabled ? '<p class="muted" style="margin:0;font-size:13.5px">Nog geen bevestigde strategie. De zoeker gaat door tot hij er een vindt, en bouwt daarna verder op de beste om een nog betere te vinden.</p>' : '');
   const sign = (v) => v == null ? '–' : `${v > 0 ? '+' : ''}${nl(v, 2)}%`;
-  $('ss-help').innerHTML = `De zoeker probeert na elke training een paar andere combinaties van winstdoel, stop, maximale duur en candle-tijd, en zet ze in een ranglijst. `
+  $('ss-help').innerHTML = `De zoeker probeert doorlopend andere combinaties van winstdoel, stop, maximale duur en candle-tijd, en zet ze in een ranglijst. `
     + `Om toeval uit te sluiten wordt elke strategie beoordeeld op een periode die het model niet gezien heeft, en moet de winnaar zich daarna nog bewijzen op de allernieuwste periode. `
     + `Hoe meer strategieën getest, hoe strenger: nu moet een strategie minstens <b>${nl(se.requiredEdge ?? 0.1, 2)}% per trade</b> beter zijn dan zomaar kopen. `
-    + `Alleen <span class="badge ok">bevestigd</span> kun je toepassen; dat zet je stop, winstdoel, maximale duur, candle-tijd en minimale modelkans en traint meteen een model daarop.`;
+    + `Ongeveer de helft van elke ronde bouwt verder op de beste tot nu toe (net iets ander doel, stop of duur), de rest zoekt nieuwe richtingen; de beste wordt regelmatig opnieuw getest op de nieuwste koersen. `
+    + `Alleen een <span class="badge ok">bevestigde</span> strategie kan worden overgenomen: met Toepassen, of vanzelf als "Automatisch overstappen" aan staat. Dan traint de trainer eerst een model op die strategie, en zet de bot daarna je stop, winstdoel, maximale duur, candle-tijd en minimale modelkans. Je krijgt daar een melding van.`;
   const rows = se.leaderboard ?? [];
   $('ss-board').innerHTML = table(rows, [
     ['Candles', (r) => esc(r.timeframe)],
@@ -1837,14 +1851,15 @@ $('ss-board').addEventListener('click', async (e) => {
     loadTrainer();
   } catch (err) { toast(esc(err.message), 'err'); b.disabled = false; }
 });
-['ss-on', 'ss-per'].forEach((id) => $(id).addEventListener('input', () => { ssDirty = true; }));
+['ss-on', 'ss-per', 'ss-pause', 'ss-auto'].forEach((id) => $(id).addEventListener('input', () => { ssDirty = true; }));
 $('ss-tfs').addEventListener('change', () => { ssDirty = true; });
 $('tr-search').onsubmit = async (e) => {
   e.preventDefault();
   const msg = (t2, c2) => { $('ss-msg').className = `msg ${c2 ?? ''}`; $('ss-msg').textContent = t2; };
   const timeframes = [...document.querySelectorAll('#ss-tfs input:checked')].map((el) => el.value);
   try {
-    await api('api/admin/trainer/search', { enabled: $('ss-on').value === '1', perRound: Number($('ss-per').value), timeframes });
+    await api('api/admin/trainer/search', { enabled: $('ss-on').value === '1', perRound: Number($('ss-per').value), timeframes,
+      pauseMinutes: Number($('ss-pause').value), autoApply: $('ss-auto').value === '1' });
     ssDirty = false;
     msg('Opgeslagen.', 'ok');
     loadTrainer();

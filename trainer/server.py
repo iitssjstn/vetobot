@@ -35,7 +35,10 @@ DEFAULTS = {'timeframe': '5m', 'days': 60, 'targetPct': 3.0, 'stopPct': 2.0, 'ho
             # training opnieuw (met een pauze van pauseMinutes).
             'schedule': {'mode': 'times', 'hours': [TRAIN_HOUR], 'everyHours': 6, 'pauseMinutes': 30},
             # Strategie-zoeker: na elke training nog een ronde andere strategieën proberen.
-            'search': {'enabled': False, 'timeframes': [], 'perRound': 6}}
+            # Doorlopend zoeken (met pauzeMinuten tussen rondes) en optioneel automatisch overstappen
+            # op de beste bevestigde strategie.
+            'search': {'enabled': False, 'timeframes': [], 'perRound': 6, 'pauseMinutes': 1, 'autoApply': False},
+            'strategy': None}
 LIMITS = {'days': (7, 365), 'targetPct': (0.2, 50), 'stopPct': (0.2, 50), 'horizon': (3, 2000),
           'costPct': (0, 5), 'topN': (1, 50), 'maxSamples': (20_000, 2_000_000)}
 
@@ -101,7 +104,10 @@ def validate_search(s, current):
     per = int(s.get('perRound') or 6)
     if not 1 <= per <= 30:
         raise ValueError('Strategieën per ronde moet tussen 1 en 30 liggen')
-    return {'enabled': bool(s.get('enabled')), 'timeframes': tfs, 'perRound': per}
+    pause = int(s.get('pauseMinutes') if s.get('pauseMinutes') is not None else 1)
+    if not 0 <= pause <= 720:
+        raise ValueError('Pauze tussen zoekrondes moet tussen 0 en 720 minuten liggen')
+    return {'enabled': bool(s.get('enabled')), 'timeframes': tfs, 'perRound': per, 'pauseMinutes': pause, 'autoApply': bool(s.get('autoApply'))}
 
 
 search_lock = threading.Lock()
@@ -117,7 +123,10 @@ def search_info():
     n = sum(1 for r in results.values() if r.get('score') is not None)
     return {'tested': len(results), 'scored': n, 'requiredEdge': searcher.required_edge(n),
             'possible': len(searcher.all_candidates(config()['search']['timeframes'] or [config()['timeframe']], config()['costPct'])),
-            'leaderboard': searcher.leaderboard(results), 'lastRoundAt': data.get('lastRoundAt')}
+            'leaderboard': searcher.leaderboard(results), 'lastRoundAt': data.get('lastRoundAt'),
+            'rounds': data.get('rounds', 0), 'champion': data.get('champion'),
+            'searching': state.get('searching', False), 'progress': state.get('searchProgress') if state.get('searching') else None,
+            'nextRoundAt': state.get('nextSearchAt')}
 
 
 def validate_schedule(s, current):
@@ -157,6 +166,11 @@ def validate_config(body):
         cfg['schedule'] = validate_schedule(body['schedule'], cfg['schedule'])
     if 'search' in body:
         cfg['search'] = validate_search(body['search'], cfg['search'])
+    # Zelf andere strategie-instellingen gekozen: dan is het niet meer de strategie van de zoeker.
+    if any(k in body for k in ('timeframe', 'targetPct', 'stopPct', 'horizon')) and 'strategy' not in body:
+        cfg['strategy'] = None
+    if 'strategy' in body:
+        cfg['strategy'] = body['strategy'] if isinstance(body['strategy'], dict) else None
     if cfg['targetPct'] <= cfg['costPct']:
         raise ValueError('Het winstdoel moet groter zijn dan de kosten per ronde')
     return cfg
@@ -227,7 +241,11 @@ def run_training(reason):
         state['running'] = True
     def job():
         started = datetime.now().isoformat(timespec='seconds')
-        state['progress'] = {'startedAt': started, 'reason': reason, 'phase': 'start', 'done': 0, 'total': 1, 'text': 'Starten'}
+        state['progress'] = {'startedAt': started, 'reason': reason, 'phase': 'start', 'done': 0, 'total': 1,
+                             'text': 'Wachten tot de strategie-zoeker klaar is met de huidige strategie' if state.get('searching') else 'Starten'}
+        state['wantMain'] = True
+        work_lock.acquire()  # niet tegelijk met de zoeker: allebei zwaar voor de processor
+        state['wantMain'] = False
         try:
             cfg = config()
             log(f'Training gestart ({reason}): {cfg["timeframe"]}, {cfg["days"]} dagen, doel +{cfg["targetPct"]}% / stop -{cfg["stopPct"]}%')
@@ -237,28 +255,20 @@ def run_training(reason):
             report['startedAt'] = started
             report['finishedAt'] = datetime.now().isoformat(timespec='seconds')
             if model:
+                if cfg.get('strategy'):
+                    model['meta']['strategy'] = cfg['strategy']
                 write_json('model.json', model)
                 log(f'Nieuw model gepubliceerd (AUC {report["metrics"]["auc"]:.3f})')
             else:
                 log(f'Geen nieuw model: {report.get("reason")}')
             state['history'] = ([report] + state['history'])[:10]
             write_json('history.json', state['history'])
-            if cfg['search']['enabled']:
-                log(f'Strategie-zoeker: {cfg["search"]["perRound"]} strategieën proberen')
-                with search_lock:
-                    data = load_search()
-                    searcher.run_round(cfg, data['results'], log=log, fetch=fetch, markets=trainer.top_markets, progress=set_progress)
-                    data['lastRoundAt'] = datetime.now().isoformat(timespec='seconds')
-                    write_json('search.json', data)
-                top = searcher.leaderboard(data['results'], 1)
-                if top and top[0].get('status') == 'bevestigd':
-                    t = top[0]
-                    log(f"Beste bevestigde strategie: {t['timeframe']} +{t['targetPct']:g}% / -{t['stopPct']:g}%, max {t['holdMinutes']} min")
         except Exception as e:
             log(f'Training mislukt: {e}')
             traceback.print_exc()
             state['history'] = ([{'startedAt': started, 'published': False, 'reason': f'Fout: {e}'}] + state['history'])[:10]
         finally:
+            work_lock.release()
             state['running'] = False
             state['lastFinished'] = datetime.now()
             state['cache'] = cache_info()
@@ -303,6 +313,81 @@ def scheduler():
         if state['running'] or datetime.now() < next_run():
             continue
         run_training(SCHEDULE_REASON.get(config()['schedule']['mode'], 'geplande training'))
+
+
+work_lock = threading.Lock()
+search_wake = threading.Event()
+
+
+def set_search_progress(phase, done, total, text):
+    p = state.get('searchProgress') or {}
+    state['searchProgress'] = {**p, 'phase': phase, 'done': done, 'total': total, 'text': text}
+
+
+def search_round():
+    """Eén ronde van de zoeker; stapt daarna eventueel over op een nieuwe beste strategie."""
+    cfg = config()
+    cache = os.path.join(DATA, 'candles')
+    fetch = lambda pair, tf, days: trainer.fetch_candles(pair, tf, days, cache_dir=cache)
+    switch = None
+    with work_lock:
+        state['searching'] = True
+        state['searchProgress'] = {'startedAt': datetime.now().isoformat(timespec='seconds'), 'phase': 'search', 'done': 0, 'total': 1, 'text': 'Starten'}
+        try:
+            with search_lock:
+                data = load_search()
+                searcher.run_round(cfg, data['results'], log=log, fetch=fetch, markets=trainer.top_markets,
+                                   progress=set_search_progress, should_stop=lambda: state.get('wantMain'))
+                data['lastRoundAt'] = datetime.now().isoformat(timespec='seconds')
+                data['rounds'] = data.get('rounds', 0) + 1
+                current = (data.get('champion') or {}).get('key')
+                new = searcher.choose_champion(data['results'], current)
+                if new:
+                    r = data['results'][new]
+                    data['champion'] = {'key': new, 'since': data['lastRoundAt'], 'score': r['score']}
+                    switch = r
+                elif current and current in data['results']:
+                    data['champion']['score'] = data['results'][current].get('score')
+                write_json('search.json', data)
+        finally:
+            state['searching'] = False
+            state['cache'] = cache_info()
+    if switch:
+        log(f"Nieuwe beste strategie gevonden: {switch['timeframe']} +{switch['targetPct']:g}% / -{switch['stopPct']:g}%, "
+            f"max {switch['holdMinutes']} min ({switch['val']['best']['avgReturnPct']:+.2f}% per trade, controle {switch['holdout']['avgReturnPct']:+.2f}%)")
+        if cfg['search']['autoApply']:
+            saved = read_json('config.json', {})
+            saved.update({'timeframe': switch['timeframe'], 'targetPct': switch['targetPct'], 'stopPct': switch['stopPct'],
+                          'horizon': switch['horizon'],
+                          'strategy': {'key': switch['key'], 'timeframe': switch['timeframe'], 'targetPct': switch['targetPct'],
+                                       'stopPct': switch['stopPct'], 'holdMinutes': switch['holdMinutes'],
+                                       'minProb': switch['val']['best']['minProb'], 'autoApply': True}})
+            write_json('config.json', saved)
+            log('Automatisch overstappen staat aan: model wordt nu getraind op deze strategie; de bot neemt hem over zodra het model klaar is')
+            run_training('nieuwe beste strategie')
+
+
+def search_worker():
+    """Zoekt doorlopend zolang de zoeker aan staat, met een korte pauze tussen rondes."""
+    while True:
+        cfg = config()
+        if not cfg['search']['enabled']:
+            state['nextSearchAt'] = None
+            search_wake.clear()
+            search_wake.wait(timeout=60)
+            continue
+        if state['running'] or state.get('wantMain'):
+            time.sleep(5)
+            continue
+        try:
+            search_round()
+        except Exception as e:
+            log(f'Zoeker: ronde mislukt: {e}')
+            traceback.print_exc()
+        pause = int(config()['search'].get('pauseMinutes') or 0)
+        state['nextSearchAt'] = (datetime.now() + timedelta(minutes=pause)).isoformat(timespec='minutes')
+        search_wake.clear()
+        search_wake.wait(timeout=max(5, pause * 60))
 
 
 def cache_info():
@@ -396,6 +481,7 @@ class Handler(BaseHTTPRequestHandler):
             write_json('config.json', cfg)
             log('Instellingen bijgewerkt door vetobot')
             wake.set()
+            search_wake.set()
             return self.send(200, {'ok': True, 'config': cfg})
         if self.path == '/feedback':
             added = add_feedback(body.get('trades'))
@@ -416,6 +502,7 @@ def main():
     print(f' Volgende training: {next_run():%Y-%m-%d %H:%M}', flush=True)
     print('=' * 70, flush=True)
     threading.Thread(target=scheduler, daemon=True).start()
+    threading.Thread(target=search_worker, daemon=True).start()
     ThreadingHTTPServer(('0.0.0.0', PORT), Handler).serve_forever()
 
 

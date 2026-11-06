@@ -267,3 +267,33 @@ test('feedback: echte trades gaan naar de trainer, en wachten als hij onbereikba
   assert.deepEqual(sent[0].body.trades.map((t) => t.pair), ['ETH/EUR', 'SOL/EUR']);
   manager.stopAll();
 });
+
+test('automatisch overstappen: nieuwe beste strategie van de trainer wordt één keer overgenomen', async () => {
+  const { admin, manager } = setup();
+  const a = manager.ensure(admin);
+  a.secrets.update({ trainerUrl: 'http://10.0.0.5:8787', trainerToken: 'geheim' });
+  let version = 1;
+  const strategy = { key: '15m|4|2|480', timeframe: '15m', targetPct: 4, stopPct: 2, holdMinutes: 480, minProb: 0.6, autoApply: true };
+  manager.fetchImpl = async () => ({
+    status: 200, ok: true, headers: new Map([['etag', `"v${version}"`]]),
+    json: async () => ({ ...fixture.model, meta: { timeframe: '15m', strategy, metrics: { best: { minProb: 0.62 } } } }),
+  });
+  await manager.refreshModel();
+  assert.equal(a.bot.timeframe, '15m');
+  assert.equal(a.bot.risk.takeProfitPct, 4);
+  assert.equal(a.bot.risk.stopLossPct, 2);
+  assert.equal(a.bot.risk.maxHoldMinutes, 480);
+  assert.equal(a.settings.strategy.mlMinProb, 62);
+  // Zelf aangepast; een nieuw model met dezelfde strategie zet het niet terug
+  await a.bot.setRisk({ stopLossPct: 3 });
+  version = 2;
+  await manager.refreshModel();
+  assert.equal(a.bot.risk.stopLossPct, 3);
+  // Zonder autoApply: niets overnemen
+  strategy.key = '1h|3|2|720';
+  strategy.autoApply = false;
+  version = 3;
+  await manager.refreshModel();
+  assert.equal(a.bot.timeframe, '15m');
+  manager.stopAll();
+});

@@ -19,6 +19,7 @@ export const NOTIFY_EVENTS = {
   aiFallback: 'Back-upmodel nam het over van de AI',
   aiFailed: 'Alle AI-modellen faalden',
   dailySummary: 'Dagelijks overzicht',
+  strategy: 'Automatisch overgestapt op een nieuwe strategie (trainer)',
 };
 
 const COLORS = { info: 0x5aa9f0, ok: 0x3ccf8e, warn: 0xf0b24a, error: 0xf26d6d, live: 0xf26d6d };

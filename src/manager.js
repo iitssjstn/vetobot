@@ -148,6 +148,7 @@ export class BotManager {
         this.ml.etag = r.etag;
         fs.writeFileSync(this.#modelFile(), JSON.stringify(r.data));
         this.log.info(`Eigen model bijgewerkt (getraind ${r.data.meta?.trainedAt ?? 'onbekend'})`);
+        await this.#autoApplyStrategy(r.data).catch((err) => this.log.error(`Strategie overnemen mislukt: ${err.message}`));
       }
       this.ml.error = null;
     } catch (err) {
@@ -155,6 +156,43 @@ export class BotManager {
     }
     this.ml.fetchedAt = new Date().toISOString();
     return this.ml;
+  }
+
+  // De trainer vond een nieuwe beste strategie en trainde er een model op ("automatisch
+  // overstappen" aan). Zet de admin-bot op die strategie: candle-tijd, stop, winstdoel, maximale
+  // duur en minimale modelkans. Volgers volgen de admin vanzelf. Elke strategie maar één keer,
+  // zodat je hem daarna zelf nog kunt aanpassen.
+  #appliedFile() {
+    return path.join(this.root, 'ml-applied.json');
+  }
+
+  async #autoApplyStrategy(model) {
+    const s = model?.meta?.strategy;
+    if (!s?.autoApply || !s.key) return false;
+    let applied = {};
+    try { applied = JSON.parse(fs.readFileSync(this.#appliedFile(), 'utf8')); } catch { applied = {}; }
+    if (applied.key === s.key) return false;
+    const admin = this.users.admin;
+    const ctx = admin && this.contexts.get(admin.id);
+    if (!ctx) return false;
+    const { bot } = ctx;
+    const before = { timeframe: bot.timeframe, stopLossPct: bot.risk.stopLossPct, takeProfitPct: bot.risk.takeProfitPct, maxHoldMinutes: bot.risk.maxHoldMinutes };
+    if (s.timeframe !== bot.timeframe) await bot.setSchedule({ timeframe: s.timeframe, checkIntervalMinutes: bot.checkIntervalMinutes });
+    await bot.setRisk({ stopLossPct: s.stopPct, takeProfitPct: s.targetPct, maxHoldMinutes: s.holdMinutes });
+    const best = model.meta?.metrics?.best?.minProb ?? s.minProb;
+    const minProb = best ? Math.round(best * 100) : null;
+    if (minProb) await bot.setStrategy({ mlMinProb: minProb });
+    fs.writeFileSync(this.#appliedFile(), JSON.stringify({ key: s.key, at: new Date().toISOString(), before }));
+    this.ml.appliedStrategy = { key: s.key, at: new Date().toISOString() };
+    const hold = s.holdMinutes >= 60 ? `${s.holdMinutes / 60} uur` : `${s.holdMinutes} min`;
+    const text = `${s.timeframe}-candles, winstdoel +${s.targetPct}%, stop −${s.stopPct}%, maximaal ${hold}${minProb ? `, minimale modelkans ${minProb}%` : ''}`;
+    this.log.warn(`Automatisch overgestapt op de beste strategie van de trainer: ${text}`);
+    ctx.notifier?.send('strategy', {
+      title: 'Nieuwe strategie van de trainer',
+      message: `De trainer vond een betere strategie en de bot is overgestapt: ${text}. Dit is getest op het verleden; geen garantie voor de toekomst.`,
+      level: 'info',
+    }).catch(() => {});
+    return true;
   }
 
   dirOf(userId) {

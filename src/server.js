@@ -474,7 +474,8 @@ export function createApp({ users, manager, log = console }) {
   // Strategie-zoeker aan/uit en instellingen.
   app.post('/api/admin/trainer/search', adminOnly, wrap(async (req) => {
     const b = req.body ?? {};
-    const search = { enabled: Boolean(b.enabled), timeframes: Array.isArray(b.timeframes) ? b.timeframes.map(String) : [], perRound: Number(b.perRound) || 6 };
+    const search = { enabled: Boolean(b.enabled), timeframes: Array.isArray(b.timeframes) ? b.timeframes.map(String) : [], perRound: Number(b.perRound) || 6,
+      pauseMinutes: Number.isFinite(Number(b.pauseMinutes)) ? Number(b.pauseMinutes) : 1, autoApply: Boolean(b.autoApply) };
     const r = await manager.trainerRequest('/config', { method: 'POST', body: { search } });
     log.info(`Strategie-zoeker gewijzigd door ${req.user.username}: ${JSON.stringify(search)}`);
     return { ok: true, config: r.data.config };
