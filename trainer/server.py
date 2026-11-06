@@ -22,6 +22,7 @@ import traceback
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import search as searcher
 import train as trainer
 
 DATA = os.environ.get('DATA_DIR', '/data')
@@ -32,7 +33,9 @@ DEFAULTS = {'timeframe': '5m', 'days': 60, 'targetPct': 3.0, 'stopPct': 2.0, 'ho
             'costPct': 0.5, 'pairs': [], 'topN': 15, 'maxSamples': 300_000,
             # Wanneer trainen: 'times' = vaste uren, 'interval' = elke X uur, 'continuous' = na elke
             # training opnieuw (met een pauze van pauseMinutes).
-            'schedule': {'mode': 'times', 'hours': [TRAIN_HOUR], 'everyHours': 6, 'pauseMinutes': 30}}
+            'schedule': {'mode': 'times', 'hours': [TRAIN_HOUR], 'everyHours': 6, 'pauseMinutes': 30},
+            # Strategie-zoeker: na elke training nog een ronde andere strategieën proberen.
+            'search': {'enabled': False, 'timeframes': [], 'perRound': 6}}
 LIMITS = {'days': (7, 365), 'targetPct': (0.2, 50), 'stopPct': (0.2, 50), 'horizon': (3, 2000),
           'costPct': (0, 5), 'topN': (1, 50), 'maxSamples': (20_000, 2_000_000)}
 
@@ -86,7 +89,35 @@ def config():
     saved = read_json('config.json', {})
     cfg = {**DEFAULTS, **saved}
     cfg['schedule'] = {**DEFAULTS['schedule'], **(saved.get('schedule') or {})}
+    cfg['search'] = {**DEFAULTS['search'], **(saved.get('search') or {})}
     return cfg
+
+
+def validate_search(s, current):
+    s = {**current, **(s or {})}
+    tfs = [str(t) for t in s.get('timeframes') or []]
+    if any(t not in searcher.TF_MIN for t in tfs) or len(tfs) > 5:
+        raise ValueError('Onbekende candle-tijd voor de strategie-zoeker')
+    per = int(s.get('perRound') or 6)
+    if not 1 <= per <= 30:
+        raise ValueError('Strategieën per ronde moet tussen 1 en 30 liggen')
+    return {'enabled': bool(s.get('enabled')), 'timeframes': tfs, 'perRound': per}
+
+
+search_lock = threading.Lock()
+
+
+def load_search():
+    return read_json('search.json', {'results': {}})
+
+
+def search_info():
+    data = load_search()
+    results = data.get('results', {})
+    n = sum(1 for r in results.values() if r.get('score') is not None)
+    return {'tested': len(results), 'scored': n, 'requiredEdge': searcher.required_edge(n),
+            'possible': len(searcher.all_candidates(config()['search']['timeframes'] or [config()['timeframe']], config()['costPct'])),
+            'leaderboard': searcher.leaderboard(results), 'lastRoundAt': data.get('lastRoundAt')}
 
 
 def validate_schedule(s, current):
@@ -124,6 +155,8 @@ def validate_config(body):
         cfg['pairs'] = pairs
     if 'schedule' in body:
         cfg['schedule'] = validate_schedule(body['schedule'], cfg['schedule'])
+    if 'search' in body:
+        cfg['search'] = validate_search(body['search'], cfg['search'])
     if cfg['targetPct'] <= cfg['costPct']:
         raise ValueError('Het winstdoel moet groter zijn dan de kosten per ronde')
     return cfg
@@ -210,6 +243,17 @@ def run_training(reason):
                 log(f'Geen nieuw model: {report.get("reason")}')
             state['history'] = ([report] + state['history'])[:10]
             write_json('history.json', state['history'])
+            if cfg['search']['enabled']:
+                log(f'Strategie-zoeker: {cfg["search"]["perRound"]} strategieën proberen')
+                with search_lock:
+                    data = load_search()
+                    searcher.run_round(cfg, data['results'], log=log, fetch=fetch, markets=trainer.top_markets, progress=set_progress)
+                    data['lastRoundAt'] = datetime.now().isoformat(timespec='seconds')
+                    write_json('search.json', data)
+                top = searcher.leaderboard(data['results'], 1)
+                if top and top[0].get('status') == 'bevestigd':
+                    t = top[0]
+                    log(f"Beste bevestigde strategie: {t['timeframe']} +{t['targetPct']:g}% / -{t['stopPct']:g}%, max {t['holdMinutes']} min")
         except Exception as e:
             log(f'Training mislukt: {e}')
             traceback.print_exc()
@@ -331,7 +375,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {
                 'running': state['running'], 'progress': state['progress'] if state['running'] else None,
                 'config': config(), 'nextRunAt': None if state['running'] else next_run().isoformat(timespec='minutes'), 'trainHour': TRAIN_HOUR,
-                'cache': state.get('cache', []), 'feedback': feedback_info(),
+                'cache': state.get('cache', []), 'feedback': feedback_info(), 'search': search_info(),
                 'model': model and model.get('meta'), 'history': state['history'], 'log': state['log'][-150:],
             })
         self.send(404, {'error': 'Niet gevonden'})

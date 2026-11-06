@@ -812,3 +812,28 @@ test('eigen model: winstkans bij het signaal, minimale kans filtert, AI krijgt d
   bot.getModel = () => ({ ...fixture.model, meta: { timeframe: '5m' } });
   assert.equal(bot.store.state.decisions.length, 0);
 });
+
+test('eigen model: marktfase waarin het model verliest → AI gewaarschuwd, of overslaan', async () => {
+  const fixture = JSON.parse(fs.readFileSync(new URL('./fixtures/ml-parity.json', import.meta.url), 'utf8'));
+  const bad = { n: 500, nSelected: 120, avgReturnPct: -0.4, baseAvgReturnPct: -0.5 };
+  const run = async (skip) => {
+    const { bot, ex } = setup({});
+    await bot.setRisk({ cooldownMinutes: 0 });
+    await bot.setStrategy({ mlMinProb: 0, maxChasePct: 0, mlSkipBadRegime: skip });
+    const model = { ...fixture.model, init: fixture.model.init + 10, meta: { timeframe: '1h', days: 60, targetPct: 3, stopPct: 2, metrics: { regimes: { stijgend: bad, zijwaarts: bad, dalend: bad } } } };
+    bot.getModel = () => model;
+    withAi(bot);
+    aiAnswer = 'approve';
+    lastAiPrompt = '';
+    const seq = [...Array(100)].map((_, i) => 100 + Math.sin(i) * 0.5).concat([...Array(160)].map((_, i) => 100 - i * 0.2), [68, 70, 72, 74]);
+    bot.reasons = [];
+    for (let n = 261; n <= seq.length; n++) { ex.prices = seq.slice(0, n); await bot.tick(); bot.reasons.push(bot.pairStatus['BTC/EUR']?.reason); }
+    return bot;
+  };
+  const warn = await run(0);
+  assert.match(lastAiPrompt, /Soort markt nu: \w+ markt\. In dit soort markt maakten de trades die het model zou nemen op de test gemiddeld -0.40% per trade \(120 trades\)\. Het model scoort in dit soort markt dus slecht/);
+  assert.ok(warn.store.state.decisions[0]?.indicators?.mlRegime);
+  const skip = await run(1);
+  assert.equal(skip.store.state.decisions.length, 0);
+  assert.ok(skip.reasons.some((r) => /maakte het eigen model op de test verlies \(gem\. -0\.40% per trade\)/.test(r ?? '')), skip.reasons.join(' | '));
+});

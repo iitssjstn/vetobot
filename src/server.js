@@ -435,13 +435,13 @@ export function createApp({ users, manager, log = console }) {
     return out;
   }));
 
-  // Stuurt de instellingen van de admin naar de trainer en start een training.
-  app.post('/api/admin/trainer/train', adminOnly, wrap(async (req, { bot, settings }) => {
+  // Trainingsinstellingen afgeleid van de strategie en het risico van de admin.
+  const trainerConfig = (bot, settings, days) => {
     const r = bot.risk;
     const tfMin = { '1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120, '4h': 240, '1d': 1440 }[bot.timeframe] ?? 5;
     const cost = r.limitOrders ? (r.makerFeePct ?? 0.15) + (r.feePct ?? 0.25) : (r.feePct ?? 0.25) * 2;
     const stopPct = r.stopLossPct > 0 ? r.stopLossPct : 2;
-    const cfg = {
+    return {
       timeframe: bot.timeframe,
       stopPct,
       // Winstdoel: je take-profit; staat die uit, dan 1,5× de stop (en altijd ruim boven de kosten).
@@ -452,15 +452,48 @@ export function createApp({ users, manager, log = console }) {
       pairs: settings.pairs,
       // Hoeveel dagen geschiedenis: alleen meesturen als je het hier opgeeft; anders blijft de
       // keuze op de pagina Trainer staan.
-      ...(req.body?.days ? { days: Math.min(365, Math.max(14, Number(req.body.days))) } : {}),
+      ...(days ? { days: Math.min(365, Math.max(14, Number(days))) } : {}),
     };
+  };
+  const startTraining = async (cfg) => {
     await manager.trainerRequest('/config', { method: 'POST', body: cfg });
-    const started = await manager.trainerRequest('/train', { method: 'POST', body: {} }).then(() => true).catch((err) => {
+    return manager.trainerRequest('/train', { method: 'POST', body: {} }).then(() => true).catch((err) => {
       if (/loopt al/.test(err.message)) return false;
       throw err;
     });
+  };
+
+  // Stuurt de instellingen van de admin naar de trainer en start een training.
+  app.post('/api/admin/trainer/train', adminOnly, wrap(async (req, { bot, settings }) => {
+    const cfg = trainerConfig(bot, settings, req.body?.days);
+    const started = await startTraining(cfg);
     log.info(`Training gestart door ${req.user.username}: ${JSON.stringify(cfg)}`);
     return { ok: true, started, config: cfg };
+  }));
+
+  // Strategie-zoeker aan/uit en instellingen.
+  app.post('/api/admin/trainer/search', adminOnly, wrap(async (req) => {
+    const b = req.body ?? {};
+    const search = { enabled: Boolean(b.enabled), timeframes: Array.isArray(b.timeframes) ? b.timeframes.map(String) : [], perRound: Number(b.perRound) || 6 };
+    const r = await manager.trainerRequest('/config', { method: 'POST', body: { search } });
+    log.info(`Strategie-zoeker gewijzigd door ${req.user.username}: ${JSON.stringify(search)}`);
+    return { ok: true, config: r.data.config };
+  }));
+
+  // Een bevestigde strategie van de zoeker toepassen: stop, winstdoel, maximale duur, candle-tijd
+  // en minimale modelkans van de admin aanpassen, en meteen een model met die instellingen trainen.
+  app.post('/api/admin/trainer/apply', adminOnly, wrap(async (req, { bot, settings }) => {
+    const status = (await manager.trainerRequest('/status')).data;
+    const s = (status.search?.leaderboard ?? []).find((x) => x.key === req.body?.key);
+    if (!s) throw new Error('Deze strategie staat niet (meer) in de ranglijst');
+    if (s.status !== 'bevestigd') throw new Error('Alleen bevestigde strategieën kunnen worden toegepast');
+    if (s.timeframe !== bot.timeframe) await bot.setSchedule({ timeframe: s.timeframe, checkIntervalMinutes: bot.checkIntervalMinutes });
+    await bot.setRisk({ stopLossPct: s.stopPct, takeProfitPct: s.targetPct, maxHoldMinutes: s.holdMinutes });
+    const minProb = s.val?.best?.minProb ? Math.round(s.val.best.minProb * 100) : null;
+    if (minProb) await bot.setStrategy({ mlMinProb: minProb });
+    const started = await startTraining(trainerConfig(bot, settings));
+    log.warn(`Strategie toegepast door ${req.user.username}: ${s.key} (min. modelkans ${minProb ?? '-'}%)`);
+    return { ok: true, started, applied: { timeframe: s.timeframe, stopLossPct: s.stopPct, takeProfitPct: s.targetPct, maxHoldMinutes: s.holdMinutes, mlMinProb: minProb } };
   }));
 
   // Live status voor de pagina Trainer.

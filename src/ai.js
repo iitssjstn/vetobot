@@ -198,6 +198,15 @@ ${rr}
 ${extra.ml ? `== Eigen voorspelmodel (getraind op ${extra.ml.meta?.days ?? '?'} dagen koersgeschiedenis) ==
 Winstkans volgens het model: ${fx(extra.ml.prob, 0)}% (kans dat de koers eerst +${extra.ml.meta?.targetPct ?? '?'}% stijgt voordat hij −${extra.ml.meta?.stopPct ?? '?'}% daalt)
 ${extra.ml.meta?.metrics?.base ? `Ter vergelijking: zomaar kopen won op de testperiode ${fx(extra.ml.meta.metrics.base.winRate, 0)}% van de keren. Gebruik dit als één van je argumenten, niet als enige.` : ''}
+${(() => {
+  const rg = extra.ml.regime;
+  const rs = rg && extra.ml.meta?.metrics?.regimes?.[rg];
+  if (!rg) return '';
+  const label = { stijgend: 'stijgende', zijwaarts: 'zijwaartse', dalend: 'dalende' }[rg] ?? rg;
+  if (!rs || rs.avgReturnPct == null || rs.nSelected < 30) return `Soort markt nu: ${label} markt (het model heeft hier te weinig testtrades om iets over te zeggen).`;
+  return `Soort markt nu: ${label} markt. In dit soort markt maakten de trades die het model zou nemen op de test gemiddeld ${rs.avgReturnPct > 0 ? '+' : ''}${fx(rs.avgReturnPct, 2)}% per trade (${rs.nSelected} trades)` +
+    (rs.avgReturnPct <= 0 ? '. Het model scoort in dit soort markt dus slecht: wees extra kritisch.' : '.');
+})()}
 
 ` : ''}== Feedback ==
 Deze coin: ${perfTxt}${setup}

@@ -1,6 +1,6 @@
 import { evaluate } from './strategy.js';
 import { ema } from './indicators.js';
-import { computeFeatures, predict, CANDLES_NEEDED } from './mlmodel.js';
+import { computeFeatures, predict, CANDLES_NEEDED, regimeOf, REGIME_LABEL } from './mlmodel.js';
 import { askVetoChain, askTeamChain, askExitChain, testChain, listModels, writeSummaryChain, aiLabel } from './ai.js';
 import { TIMEFRAME_MINUTES, fmtInterval, LIVE_MIN_STAKE_EUR } from './settings.js';
 import { cleanSuggestions, currentValues, applySuggestions } from './suggest.js';
@@ -698,10 +698,13 @@ export class Bot {
     // Eigen voorspelmodel: winstkans uitrekenen bij een koopsignaal, en eventueel filteren.
     if (result.signal === 'buy') {
       const ml = await this.#modelProbability(pair, useOpen ? candles.slice(0, -1) : candles, timeframe);
-      if (ml && result.indicators) result.indicators.mlProb = ml.prob;
+      if (ml && result.indicators) { result.indicators.mlProb = ml.prob; result.indicators.mlRegime = ml.regime; }
       if (ml && strategy.mlMinProb > 0 && ml.prob < strategy.mlMinProb) {
         result = { ...result, signal: 'none', filtered: true,
           reason: `Kruising, maar het eigen model geeft maar ${ml.prob.toFixed(0)}% winstkans (minimaal ${strategy.mlMinProb}%)` };
+      } else if (ml?.regimeBad && strategy.mlSkipBadRegime) {
+        result = { ...result, signal: 'none', filtered: true,
+          reason: `Kruising, maar in een ${REGIME_LABEL[ml.regime]} maakte het eigen model op de test verlies (gem. ${ml.regimeStats.avgReturnPct.toFixed(2)}% per trade)` };
       }
     }
     const ind = result.indicators;
@@ -789,7 +792,7 @@ export class Bot {
         filters: this.#aiFilters(),
         aiHistory: this.#aiHistory(pair),
         setupStats: this.#setupStats(),
-        ml: result.indicators?.mlProb != null ? { prob: result.indicators.mlProb, meta: this.getModel?.()?.meta } : null,
+        ml: result.indicators?.mlProb != null ? { prob: result.indicators.mlProb, meta: this.getModel?.()?.meta, regime: result.indicators.mlRegime } : null,
       },
     });
 
@@ -867,7 +870,11 @@ export class Bot {
     const usable = model && (!model.meta?.timeframe || model.meta.timeframe === timeframe);
     const prob = usable ? predict(model, f) * 100 : null;
     this.lastFeatures[pair] = { ts: candles.at(-1)[0], timeframe, features: f, prob, at: Date.now() };
-    return usable ? { prob, meta: model.meta } : null;
+    if (!usable) return null;
+    // Soort markt, en hoe het model het in dat soort markt deed op de testperiode.
+    const regime = regimeOf(f);
+    const rs = model.meta?.metrics?.regimes?.[regime] ?? null;
+    return { prob, meta: model.meta, regime, regimeStats: rs, regimeBad: Boolean(rs && rs.nSelected >= 30 && rs.avgReturnPct != null && rs.avgReturnPct <= 0) };
   }
 
   // Gesprekken zijn groot; bewaar ze alleen bij de laatste 60 beslissingen (state blijft klein).

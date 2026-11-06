@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { computeFeatures, predict, validateModel, FEATURES } from '../src/mlmodel.js';
+import { computeFeatures, predict, validateModel, FEATURES, regimeOf } from '../src/mlmodel.js';
 
 // Gemaakt door Python (trainer/features.py + sklearn), zie trainer/test_trainer.py.
 const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/ml-parity.json', import.meta.url), 'utf8'));
@@ -36,4 +36,11 @@ test('te weinig candles of verkeerd model wordt herkend', () => {
   assert.equal(noBtc.relRet12, null);
   assert.ok(Number.isFinite(noBtc.htfTrendPct));
   assert.match(validateModel(null), /Onbekend/);
+});
+
+test('marktfase: trend over het grotere plaatje gemeten in normale beweging', () => {
+  assert.equal(regimeOf({ htfTrendPct: 4, atrPct: 1 }), 'stijgend');
+  assert.equal(regimeOf({ htfTrendPct: -4, atrPct: 1 }), 'dalend');
+  assert.equal(regimeOf({ htfTrendPct: 4, atrPct: 2 }), 'zijwaarts'); // wilde coin: 4% is niet veel
+  assert.equal(regimeOf({}), 'zijwaarts');
 });

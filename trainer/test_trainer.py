@@ -183,12 +183,69 @@ class FetchRange(unittest.TestCase):
         self.assertEqual([r[0] for r in rows], sorted(r[0] for r in rows))
 
 
+class StrategySearch(unittest.TestCase):
+    def test_round_leaderboard_and_strictness(self):
+        import search
+        fake = {p: market(9000, i, momentum=0.6) for i, p in enumerate(CFG['pairs'])}
+        fake['BTC/EUR'] = market(9000, 99, momentum=0.3)
+        cfg = {**CFG, 'search': {'enabled': True, 'timeframes': ['5m'], 'perRound': 3}, 'maxSamples': 60000}
+        results, phases = {}, []
+        tested = search.run_round(cfg, results, log=lambda *_: None, fetch=lambda p, tf, d: fake[p],
+                                  markets=lambda n: CFG['pairs'], progress=lambda ph, *a: phases.append(ph), rnd=random.Random(1))
+        self.assertEqual(len(tested), 3)
+        self.assertEqual(set(phases), {'search'})
+        for k in tested:
+            r = results[k]
+            self.assertIn(r['status'], ('bevestigd', 'niet bevestigd', 'niet goed genoeg', 'geen bruikbare drempel', 'te weinig data'))
+            self.assertEqual(r['timeframe'], '5m')
+            self.assertEqual(r['horizon'], r['holdMinutes'] // 5)
+        # Volgende ronde: eerst andere (nog niet geteste) strategieën
+        tested2 = search.run_round(cfg, results, log=lambda *_: None, fetch=lambda p, tf, d: fake[p],
+                                   markets=lambda n: CFG['pairs'], rnd=random.Random(2))
+        self.assertFalse(set(tested) & set(tested2))
+        # Op een momentum-markt moet er iets bruikbaars uitkomen
+        self.assertTrue(any(r.get('val', {}).get('best') for r in results.values()))
+        # Strenger naarmate er meer getest is
+        self.assertLess(search.required_edge(1), search.required_edge(100))
+        board = search.leaderboard(results)
+        self.assertEqual(len(board), 6)
+
+    def test_candidates_respect_costs_and_judge(self):
+        import search
+        cands = search.all_candidates(['1m', '15m'], 0.5)
+        self.assertTrue(all(c['targetPct'] >= 1.0 for c in cands))
+        self.assertTrue(all(4 <= c['horizon'] <= 500 for c in cands))
+        base = {'n': 1000, 'winRate': 40, 'avgReturnPct': -0.2}
+        good = {'score': 1.0, 'val': {'auc': 0.6, 'best': {'avgReturnPct': 0.8, 'minProb': 0.6}, 'base': base},
+                'holdout': {'n': 80, 'avgReturnPct': 0.5, 'base': -0.1}}
+        lucky = {'score': 1.0, 'val': {'auc': 0.6, 'best': {'avgReturnPct': 0.8, 'minProb': 0.6}, 'base': base},
+                 'holdout': {'n': 80, 'avgReturnPct': -0.3, 'base': -0.1}}
+        weak = {'score': 0.05, 'val': {'auc': 0.6, 'best': {'avgReturnPct': 0.05, 'minProb': 0.6}, 'base': base}}
+        res = {'a': good, 'b': lucky, 'c': weak}
+        search.judge(res)
+        self.assertEqual(good['status'], 'bevestigd')
+        self.assertEqual(lucky['status'], 'niet bevestigd')
+        self.assertEqual(weak['status'], 'niet goed genoeg')
+        self.assertEqual(search.leaderboard(res)[0], good)
+
+
 class Feedback(unittest.TestCase):
     def setUp(self):
         os.environ.setdefault('DATA_DIR', tempfile.mkdtemp())
         import server
         self.s = server
         server.write_json('feedback.json', [])
+
+    def test_search_config_validation(self):
+        cfg = self.s.validate_config({'search': {'enabled': True, 'timeframes': ['5m', '15m'], 'perRound': 4}})
+        self.assertEqual(cfg['search'], {'enabled': True, 'timeframes': ['5m', '15m'], 'perRound': 4})
+        with self.assertRaises(ValueError):
+            self.s.validate_config({'search': {'timeframes': ['3m']}})
+        with self.assertRaises(ValueError):
+            self.s.validate_config({'search': {'perRound': 99}})
+        info = self.s.search_info()
+        self.assertIn('requiredEdge', info)
+        self.assertGreater(info['possible'], 10)
 
     def test_store_dedupe_and_clean(self):
         t = {'pair': 'DOGE/EUR', 'timeframe': '5m', 'ts': 123, 'returnPct': 1.5, 'features': {'rsi14': 40, 'onzin': 5, 'adx14': 'x'}, 'prob': 61}

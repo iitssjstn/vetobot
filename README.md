@@ -192,6 +192,9 @@ Naast de AI kan vetobot een **eigen voorspelmodel** gebruiken. Dat wordt getrain
 - De trainer **bewaart de opgehaalde koersen** (tot 400 dagen). Bij een volgende training haalt hij alleen de nieuwe candles op, en als je meer dagen kiest alleen het ontbrekende oudere stuk. Om trainen snel te houden gebruikt hij maximaal 300.000 voorbeelden (instelbaar), gespreid over de hele periode.
 - vetobot haalt elk half uur het nieuwste model op. Bij een koopsignaal rekent hij de **winstkans** uit (in JavaScript, zonder extra software). Die kans krijgt de AI als extra argument, en met **Minimale modelkans** (bij Strategie) kun je er ook op filteren. Is de VPS onbereikbaar, dan blijft het vorige model gewoon werken.
 
+- **Marktfase.** De trainer kijkt per soort markt (stijgend, zijwaarts, dalend; de trend over een langere periode gemeten in normale beweging) hoe de trades die het model zou nemen het op de test deden. De bot geeft de AI een waarschuwing als het model in de huidige soort markt verlies maakte; met **Marktfase waarin het model verliest → Overslaan** (bij Strategie) slaat hij zo'n signaal helemaal over.
+- **Strategie-zoeker** (pagina Trainer). Staat hij aan, dan probeert de trainer na elke training een paar andere combinaties van winstdoel, stop, maximale duur en candle-tijd, en houdt een ranglijst bij. Om toeval uit te sluiten gebruikt hij drie stukken data: op de oudste 60% leert het model, op de volgende 20% wordt de strategie beoordeeld, en de winnaar moet zich daarna nog bewijzen op de nieuwste 20% (met de drempel die vooraf gekozen is). Hoe meer strategieën getest, hoe hoger de lat. Alleen een **bevestigde** strategie kun je met **Toepassen** overnemen: dat zet je stop, winstdoel, maximale duur, candle-tijd en minimale modelkans, en traint meteen een model daarop. Het blijft een test op het verleden, geen garantie.
+
 **Op de VPS** (apart, klein compose-bestand):
 
 ```yaml

@@ -217,6 +217,39 @@ def evaluate(probs, y, ret, cfg):
     return {'auc': auc, 'base': base, 'buckets': buckets, 'best': best, 'minTrades': min_n}
 
 
+REGIMES = ['stijgend', 'zijwaarts', 'dalend']
+
+
+def regime_of(f):
+    """Soort markt voor deze coin: de trend over het grotere plaatje, gemeten in "normale
+    beweging" (ATR), zodat het voor rustige en wilde coins hetzelfde betekent.
+    Zelfde berekening als regimeOf() in src/mlmodel.js."""
+    t, a = f.get('htfTrendPct'), f.get('atrPct')
+    if t is None or not a:
+        return 'zijwaarts'
+    score = t / a
+    return 'stijgend' if score > 3 else 'dalend' if score < -3 else 'zijwaarts'
+
+
+def regime_stats(rows, probs, y, ret, min_prob):
+    """Per soort markt: hoe deden de trades die het model zou nemen het, en zomaar kopen?"""
+    out = {}
+    ti, ai = FEATURES.index('htfTrendPct'), FEATURES.index('atrPct')
+    reg = [regime_of({'htfTrendPct': r[ti], 'atrPct': r[ai]}) for r in rows]
+    for name in REGIMES:
+        ks = [k for k in range(len(rows)) if reg[k] == name]
+        if not ks:
+            continue
+        sel = [k for k in ks if probs[k] >= min_prob]
+        out[name] = {
+            'n': len(ks), 'baseAvgReturnPct': sum(ret[k] for k in ks) / len(ks),
+            'nSelected': len(sel),
+            'avgReturnPct': sum(ret[k] for k in sel) / len(sel) if sel else None,
+            'winRate': sum(y[k] for k in sel) / len(sel) * 100 if sel else None,
+        }
+    return out
+
+
 FEEDBACK_WEIGHT = 3.0  # een echte trade van de bot telt zwaarder dan één historisch voorbeeld
 
 
@@ -322,6 +355,7 @@ def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=Non
         col = sorted(v for v in (row[j] for row in tr_X) if v is not None and not (isinstance(v, float) and math.isnan(v)))
         medians.append(col[len(col) // 2] if col else 0.0)
     tr_X = _impute(tr_X, medians)
+    te_raw = te_X
     te_X = _impute(te_X, medians)
 
     # In stappen van 10 bomen trainen (warm_start), zodat de voortgang zichtbaar is.
@@ -335,6 +369,7 @@ def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=Non
     step('test', 0, 1, f'Testen op {len(te_X):,} voorbeelden uit de laatste periode'.replace(',', '.'))
     probs = list(model.predict_proba(te_X)[:, 1])
     metrics = evaluate(probs, te_y, te_ret, cfg)
+    metrics['regimes'] = regime_stats(te_raw, probs, te_y, te_ret, metrics['best']['minProb'] if metrics['best'] else 0.5)
     if fb_test:
         # Hoe had dit model het gedaan op de echte trades van de bot (die hij niet gezien heeft)?
         fp = list(model.predict_proba(_impute([r[1] for r in fb_test], medians))[:, 1])

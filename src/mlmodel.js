@@ -99,6 +99,16 @@ export function computeFeatures(candles, ctx = {}) {
   };
 }
 
+// Soort markt voor deze coin (zelfde berekening als regime_of in trainer/train.py): de trend
+// over het grotere plaatje, gemeten in "normale beweging" (ATR).
+export const REGIME_LABEL = { stijgend: 'stijgende markt', zijwaarts: 'zijwaartse markt', dalend: 'dalende markt' };
+export function regimeOf(f) {
+  const t = f?.htfTrendPct, a = f?.atrPct;
+  if (t == null || !a) return 'zijwaarts';
+  const score = t / a;
+  return score > 3 ? 'stijgend' : score < -3 ? 'dalend' : 'zijwaarts';
+}
+
 // Controleert of een model van de trainer bruikbaar is.
 export function validateModel(m) {
   if (!m || m.version !== 1 || m.kind !== 'gbdt') return 'Onbekend modelformaat';
