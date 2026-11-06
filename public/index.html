@@ -521,6 +521,11 @@
         <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Huidig model</h2></div><div class="panel-b" id="tr-model"></div></div>
         <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-gear"/></svg>Instellingen van de trainer</h2></div><div class="panel-b" id="tr-config"></div></div>
       </div>
+      <div class="panel gap" id="tr-bandit-panel" hidden>
+        <div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Zelflerend kiezen (beloning)</h2><span class="hint" id="bd-hint"></span></div>
+        <div class="panel-b" id="bd-body" style="padding-bottom:6px"></div>
+        <div class="scroll" id="bd-table"></div>
+      </div>
       <div class="panel gap" id="tr-team-panel" hidden>
         <div class="panel-h"><h2><svg class="i"><use href="#i-pulse"/></svg>Samenwerking AI + model</h2><span class="hint" id="tw-hint"></span></div>
         <div class="panel-b" id="tw-body"></div>
@@ -742,6 +747,7 @@
             <div><label for="st-confirm">Verkoopsignaal bevestigen (candles)</label><input id="st-confirm" type="number" min="1" max="20" step="1" required></div>
             <div><label for="st-hold">Minimaal in positie (candles, 0 = uit)</label><input id="st-hold" type="number" min="0" max="500" step="1" required></div>
             <div><label for="st-mlmin">Minimale modelkans (%, 0 = uit)</label><input id="st-mlmin" type="number" min="0" max="100" step="any" required></div>
+            <div><label for="st-mlbandit">Kiezen tussen strategieën</label><select id="st-mlbandit"><option value="0">Uit: mijn eigen instellingen</option><option value="1">Zelflerend (beloning)</option></select></div>
             <div><label for="st-mlregime">Marktfase waarin het model verliest</label><select id="st-mlregime"><option value="0">Alleen de AI waarschuwen</option><option value="1">Overslaan</option></select></div>
             <div><label for="st-strict">AI-strengheid</label><select id="st-strict"><option value="0">Streng: weinig, sterke trades</option><option value="1">Normaal</option><option value="2">Soepel: meer trades</option></select></div>
             <div><label for="st-open">Lopende candle meenemen</label><select id="st-open"><option value="0">Nee (aanbevolen)</option><option value="1">Ja, sneller</option></select></div>
@@ -1518,6 +1524,7 @@ function renderSettings() {
     $('st-strict').value = String(s.strategy.aiStrictness ?? 1);
     $('st-mlmin').value = s.strategy.mlMinProb ?? 0;
     $('st-mlregime').value = String(s.strategy.mlSkipBadRegime ?? 0);
+    $('st-mlbandit').value = String(s.strategy.mlBandit ?? 0);
     $('st-hold').value = s.strategy.minHoldCandles ?? 0;
   }
   if (!document.activeElement?.closest('#risk-form') && !riskDirty) {
@@ -1758,6 +1765,7 @@ function renderTrainer() {
   // Strategie-zoeker
   renderSearch(t, nl);
   renderTeamwork(t, nl);
+  renderBandit(nl);
 
   // Instellingen die de trainer gebruikt
   const c = t?.config;
@@ -1798,6 +1806,26 @@ function renderTrainer() {
     ['Resultaat', (h) => h.published ? '<span class="badge ok">gepubliceerd</span>' : `<span class="badge soft">niet gebruikt</span> <span class="muted" style="font-size:12.5px">${esc(h.reason ?? '')}</span>`],
   ], 'Nog geen trainingen.', 'history');
 }
+function renderBandit(nl) {
+  const b = state?.bandit;
+  $('tr-bandit-panel').hidden = !b;
+  if (!b) return;
+  const sign = (v) => v == null ? '–' : `${v > 0 ? '+' : ''}${nl(v, 2)}%`;
+  $('bd-hint').textContent = b.on ? `aan · ${b.arms} strategie${b.arms === 1 ? '' : 'ën'} op ${state.timeframe}` : 'uit';
+  $('bd-body').innerHTML = `<p class="muted" style="margin:0;font-size:13.5px">${b.on
+    ? (b.arms ? 'Bij elk koopsignaal kiest de bot een van de bevestigde strategieën. Na het sluiten krijgt die strategie de echte winst of het verlies als beloning; wat geld oplevert kiest hij vaker. Met weinig trades probeert hij nog veel; hoe meer trades, hoe vaker hij de beste kiest.' : `Staat aan, maar er zijn nog geen bevestigde strategieën op ${esc(state.timeframe)}. Tot die er zijn, gelden je eigen instellingen.`)
+    : 'Staat uit. Zet hem aan bij Instellingen → Strategie → "Kiezen tussen strategieën" om de bot zelf te laten leren welke strategie het meeste oplevert.'}</p>`;
+  const hold = (m) => m == null ? '' : m >= 60 ? `${nl(m / 60, m % 60 ? 1 : 0)} uur` : `${m} min`;
+  $('bd-table').innerHTML = b.rows?.length ? table(b.rows, [
+    ['Strategie', (r) => r.targetPct != null ? `+${nl(r.targetPct)}% / −${nl(r.stopPct)}%, max ${hold(r.holdMinutes)}` : `<span class="muted">${esc(r.key.replace(/\|/g, ' · '))} (niet meer actief)</span>`],
+    ['Trades', (r) => `<span class="num">${r.trades}</span>`, 'r'],
+    ['Beloning totaal', (r) => `<span class="num ${r.totalPct > 0 ? 'up' : r.totalPct < 0 ? 'down' : ''}">${r.trades ? sign(r.totalPct) : '–'}</span>`, 'r'],
+    ['Gem. per trade', (r) => `<span class="num">${sign(r.avgPct)}</span>`, 'r'],
+    ['Verwachting', (r) => `<span class="num">${sign(r.estimatePct)} <span class="muted">± ${nl(r.uncertaintyPct, 2)}</span></span>`, 'r'],
+    ['Gekozen', (r) => `<span class="num">${nl(r.chosenShare, 0)}%</span>`, 'r'],
+  ], '', 'target') : '';
+}
+
 function renderTeamwork(t, nl) {
   $('tr-team-panel').hidden = !t;
   if (!t) return;
@@ -2433,6 +2461,7 @@ const HELP = {
   'st-confirm': 'Bij korte candles kruisen de lijnen vaak heen en weer door ruis. De bot koopt dan en verkoopt een paar minuten later met verlies, vooral door de fees (whipsaw). Met deze waarde verkoopt de bot op het verkoopsignaal pas als EMA fast zoveel candles <b>op rij</b> onder EMA slow ligt. Herstelt de koers binnen die tijd, dan blijft de positie staan. Stop-loss, trailing stop, take-profit en de AI-winstcheck werken altijd direct. <b>Gebruikelijk:</b> 2 of 3. 1 = direct verkopen.',
   'st-hold': 'Hoeveel candles een positie minimaal open blijft voordat het verkoopsignaal mag verkopen. Geeft een nieuwe positie de tijd om te bewegen. Stop-loss, trailing stop, take-profit en de AI-winstcheck werken altijd direct, dus je verlies blijft begrensd. <b>Gebruikelijk:</b> 3 tot 6. 0 = uit.',
   'st-open': 'Normaal kijkt de bot alleen naar gesloten candles, zodat een signaal vaststaat. Met <b>Ja</b> telt ook de candle die nog loopt mee: je ziet een kruising tot een hele candle eerder, maar hij kan binnen die candle ook weer verdwijnen, waardoor je vaker te vroeg koopt. Vooral nuttig bij lange candles (1 uur of meer). Een kortere candle-tijd bij Planning is meestal de betere manier om sneller te zijn.',
+  'st-mlbandit': 'Zelflerend: de bot kiest bij elk koopsignaal zelf een van de bevestigde strategieën van de strategie-zoeker (met elk een eigen model, doel, stop en maximale duur). Na elke gesloten trade krijgt die strategie een beloning: de echte winst of het verlies. Strategieën die geld opleverden kiest hij daarna vaker; de andere probeert hij af en toe opnieuw, want het kan geluk geweest zijn of de markt kan veranderd zijn. Recente trades tellen zwaarder. De gekozen strategie bepaalt voor die trade de stop, het winstdoel en de maximale duur (jouw ATR-stop en trailing stop gelden dan niet). Er moeten bevestigde strategieën zijn op jouw candle-tijd; anders gelden gewoon je eigen instellingen. Paper en live delen hetzelfde geheugen.',
   'st-mlregime': 'Het model herkent het soort markt van een coin: stijgend, zijwaarts of dalend (de trend over een langere periode, vergeleken met hoe hard de coin normaal beweegt). De trainer houdt bij hoe de trades die het model zou nemen het in elk soort markt deden op de testperiode. Verloor het model in de huidige soort markt geld (minstens 30 testtrades), dan krijgt de AI een waarschuwing. Met "Overslaan" slaat de bot zo\'n signaal helemaal over.',
   'st-btc': 'Bijna alle coins bewegen mee met Bitcoin. Met dit filter koopt de bot geen andere coins zolang BTC onder zijn gemiddelde van 50 candles ligt. BTC zelf wordt niet gefilterd.',
   'r-trail': 'De stop schuift mee omhoog met de koers. Bij 2% verkoopt de bot zodra de koers 2% onder het hoogste punt sinds aankoop zakt. Zo laat je winnaars doorlopen en zet je winst vast. Werkt naast de stop-loss en take-profit; zet de take-profit op 0 om winnaars echt te laten lopen. 0 = uit.',
@@ -2611,7 +2640,7 @@ $('strat-form').onsubmit = async (e) => {
   const strategy = { emaFast: $('st-fast').value, emaSlow: $('st-slow').value, rsiPeriod: $('st-rsi').value, rsiMaxEntry: $('st-rsimax').value,
     trendEma: $('st-trend').value, adxMin: $('st-adx').value, volumeMult: $('st-vol').value, btcFilter: $('st-btc').value,
     maxChasePct: $('st-chase').value, useOpenCandle: $('st-open').value,
-    sellConfirmCandles: $('st-confirm').value, minHoldCandles: $('st-hold').value, aiStrictness: $('st-strict').value, mlMinProb: $('st-mlmin').value, mlSkipBadRegime: $('st-mlregime').value };
+    sellConfirmCandles: $('st-confirm').value, minHoldCandles: $('st-hold').value, aiStrictness: $('st-strict').value, mlMinProb: $('st-mlmin').value, mlSkipBadRegime: $('st-mlregime').value, mlBandit: $('st-mlbandit').value };
   if (state.mode === 'live' && !$('st-pass').value) { $('strat-msg').className = 'msg err'; $('strat-msg').textContent = 'Vul je wachtwoord in'; return; }
   try {
     await api('api/settings/strategy', { strategy, password: $('st-pass').value });

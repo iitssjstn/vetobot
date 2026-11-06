@@ -30,7 +30,7 @@ PORT = int(os.environ.get('PORT', '8787'))
 TRAIN_HOUR = int(os.environ.get('TRAIN_HOUR', '3'))  # elke nacht om dit uur (tijdzone via TZ)
 
 DEFAULTS = {'timeframe': '5m', 'days': 60, 'targetPct': 3.0, 'stopPct': 2.0, 'horizon': 36,
-            'costPct': 0.5, 'pairs': [], 'topN': 15, 'maxSamples': 300_000,
+            'costPct': 0.5, 'pairs': [], 'topN': 15, 'maxSamples': 300_000, 'halfLifeDays': 45,
             # Wanneer trainen: 'times' = vaste uren, 'interval' = elke X uur, 'continuous' = na elke
             # training opnieuw (met een pauze van pauseMinutes).
             'schedule': {'mode': 'times', 'hours': [TRAIN_HOUR], 'everyHours': 6, 'pauseMinutes': 30},
@@ -40,7 +40,7 @@ DEFAULTS = {'timeframe': '5m', 'days': 60, 'targetPct': 3.0, 'stopPct': 2.0, 'ho
             'search': {'enabled': False, 'timeframes': [], 'perRound': 6, 'pauseMinutes': 1, 'autoApply': False},
             'strategy': None}
 LIMITS = {'days': (7, 365), 'targetPct': (0.2, 50), 'stopPct': (0.2, 50), 'horizon': (3, 2000),
-          'costPct': (0, 5), 'topN': (1, 50), 'maxSamples': (20_000, 2_000_000)}
+          'costPct': (0, 5), 'topN': (1, 50), 'maxSamples': (20_000, 2_000_000), 'halfLifeDays': (0, 365)}
 
 os.makedirs(DATA, exist_ok=True)
 state = {'running': False, 'history': [], 'log': [], 'progress': None, 'lastFinished': None}
@@ -418,6 +418,44 @@ def set_search_progress(phase, done, total, text):
     state['searchProgress'] = {**p, 'phase': phase, 'done': done, 'total': total, 'text': text}
 
 
+ARMS_MAX = 5
+
+
+def arm_file(key):
+    return os.path.join('arms', key.replace('|', '_').replace('.', ',') + '.json')
+
+
+def save_arms(results, models):
+    """Modellen van bevestigde strategieën bewaren (de "armen" voor het zelflerend kiezen in de bot);
+    strategieën die niet (meer) bevestigd zijn gaan eruit. Hooguit de ARMS_MAX beste."""
+    os.makedirs(path('arms'), exist_ok=True)
+    for key, m in models.items():
+        if results.get(key, {}).get('status') == 'bevestigd':
+            write_json(arm_file(key), m)
+    ok = sorted((r for r in results.values() if r.get('status') == 'bevestigd'), key=lambda r: r['score'], reverse=True)[:ARMS_MAX]
+    keep = {os.path.basename(arm_file(r['key'])) for r in ok}
+    for name in os.listdir(path('arms')):
+        if name not in keep:
+            try:
+                os.remove(os.path.join(path('arms'), name))
+            except OSError:
+                pass
+
+
+def load_arms():
+    """Bevestigde strategieën met hun model, voor de bot."""
+    data = load_search()
+    out = []
+    for r in sorted((r for r in data.get('results', {}).values() if r.get('status') == 'bevestigd'), key=lambda r: r['score'], reverse=True)[:ARMS_MAX]:
+        m = read_json(arm_file(r['key']), None)
+        if not m:
+            continue
+        out.append({'key': r['key'], 'timeframe': r['timeframe'], 'targetPct': r['targetPct'], 'stopPct': r['stopPct'],
+                    'holdMinutes': r['holdMinutes'], 'minProb': r['val']['best']['minProb'], 'score': r['score'],
+                    'holdout': {k: r.get('holdout', {}).get(k) for k in ('n', 'avgReturnPct')}, 'model': m})
+    return out
+
+
 def search_round():
     """Eén ronde van de zoeker; stapt daarna eventueel over op een nieuwe beste strategie."""
     cfg = config()
@@ -430,8 +468,10 @@ def search_round():
         try:
             with search_lock:
                 data = load_search()
+                models = {}
                 searcher.run_round(cfg, data['results'], log=log, fetch=fetch, markets=trainer.top_markets,
-                                   progress=set_search_progress, should_stop=lambda: state.get('wantMain'))
+                                   progress=set_search_progress, should_stop=lambda: state.get('wantMain'), models_out=models)
+                save_arms(data['results'], models)
                 data['lastRoundAt'] = datetime.now().isoformat(timespec='seconds')
                 data['rounds'] = data.get('rounds', 0) + 1
                 current = (data.get('champion') or {}).get('key')
@@ -540,6 +580,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {'ok': True})
         if not self.authed():
             return
+        if self.path == '/arms.json':
+            data = json.dumps({'arms': load_arms()}).encode()
+            etag = '"' + hashlib.sha1(data).hexdigest()[:16] + '"'
+            if self.headers.get('If-None-Match') == etag:
+                self.send_response(304)
+                self.send_header('ETag', etag)
+                self.end_headers()
+                return
+            return self.send(200, data, extra={'ETag': etag})
         if self.path == '/teamwork':
             return self.send(200, read_json('teamwork.json', {'total': 0}))
         if self.path == '/model.json':

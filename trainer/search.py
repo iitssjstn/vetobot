@@ -14,7 +14,7 @@ import random
 import time
 
 from features import FEATURES, WARMUP, context, features_at, label_at, series
-from train import TF_MS, _impute, evaluate, regime_of, REGIMES
+from train import TF_MS, _impute, evaluate, export_model, regime_of, REGIMES
 
 TARGETS = [0.8, 1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0]
 STOPS = [0.8, 1.2, 1.6, 2.0, 2.5, 3.5, 5.0]
@@ -127,7 +127,7 @@ def _split3(n, gap):
     return (0, max(0, a - gap)), (a, max(a, b - gap)), (b, n)
 
 
-def run_round(cfg, results, log=print, fetch=None, markets=None, progress=None, rnd=None, should_stop=None):
+def run_round(cfg, results, log=print, fetch=None, markets=None, progress=None, rnd=None, should_stop=None, models_out=None):
     """Eén zoekronde. Werkt `results` (dict key -> uitslag) bij en geeft de geteste keys terug."""
     from sklearn.ensemble import GradientBoostingClassifier
 
@@ -217,6 +217,15 @@ def run_round(cfg, results, log=print, fetch=None, markets=None, progress=None, 
             score = (best['avgReturnPct'] - max(0.0, va['base']['avgReturnPct'])) if best else None
             entry.update({'val': {'auc': va['auc'], 'best': best, 'base': va['base']}, 'score': score,
                           'seconds': round(time.time() - started, 1)})
+            # Model bewaren (wordt een "arm" voor het zelflerend kiezen als de strategie bevestigd wordt).
+            if best and models_out is not None:
+                Xi = _impute(trX[:1], medians)
+                models_out[entry['key']] = {
+                    'version': 1, 'kind': 'gbdt', 'features': FEATURES, **export_model(model, medians, Xi),
+                    'meta': {'trainedAt': entry['testedAt'], 'timeframe': tf, 'targetPct': c['targetPct'], 'stopPct': c['stopPct'],
+                             'horizon': c['horizon'], 'costPct': cfg['costPct'], 'days': cfg['days'],
+                             'metrics': {'auc': va['auc'], 'best': best, 'base': va['base']}, 'suggestedMinProb': best['minProb']},
+                }
             # Controle op stuk 3, met de drempel van stuk 2 (niet opnieuw kiezen: dat zou valsspelen zijn).
             if best:
                 hp = list(model.predict_proba(_impute(hoX, medians))[:, 1])

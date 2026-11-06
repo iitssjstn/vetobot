@@ -150,6 +150,12 @@ export class BotManager {
         this.log.info(`Eigen model bijgewerkt (getraind ${r.data.meta?.trainedAt ?? 'onbekend'})`);
         await this.#autoApplyStrategy(r.data).catch((err) => this.log.error(`Strategie overnemen mislukt: ${err.message}`));
       }
+      // Bevestigde strategieën met hun eigen model, voor het zelflerend kiezen.
+      const arms = await this.trainerRequest('/arms.json', { etag: this.ml.armsEtag }).catch(() => null);
+      if (arms && !arms.notModified && Array.isArray(arms.data?.arms)) {
+        this.ml.arms = arms.data.arms.filter((a) => a?.model && !validateModel(a.model));
+        this.ml.armsEtag = arms.etag;
+      }
       // Scorebord van AI + model (wie had gelijk bij de laatste signalen).
       this.ml.teamwork = (await this.trainerRequest('/teamwork').catch(() => null))?.data ?? this.ml.teamwork ?? null;
       this.ml.error = null;
@@ -250,6 +256,7 @@ export class BotManager {
     bot.heartbeatEnabled = user.role === 'admin';
     bot.getModel = () => this.ml.model;
     bot.getTeamwork = () => this.ml.teamwork ?? null;
+    bot.getArms = () => this.ml.arms ?? [];
     bot.onFeedback = (trade) => { this.queueFeedback(trade).catch(() => {}); };
     const ctx = { user, dir, settings, secrets, exchange, brokers, stores, notifier, bot, timer: null, watchTimer: null };
     this.contexts.set(user.id, ctx);

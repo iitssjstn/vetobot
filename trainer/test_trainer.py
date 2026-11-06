@@ -320,6 +320,49 @@ class AutoApply(unittest.TestCase):
         self.assertIsNone(s.validate_config({'targetPct': 3})['strategy'])
 
 
+class Arms(unittest.TestCase):
+    def setUp(self):
+        os.environ.setdefault('DATA_DIR', tempfile.mkdtemp())
+        import server
+        self.s = server
+
+    def test_models_of_confirmed_strategies_are_served(self):
+        import search
+        s = self.s
+        fake = {p: market(9000, i, momentum=0.6) for i, p in enumerate(CFG['pairs'])}
+        fake['BTC/EUR'] = market(9000, 99, momentum=0.3)
+        cfg = {**CFG, 'search': {'enabled': True, 'timeframes': ['5m'], 'perRound': 3}, 'maxSamples': 60000}
+        results, models = {}, {}
+        search.run_round(cfg, results, log=lambda *_: None, fetch=lambda p, tf, d: fake[p], markets=lambda n: CFG['pairs'],
+                         rnd=random.Random(1), models_out=models)
+        self.assertTrue(models, 'modellen van strategieën met een bruikbare drempel')
+        key = next(iter(models))
+        results[key]['status'] = 'bevestigd'
+        results[key]['score'] = 0.5
+        for k in results:
+            if k != key:
+                results[k]['status'] = 'niet goed genoeg'
+        s.write_json('search.json', {'results': results})
+        s.save_arms(results, models)
+        arms = s.load_arms()
+        self.assertEqual([a['key'] for a in arms], [key])
+        self.assertEqual(arms[0]['model']['meta']['timeframe'], '5m')
+        self.assertEqual(len(arms[0]['model']['features']), len(FEATURES))
+        # Niet meer bevestigd: arm verdwijnt
+        results[key]['status'] = 'niet bevestigd'
+        s.write_json('search.json', {'results': results})
+        s.save_arms(results, {})
+        self.assertEqual(s.load_arms(), [])
+
+    def test_reward_weight(self):
+        self.assertEqual(train.reward_weight(3, 3, 0, 45), 1.0)
+        self.assertEqual(train.reward_weight(0.1, 3, 0, 45), 0.5)  # rond 0 geëindigd: leert minder
+        self.assertEqual(train.reward_weight(9, 3, 0, 45), 2.0)  # grote winst/verlies: leert meer
+        self.assertAlmostEqual(train.reward_weight(3, 3, 45, 45), 0.5)  # 45 dagen oud: half zo zwaar
+        self.assertEqual(train.reward_weight(3, 3, 400, 45), 0.25)
+        self.assertEqual(train.reward_weight(3, 3, 400, 0), 1.0)  # uit
+
+
 class Feedback(unittest.TestCase):
     def setUp(self):
         os.environ.setdefault('DATA_DIR', tempfile.mkdtemp())

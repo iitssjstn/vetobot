@@ -314,6 +314,17 @@ def regime_stats(rows, probs, y, ret, min_prob):
 FEEDBACK_WEIGHT = 3.0  # een echte trade van de bot telt zwaarder dan één historisch voorbeeld
 
 
+def reward_weight(ret_pct, scale_pct, age_days, half_life_days):
+    """Beloning: hoe zwaar een voorbeeld meetelt bij het leren.
+    - naar grootte: een grote winst of een groot verlies leert meer dan een trade die rond 0
+      eindigde (factor 0,5 tot 2, t.o.v. scale_pct)
+    - naar leeftijd: recente ervaring telt zwaarder (halveert elke half_life_days dagen, min. 0,25)"""
+    size = min(2.0, max(0.5, abs(ret_pct) / scale_pct)) if scale_pct > 0 else 1.0
+    if half_life_days and half_life_days > 0 and age_days > 0:
+        size *= max(0.25, 0.5 ** (age_days / half_life_days))
+    return size
+
+
 def feedback_rows(feedback, timeframe):
     """Echte trades van de bot (met de kenmerken op het moment van kopen) -> (ts, X, y, ret)."""
     rows = []
@@ -378,7 +389,11 @@ def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=Non
         gap = int(cfg['horizon'])  # geen overlap tussen de laatste trainings- en eerste testuitkomst
         tr_X += X[:max(0, cut - gap)]
         tr_y += y[:max(0, cut - gap)]
-        tr_w += [1.0] * max(0, cut - gap)
+        n_tr = max(0, cut - gap)
+        ref = ts[cut] if cut < len(ts) else (ts[-1] if ts else 0)
+        scale = max(float(cfg['targetPct']), float(cfg['stopPct']))
+        half = float(cfg.get('halfLifeDays') or 0)
+        tr_w += [reward_weight(ret[k], scale, (ref - ts[k]) / 86_400_000, half) for k in range(n_tr)]
         if cut < len(ts):
             cut_ts.append(ts[cut])
         te_X += X[cut:]
@@ -395,7 +410,8 @@ def train(cfg, log=print, fetch=fetch_candles, markets=top_markets, progress=Non
     for r in fb_train:
         tr_X.append(r[1])
         tr_y.append(r[2])
-        tr_w.append(FEEDBACK_WEIGHT)
+        # Echte trade: beloning naar de echte winst/verlies (1% = factor 1) en leeftijd.
+        tr_w.append(FEEDBACK_WEIGHT * reward_weight(r[3] * 2, 2.0, (boundary - r[0]) / 86_400_000, float(cfg.get('halfLifeDays') or 0)))
     if fb:
         log(f'Eigen trades van de bot: {len(fb)} ({len(fb_train)} om van te leren, {len(fb_test)} als controle)')
 

@@ -6,6 +6,8 @@ import { TIMEFRAME_MINUTES, fmtInterval, LIVE_MIN_STAKE_EUR } from './settings.j
 import { cleanSuggestions, currentValues, applySuggestions } from './suggest.js';
 import { fetchClosedCandles, fetchPrice, hasTradingKeys } from './exchange.js';
 import { checkEntry } from './risk.js';
+import { Bandit } from './bandit.js';
+import path from 'node:path';
 
 // Bedragen en koersen in Nederlandse notatie voor meldingen (€ 81,31 / € 0,3455 / −€ 0,36).
 const nl = (n, digits, min = digits) => new Intl.NumberFormat('nl-NL', { minimumFractionDigits: min, maximumFractionDigits: digits }).format(n);
@@ -186,6 +188,30 @@ export class Bot {
 
   get store() {
     return this.stores[this.mode];
+  }
+
+  // Zelflerend kiezen tussen strategieën: één geheugen voor paper én live, zodat wat hij in
+  // paper leerde ook live meetelt.
+  get bandit() {
+    if (!this._bandit) {
+      const dir = this.stores.paper?.file ? path.dirname(this.stores.paper.file) : null;
+      this._bandit = new Bandit(dir ? path.join(dir, 'bandit.json') : null);
+    }
+    return this._bandit;
+  }
+
+  // Bevestigde strategieën van de trainer die bij de huidige candle-tijd passen.
+  activeArms() {
+    return (this.getArms?.() ?? []).filter((a) => a.timeframe === this.timeframe && a.model);
+  }
+
+  // Overzicht voor het dashboard.
+  banditSummary() {
+    const arms = this.activeArms();
+    return {
+      on: Boolean(this.strategy.mlBandit), arms: arms.length,
+      rows: this.bandit.summary(arms.map((a) => a.key)).map((r) => ({ ...r, ...(arms.find((a) => a.key === r.key) ? { targetPct: arms.find((a) => a.key === r.key).targetPct, stopPct: arms.find((a) => a.key === r.key).stopPct, holdMinutes: arms.find((a) => a.key === r.key).holdMinutes } : {}) })),
+    };
   }
 
   // Zorgt dat een check, een handmatige verkoop en een modus-wissel nooit tegelijk lopen.
@@ -699,7 +725,16 @@ export class Bot {
     if (result.signal === 'buy') {
       const ml = await this.#modelProbability(pair, useOpen ? candles.slice(0, -1) : candles, timeframe);
       if (ml && result.indicators) { result.indicators.mlProb = ml.prob; result.indicators.mlRegime = ml.regime; result.indicators.mlWhy = ml.why; }
-      if (ml && strategy.mlMinProb > 0 && ml.prob < strategy.mlMinProb) {
+      const arm = strategy.mlBandit ? this.#banditPick(pair) : null;
+      if (arm?.none) {
+        result = { ...result, signal: 'none', filtered: true, reason: `Kruising, maar geen van de ${arm.count} bevestigde strategieën ziet hier genoeg kans (${arm.best})` };
+      } else if (arm && result.indicators) {
+        // Gekozen strategie: eigen model, eigen doel/stop/duur voor deze trade.
+        Object.assign(result.indicators, { mlProb: arm.prob, mlWhy: arm.why, mlArm: arm.plan });
+      }
+      if (arm) {
+        // De strategie-keuze vervangt de vaste minimale modelkans.
+      } else if (ml && strategy.mlMinProb > 0 && ml.prob < strategy.mlMinProb) {
         result = { ...result, signal: 'none', filtered: true,
           reason: `Kruising, maar het eigen model geeft maar ${ml.prob.toFixed(0)}% winstkans (minimaal ${strategy.mlMinProb}%)` };
       } else if (ml?.regimeBad && strategy.mlSkipBadRegime) {
@@ -787,12 +822,16 @@ export class Bot {
         recentTrades: this.store.state.trades.filter((t) => t.pair === pair).slice(0, 5)
           .map((t) => ({ pnlPct: +t.pnlPct.toFixed(2), exit: t.exitReason, closedAt: t.closedAt })),
         // Zodat de AI kan inschatten of de verwachte winst de kosten en het risico waard is.
-        plan: this.#tradePlan(),
-        risk: this.#aiRisk(),
+        plan: this.#tradePlan(result.indicators?.mlArm ?? null),
+        risk: this.#aiRisk(result.indicators?.mlArm ?? null),
         filters: this.#aiFilters(),
         aiHistory: this.#aiHistory(pair),
         setupStats: this.#setupStats(),
-        ml: result.indicators?.mlProb != null ? { prob: result.indicators.mlProb, meta: this.getModel?.()?.meta, regime: result.indicators.mlRegime, why: result.indicators.mlWhy } : null,
+        ml: result.indicators?.mlProb != null ? { prob: result.indicators.mlProb, regime: result.indicators.mlRegime, why: result.indicators.mlWhy,
+          meta: result.indicators.mlArm
+            ? { ...(this.getModel?.()?.meta ?? {}), targetPct: result.indicators.mlArm.takeProfitPct, stopPct: result.indicators.mlArm.stopLossPct, metrics: (this.activeArms().find((a) => a.key === result.indicators.mlArm.key)?.model?.meta?.metrics) ?? null }
+            : this.getModel?.()?.meta,
+          arm: result.indicators.mlArm ?? null } : null,
         // Hoe de AI en het model het samen deden (van de trainer): wie had gelijk?
         teamwork: result.indicators?.mlProb != null ? this.getTeamwork?.() ?? null : null,
       },
@@ -868,6 +907,39 @@ export class Bot {
     return { ...risk, stakeEur: this.stakeInfo(risk).effective };
   }
 
+  // Zelflerend kiezen: welke bevestigde strategie ziet hier een kans (winstkans boven zijn eigen
+  // drempel), en welke daarvan kiest de bandit (op basis van de beloningen tot nu toe)?
+  // null = uit of geen strategieën; { none: true } = niemand ziet een kans.
+  #banditPick(pair) {
+    const arms = this.activeArms();
+    const lf = this.lastFeatures[pair];
+    if (!arms.length || !lf?.features) return null;
+    const scored = arms.map((a) => {
+      let prob = null;
+      try { prob = predict(a.model, lf.features) * 100; } catch { prob = null; }
+      return { a, prob, min: (a.minProb ?? 0.5) * 100 };
+    }).filter((x) => x.prob != null);
+    const willing = scored.filter((x) => x.prob >= x.min);
+    if (!willing.length) {
+      const top = scored.sort((x, y) => (y.prob - y.min) - (x.prob - x.min))[0];
+      return { none: true, count: arms.length, best: top ? `beste: ${top.prob.toFixed(0)}% bij minimaal ${top.min.toFixed(0)}%` : 'geen kans' };
+    }
+    const choice = this.bandit.pick(willing.map((x) => x.a.key));
+    const w = willing.find((x) => x.a.key === choice.key);
+    let why = [];
+    try {
+      why = explain(w.a.model, lf.features).map((x) => ({ key: x.key, label: x.label, text: x.text, effect: +x.effect.toFixed(1) }));
+    } catch {
+      why = [];
+    }
+    lf.prob = w.prob;
+    return {
+      prob: w.prob, why,
+      plan: { key: w.a.key, stopLossPct: w.a.stopPct, takeProfitPct: w.a.targetPct, maxHoldMinutes: w.a.holdMinutes, minProb: w.min,
+        estimatePct: +choice.mean.toFixed(3), options: willing.length },
+    };
+  }
+
   // Winstkans in % volgens het eigen model, of null als er geen (passend) model is.
   // De kenmerken worden altijd onthouden (ook zonder model): als de bot daarna koopt, gaan ze
   // bij het sluiten met de uitkomst naar de trainer, zodat die van echte trades leert.
@@ -915,8 +987,8 @@ export class Bot {
   }
 
   // Stop, take-profit en kosten als getallen, zodat de AI exact in R kan rekenen.
-  #aiRisk() {
-    const r = this.risk;
+  #aiRisk(plan = null) {
+    const r = plan ? { ...this.risk, stopLossPct: plan.stopLossPct, takeProfitPct: plan.takeProfitPct, atrStopMult: 0, trailingStopPct: 0 } : this.risk;
     return {
       stopLossPct: r.stopLossPct, atrStopMult: r.atrStopMult, takeProfitPct: r.takeProfitPct,
       trailingStopPct: r.trailingStopPct, aiExitMinPct: r.aiExitMinPct, roundCostPct: this.#roundCostPct(),
@@ -968,8 +1040,9 @@ export class Bot {
   }
 
   // Korte omschrijving van fees, stops en uitstap, voor de AI.
-  #tradePlan() {
-    const r = this.risk;
+  #tradePlan(plan = null) {
+    // Met een gekozen strategie (zelflerend): die stop, dat doel en die duur, geen ATR/trailing.
+    const r = plan ? { ...this.risk, stopLossPct: plan.stopLossPct, takeProfitPct: plan.takeProfitPct, maxHoldMinutes: plan.maxHoldMinutes, atrStopMult: 0, trailingStopPct: 0 } : this.risk;
     const pctTxt = (v) => `${parseFloat(Number(v).toFixed(2))}%`;
     // Met limietorders: kopen tegen maker-fee, verkopen deels maker (winst nemen) en deels taker (stops).
     const fees = r.limitOrders
@@ -1017,6 +1090,11 @@ export class Bot {
       highest: fill.price,
       atrAtEntry: indicators?.atr ?? null,
     };
+    // Zelflerend gekozen strategie: eigen stop, doel en duur voor deze trade.
+    if (indicators?.mlArm) {
+      const a = indicators.mlArm;
+      this.store.state.positions[pair].plan = { key: a.key, stopLossPct: a.stopLossPct, takeProfitPct: a.takeProfitPct, maxHoldMinutes: a.maxHoldMinutes };
+    }
     // Kenmerken van het signaal bewaren (hooguit 30 min oud), voor de feedback naar de trainer.
     const lf = this.lastFeatures[pair];
     if (lf && Date.now() - lf.at < 30 * 60 * 1000 && lf.timeframe === this.timeframe) {
@@ -1070,6 +1148,11 @@ export class Bot {
   // Stop-loss, ATR-stop, trailing stop en take-profit op de actuele koers. Geeft de reden
   // terug als de positie gesloten moet worden, anders null. Werkt het hoogste punt bij.
   #exitReason(position, price, risk) {
+    // Positie geopend met een zelflerend gekozen strategie: die regels gelden voor deze trade.
+    if (position.plan) {
+      risk = { ...risk, stopLossPct: position.plan.stopLossPct, takeProfitPct: position.plan.takeProfitPct,
+        maxHoldMinutes: position.plan.maxHoldMinutes, atrStopMult: 0, trailingStopPct: 0 };
+    }
     const changePct = ((price - position.entryPrice) / position.entryPrice) * 100;
     position.highest = Math.max(position.highest ?? position.entryPrice, price);
     const fromTop = ((price - position.highest) / position.highest) * 100;
@@ -1198,10 +1281,16 @@ export class Bot {
     const how = fill.limitFallback ? (fill.limit ? ', limietorder deels gevuld, rest market' : ', limietorder niet gevuld, market') : fill.limit ? ', limietorder' : '';
     this.#event(pnlEur >= 0 ? 'info' : 'warn', pair, `Verkocht @ ${fmtPrice(fill.price)}, resultaat ${fmtSigned(pnlEur)} (${reason}${how})`);
     this.onTrade?.('close', { pair, reason });
+    // Beloning voor de gekozen strategie: de echte winst of het verlies in % (na kosten).
+    if (pos.plan?.key && !/^Handmatig/.test(reason)) {
+      const pct = (pnlEur / pos.costEur) * 100;
+      this.bandit.reward(pos.plan.key, pct);
+      this.#event('info', pair, `Beloning voor strategie ${pos.plan.key.replace(/\|/g, ' · ')}: ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`);
+    }
     // Echte uitkomst naar de trainer (winst/verlies na kosten), zodat het model van eigen trades leert.
     if (pos.ml) {
       try {
-        this.onFeedback?.({ pair, ...pos.ml, returnPct: (pnlEur / pos.costEur) * 100, exitReason: reason, mode: this.broker.mode });
+        this.onFeedback?.({ pair, ...pos.ml, returnPct: (pnlEur / pos.costEur) * 100, exitReason: reason, mode: this.broker.mode, arm: pos.plan?.key ?? null });
       } catch {
         // Feedback is een extraatje; nooit een verkoop laten mislukken.
       }

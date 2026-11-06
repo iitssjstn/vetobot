@@ -288,6 +288,7 @@ export function createApp({ users, manager, log = console }) {
       heartbeatSet: isAdmin ? keys.heartbeatUrl.set : false,
       lastHeartbeat: isAdmin ? notifier?.lastHeartbeat ?? null : null,
       lastSummary: bot.store.state.lastSummary ?? null,
+      bandit: bot.banditSummary(),
       serverTime: new Date().toISOString(),
     });
   });
