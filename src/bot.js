@@ -678,16 +678,19 @@ export class Bot {
     });
   }
 
+  // Eén check tegelijk. De check reserveert de bot per coin (niet voor de hele check), zodat
+  // instellingen opslaan, paper opnieuw starten of handmatig verkopen tussen twee coins door kan
+  // en niet hoeft te wachten tot alle coins bekeken zijn.
   tick() {
-    if (this.running || this.tickQueued) return this.queue;
+    if (this.tickPromise) return this.tickPromise;
     this.tickQueued = true;
-    return this.#exclusive(async () => {
-      this.tickQueued = false;
-      await this.#tick();
-    });
+    this.tickPromise = this.#tick().finally(() => { this.tickPromise = null; this.tickQueued = false; });
+    return this.tickPromise;
   }
 
   async #tick() {
+    // Eerst wachten op wat er al loopt (bijv. een handmatige verkoop), daarna pas beginnen.
+    await this.#exclusive(async () => {});
     this.running = true;
     const started = Date.now();
     let errors = 0;
@@ -704,7 +707,7 @@ export class Bot {
       await this.#prefetch(pairs);
       for (const pair of pairs) {
         try {
-          await this.#handlePair(pair);
+          await this.#exclusive(() => this.#handlePair(pair));
         } catch (err) {
           errors++;
           this.#event('error', pair, err.message);
@@ -721,13 +724,15 @@ export class Bot {
           this.#notify('errors', { title: 'Saldo ophalen bij Bitvavo mislukt', message: err.message, level: 'error' });
         });
       }
-      await this.#settleShadows();
-      this.#armSummary();
-      this.#agentSummary();
-      this.#agentLiveWatch();
-      this.lastTickAt = new Date().toISOString();
-      if (!errors) this.lastError = null;
-      this.store.save();
+      await this.#exclusive(async () => {
+        await this.#settleShadows();
+        this.#armSummary();
+        this.#agentSummary();
+        this.#agentLiveWatch();
+        this.lastTickAt = new Date().toISOString();
+        if (!errors) this.lastError = null;
+        this.store.save();
+      });
       // Bij checks sneller dan elke minuut: rustige checks hooguit één keer per minuut loggen.
       const t = this.tickStats;
       const quiet = !errors && !t.buySignals && !t.opened && !t.closed;
@@ -771,6 +776,26 @@ export class Bot {
       }
     };
     await Promise.all(Array.from({ length: Math.min(8, pairs.length) }, worker));
+    // AI-trader: ook zijn candles (eigen candle-tijden, 1h voor de Market Agent, BTC) tegelijk
+    // ophalen, maar alleen als er sinds de vorige keer een nieuwe candle gesloten is.
+    const main = strategy.agentMode && !this.following ? this.getAgent?.() : null;
+    if (!main) return;
+    const tfs = [...new Set(agentParts(main).map((a) => a.timeframe).filter(Boolean))];
+    const jobs = [];
+    const now = Date.now();
+    for (const tf of tfs) {
+      const tfMs = (this.ex.parseTimeframe?.(tf) ?? 900) * 1000;
+      const due = pairs.filter((p) => { const seen = this.agentTs?.[`${p}|${tf}`]; return !seen || now >= seen + 2 * tfMs; });
+      if (due.length) jobs.push(['BTC/EUR', tf], ...due.filter((p) => p !== 'BTC/EUR').map((p) => [p, tf]));
+    }
+    for (const p of pairs) if (!this.marketRegimes?.[p] || now - this.marketRegimes[p].at >= 5 * 60000) jobs.push([p, MARKET_TF]);
+    const work = async () => {
+      while (jobs.length) {
+        const [p, tf] = jobs.shift();
+        await this.ex.fetchOHLCV(p, tf, undefined, CANDLES_NEEDED + 1).catch(() => {});
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(8, jobs.length) }, work));
   }
 
   async #handlePair(pair) {

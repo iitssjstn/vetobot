@@ -1236,3 +1236,21 @@ test('Verkenner: koopt in paper wat de AI-trader laat liggen, kleinste inzet, ei
   await b2.bot.tick();
   assert.equal(Object.keys(b2.bot.store.state.positions).length, 0);
 });
+
+test('opslaan wacht niet tot een hele check klaar is, alleen tot de coin die nu bekeken wordt', async () => {
+  const { bot, ex } = setup({});
+  bot.settings.data.pairs = ['BTC/EUR', 'ETH/EUR', 'XRP/EUR', 'ADA/EUR'];
+  ex.prices = [...Array(60)].map((_, i) => 100 + Math.sin(i / 3));
+  const slow = ex.fetchOHLCV.bind(ex);
+  ex.fetchOHLCV = async (...a) => { await new Promise((r) => setTimeout(r, 150)); return slow(...a); };
+  const tick = bot.tick();
+  await new Promise((r) => setTimeout(r, 100));
+  let tickDone = false;
+  tick.then(() => { tickDone = true; });
+  await bot.setRisk({ stakeEur: 30 });
+  assert.equal(tickDone, false, 'opgeslagen terwijl de check nog loopt');
+  assert.equal(bot.risk.stakeEur, 30);
+  await tick;
+  assert.equal(bot.tick() === bot.tick(), true, 'één check tegelijk');
+  await bot.tick();
+});
