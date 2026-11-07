@@ -104,6 +104,54 @@ def status(entry):
     return 'oefenen'
 
 
+REGIMES = ['stijgend', 'zijwaarts', 'dalend']
+REGIME_MIN_TRADES = 20    # zoveel eindtest-trades in een marktfase voordat de Strategy Agent erop afgaat
+
+
+def regime_score(entry):
+    """Per marktfase: aantal eindtest-trades, gemiddeld resultaat en voordeel boven de markt,
+    over alle rondes van dit recept."""
+    out = {}
+    for reg in REGIMES:
+        rows = [((x.get('test') or {}).get('byRegime') or {}).get(reg) for x in entry.get('rounds', [])]
+        rows = [r for r in rows if r and r.get('trades')]
+        n = sum(r['trades'] for r in rows)
+        er = [r for r in rows if r.get('edgePct') is not None]
+        en = sum(r['trades'] for r in er)
+        out[reg] = {'trades': n, 'avg': sum(r['avgPct'] * r['trades'] for r in rows) / n if n else None,
+                    'edge': sum(r['edgePct'] * r['trades'] for r in er) / en if en else None}
+    return out
+
+
+def choose_per_regime(entries, main):
+    """Strategy Agent: kies per marktfase welk recept de bot gebruikt.
+    entries: bruikbare recepten (met model), main: het beste recept overall.
+    Per fase: het recept dat in die fase het meest beter deed dan de markt (met genoeg trades en
+    status betrouwbaar of veelbelovend). Is er geen, en heeft het hoofdrecept in die fase bewezen
+    verlies tegenover de markt, dan niet handelen in die fase. Anders het hoofdrecept.
+    Geeft {fase: {'key': recept-sleutel of None, 'why': korte reden}}."""
+    order = {'betrouwbaar': 2, 'veelbelovend': 1}
+    plan = {}
+    main_rs = regime_score(main) if main else {}
+    for reg in REGIMES:
+        cands = []
+        for e in entries:
+            st = status(e)
+            rs = regime_score(e)[reg]
+            if st in order and rs['trades'] >= REGIME_MIN_TRADES and rs['edge'] is not None and rs['edge'] > 0:
+                cands.append(((order[st], rs['edge']), e, rs))
+        if cands:
+            _, e, rs = max(cands, key=lambda c: c[0])
+            plan[reg] = {'key': e['key'], 'why': 'best', 'edge': rs['edge'], 'trades': rs['trades']}
+            continue
+        mr = main_rs.get(reg) or {}
+        if main and mr.get('trades', 0) >= REGIME_MIN_TRADES and mr.get('edge') is not None and mr['edge'] <= 0:
+            plan[reg] = {'key': None, 'why': 'pauze', 'edge': mr['edge'], 'trades': mr['trades']}
+        else:
+            plan[reg] = {'key': main['key'] if main else None, 'why': 'weinig bewijs', 'edge': mr.get('edge'), 'trades': mr.get('trades', 0)}
+    return plan
+
+
 def rank_key(entry):
     st = status(entry)
     sc = score(entry)
@@ -168,7 +216,7 @@ def add_round(recipes, recipe, report):
     k = key_of(recipe)
     e = recipes.setdefault(k, {'key': k, 'recipe': recipe, 'rounds': []})
     slim = {'ts': time.time(), 'at': report.get('at'), 'ok': report.get('ok'), 'reason': report.get('reason'),
-            'test': {x: (report.get('test') or {}).get(x) for x in ('trades', 'avgPct', 'totalPct', 'winRate', 'avgHeld', 'buyHoldPct', 'maxDrawdownPct', 'worstPct', 'marketPct', 'edgePct', 'beatMarketRate')} if report.get('test') else None,
+            'test': {x: (report.get('test') or {}).get(x) for x in ('trades', 'avgPct', 'totalPct', 'winRate', 'avgHeld', 'buyHoldPct', 'maxDrawdownPct', 'worstPct', 'marketPct', 'edgePct', 'beatMarketRate', 'byRegime')} if report.get('test') else None,
             'val': {x: (report.get('validation') or {}).get(x) for x in ('trades', 'avgPct', 'totalPct')} if report.get('validation') else None,
             'coins': report.get('coins'), 'threshold': report.get('threshold'), 'testDays': report.get('testDays')}
     e['rounds'] = (e['rounds'] + [slim])[-KEEP_ROUNDS:]

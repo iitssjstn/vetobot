@@ -26,6 +26,7 @@ import time
 
 import numpy as np
 
+import market as market_agent
 from features import FEATURES, WARMUP, context, features_at, series
 from train import TF_MS
 
@@ -116,6 +117,7 @@ class Market:
         self.high = np.array([x[2] for x in candles], dtype=float)
         self.low = np.array([x[3] for x in candles], dtype=float)
         self.valid = ~np.isnan(self.X[:, 0])
+        self.tf_ms = int(candles[1][0] - candles[0][0]) if len(candles) > 1 else 0
 
 
 def _split(n):
@@ -260,11 +262,23 @@ def market_move(bench, t0, t1):
     return sum(moves) / len(moves) if moves else None
 
 
-def backtest(markets, part, entry_model, entry_med, exit_model, exit_med, H, cost, safety_stop, thresholds, cache=None, bench=None):
+def _by_regime(trades):
+    """Resultaat per marktfase bij het kopen (voor de Strategy Agent)."""
+    out = {}
+    for reg in {t['reg'] for t in trades if t.get('reg')}:
+        ts = [t for t in trades if t.get('reg') == reg]
+        cmp = [t for t in ts if t['mkt'] is not None]
+        out[reg] = {'trades': len(ts), 'avgPct': sum(t['ret'] for t in ts) / len(ts),
+                    'edgePct': sum(t['ret'] - t['mkt'] for t in cmp) / len(cmp) if cmp else None}
+    return out
+
+
+def backtest(markets, part, entry_model, entry_med, exit_model, exit_med, H, cost, safety_stop, thresholds, cache=None, bench=None, regimes=None):
     """Handelen zoals in het echt op een deel van de tijd (1 = validatie, 2 = eindtest):
     één positie per coin, kopen als de verwachte waarde > drempel, verkopen met het geleerde
     gedrag. Geeft per drempel het resultaat, ook vergeleken met de markt (bench: de coins waarmee
-    vergeleken wordt, standaard dezelfde) tijdens precies dezelfde trades."""
+    vergeleken wordt, standaard dezelfde) tijdens precies dezelfde trades. Met regimes (Market
+    Agent) ook per marktfase bij het kopen."""
     if cache is None:
         cache = {}
     bench = bench or markets
@@ -286,7 +300,8 @@ def backtest(markets, part, entry_model, entry_med, exit_model, exit_med, H, cos
                     ret, held, why = o[1]
                     end = min(i + held, len(mk.c) - 1)
                     mkt = market_move(bench, int(mk.c[i][0]), int(mk.c[end][0]))
-                    trades.append({'pair': mk.pair, 'i': i, 'ret': ret - cost, 'held': held, 'why': why, 'mkt': mkt})
+                    reg = regimes.at(mk.pair, int(mk.c[i][0]) + mk.tf_ms) if regimes else None
+                    trades.append({'pair': mk.pair, 'i': i, 'ret': ret - cost, 'held': held, 'why': why, 'mkt': mkt, 'reg': reg})
                     i += max(1, held)
                 else:
                     i += 1
@@ -310,6 +325,7 @@ def backtest(markets, part, entry_model, entry_med, exit_model, exit_med, H, cos
             'avgHeld': sum(t['held'] for t in trades) / n if n else None,
             'buyHoldPct': sum(bh) / len(bh) if bh else None,
             'exits': {k: sum(1 for t in trades if t['why'] == k) for k in ('zelf verkocht', 'veiligheidsstop', 'maximale duur', 'einde data')},
+            'byRegime': _by_regime(trades),
             'byPair': {p: {'trades': sum(1 for t in trades if t['pair'] == p), 'totalPct': sum(t['ret'] for t in trades if t['pair'] == p)}
                        for p in {t['pair'] for t in trades}},
         }
@@ -392,7 +408,8 @@ def train_agent(cfg, recipe, fetch, pairs, log=print, think=None, progress=None,
         coins = [m.pair for m in markets]
     chosen = [m for m in markets if m.pair in coins]
     step('agent', 4, 5, f'AI-trader {tf}: eindtest')
-    test = backtest(chosen, 2, entry_model, entry_med, exit_model, exit_med, H, cost, safety, (thr,), bench=markets)[thr]
+    regimes = market_agent.build(fetch, [m.pair for m in chosen], int(cfg['days']), log=log)
+    test = backtest(chosen, 2, entry_model, entry_med, exit_model, exit_med, H, cost, safety, (thr,), bench=markets, regimes=regimes)[thr]
     days_test = sum((mk.split[2][1] - mk.split[2][0]) for mk in chosen) / len(chosen) * TF_MIN.get(tf, 15) / 1440
     # Alleen goed als hij ook beter deed dan meedobberen met de markt tijdens zijn trades.
     ok = bool(val['totalPct'] > 0 and test['trades'] >= MIN_TEST_TRADES and (test['avgPct'] or 0) >= MIN_TEST_AVG

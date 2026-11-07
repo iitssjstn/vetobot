@@ -1060,3 +1060,49 @@ test('AI-trader zonder AI-controleur: geen AI-vraag, de AI-trader beslist zelf',
   assert.equal(lastAiPrompt, '', 'AI-controleur niet gevraagd');
   assert.match(bot.store.state.decisions[0].reason, /De AI-trader beslist zelf/);
 });
+
+test('AI-trader-team: Strategy Agent per marktfase, Risk Agent inzet, Execution Agent meet', async () => {
+  const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
+  const base = { ...fx.agent, stage: 'getest', recipeKey: 'A', entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 } };
+  const run = async (agent) => {
+    const { bot, ex } = setup({});
+    await bot.setRisk({ cooldownMinutes: 0 });
+    await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0 });
+    bot.getAgent = () => agent;
+    ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+    await bot.tick();
+    return bot;
+  };
+  // Geen plan per fase: hoofdrecept, maar halve inzet (weinig bewijs).
+  const b1 = await run(base);
+  const p1 = b1.store.state.positions['BTC/EUR'];
+  assert.ok(p1, b1.pairStatus['BTC/EUR']?.reason);
+  const regime = b1.agentTeam().market['BTC/EUR'];
+  assert.ok(['stijgend', 'zijwaarts', 'dalend'].includes(regime), 'Market Agent heeft een fase');
+  assert.equal(p1.agent.marketRegime, regime);
+  assert.ok(Math.abs(p1.costEur - b1.stakeInfo().effective / 2) < 0.6, `halve inzet: ${p1.costEur}`);
+  assert.ok(b1.store.state.execLog.length >= 1 && b1.store.state.execLog[0].side === 'buy', 'Execution Agent meet de aankoop');
+  // In deze fase niet handelen: niets kopen.
+  const all = (p) => ({ stijgend: p, zijwaarts: p, dalend: p });
+  const b2 = await run({ ...base, regimes: all({ key: null, why: 'pauze', edge: -0.3, trades: 40 }) });
+  assert.equal(b2.store.state.positions['BTC/EUR'], undefined);
+  assert.match(b2.pairStatus['BTC/EUR'].reason, /Strategy Agent: in een .* handel ik niet/);
+  // Ander recept het best in deze fase: dat recept koopt, met volle inzet.
+  const other = { ...base, recipeKey: 'B', threshold: base.threshold };
+  const b3 = await run({ ...base, regimes: all({ key: 'B', why: 'best', edge: 0.3, trades: 40, agent: other }) });
+  const p3 = b3.store.state.positions['BTC/EUR'];
+  assert.ok(p3, b3.pairStatus['BTC/EUR']?.reason);
+  assert.equal(p3.agent.recipe, 'B');
+  assert.ok(Math.abs(p3.costEur - b3.stakeInfo().effective) < 0.6, 'volle inzet');
+  // Risk Agent: na 3 verliezen op rij geen nieuwe aankoop.
+  const { bot, ex } = setup({});
+  await bot.setRisk({ cooldownMinutes: 0 });
+  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0 });
+  bot.getAgent = () => base;
+  const now = new Date().toISOString();
+  bot.store.state.trades = [1, 2, 3].map(() => ({ pair: 'ETH/EUR', pnlEur: -1, pnlPct: -1, closedAt: now, agent: { recipe: 'A' } }));
+  ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+  await bot.tick();
+  assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
+  assert.match(bot.pairStatus['BTC/EUR'].reason, /Risk Agent: 3 verliezen op rij/);
+});

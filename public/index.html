@@ -1895,6 +1895,26 @@ $('st-agent')?.addEventListener('change', agentFields);
 let agDirty = false;
 const AG_STAGE = { bewezen: ['ok', 'bewezen: mag ook live'], getest: ['wait', 'getest: handelt in paper'], oefenen: ['soft', 'oefent in paper: nog geen recept met genoeg winst in de test'], geblokkeerd: ['bad', 'geblokkeerd: recept te riskant, handelt niet'] };
 const RC_STATUS = { betrouwbaar: 'ok', veelbelovend: 'wait', oefenen: 'soft', afgevallen: 'bad', 'te riskant': 'bad' };
+const REGIMES = [['stijgend', '↑'], ['zijwaarts', '↔'], ['dalend', '↓']];
+const REGIME_TXT = { stijgend: 'stijgende markt', zijwaarts: 'zijwaartse markt', dalend: 'dalende markt' };
+// Het team achter de AI-trader: wat elke agent nu doet.
+function agentTeamHtml(a, team, sign, nl) {
+  const plan = a.regimes ?? {};
+  const planTxt = REGIMES.map(([k, ic]) => { const p = plan[k]; if (!p) return `${ic} ${REGIME_TXT[k]}: hoofdrecept`;
+    return `${ic} ${REGIME_TXT[k]}: ${p.key ? esc(p.text ?? p.key) : '<b>niet handelen</b>'} <span class="muted">(${p.why === 'best' ? `het best, ${sign(p.edge)} beter dan de markt over ${p.trades} trades` : p.why === 'pauze' ? `slechter dan de markt over ${p.trades} trades` : 'nog weinig bewijs per fase'})</span>`; }).join('<br>');
+  const mk = Object.entries(team?.market ?? {}).filter(([, r]) => r);
+  const count = REGIMES.map(([k, ic]) => `${ic} ${mk.filter(([, r]) => r === k).length}`).join(' · ');
+  const ex = team?.execution;
+  const rk = team?.risk;
+  const rows = [
+    ['Learning Agent', 'leert kopen en verkopen uit de koersgeschiedenis en uit de echte trades van de bot (op de leerserver)', `${a.rounds ?? 0} leerrondes`],
+    ['Market Agent', 'bepaalt per coin de marktfase op 1h-candles: stijgend, zijwaarts of dalend', mk.length ? `${count} <span class="muted">(${mk.length} coins)</span>` : 'nog niet gemeten'],
+    ['Strategy Agent', 'kiest per marktfase het recept dat daar het meest beter deed dan de markt, of niet handelen', planTxt],
+    ['Risk Agent', `na ${rk?.rules?.lossStreak ?? 3} verliezen op rij ${rk?.rules?.pauseHours ?? 6} uur pauze; halve inzet bij weinig bewijs voor de marktfase; geen coins met slechte uitvoering; plus de daglimiet, noodstop en AI-controleur`, rk ? `${rk.lossStreak} verlies${rk.lossStreak === 1 ? '' : 'zen'} op rij` : '–'],
+    ['Execution Agent', 'meet bij elke order hoeveel de prijs afweek van de koers vlak ervoor', ex ? `gemiddeld ${sign(ex.avgSlipPct)} over ${ex.orders} orders <span class="muted">(slechtst ${esc(ex.worst.pair)} ${sign(ex.worst.slipPct)})</span>` : 'nog geen orders'],
+  ];
+  return `<div class="alert" style="margin:0 0 10px;display:block"><b>Het team van de AI-trader</b>${rows.map(([n, what, now]) => `<div style="margin-top:6px"><b>${n}</b> <span class="muted">${what}</span><br>${now}</div>`).join('')}</div>`;
+}
 function renderAgent(t, nl) {
   const a = t?.agent;
   $('tr-agent-panel').hidden = !a;
@@ -1913,12 +1933,14 @@ function renderAgent(t, nl) {
       + `<br>Coins: ${esc((a.coins ?? []).join(', ') || '–')}`
       + `<br>${lv?.n ? `In de praktijk: ${lv.n} trades, gemiddeld ${sign(lv.sum / lv.n)} (bewezen na ${a.provenMin} trades met ≥ ${nl(a.provenAvg, 1)}%)` : 'Nog geen trades in de praktijk'}`
       + `<br><span class="muted">Bot: ${botOn ? (bot ? (bot.allowed ? 'handelt met de AI-trader' : 'AI-trader staat aan, maar handelt nog niet in deze modus (live pas na bewijs)') : 'AI-trader staat aan, nog niet opgehaald') : 'AI-trader staat uit bij Instellingen → Strategie'}</span></div></div>`
-      : '<p class="muted" style="margin:0 0 10px">Nog geen recept getraind. Na de eerste leerronde verschijnt hier het resultaat.</p>');
+      : '<p class="muted" style="margin:0 0 10px">Nog geen recept getraind. Na de eerste leerronde verschijnt hier het resultaat.</p>')
+    + agentTeamHtml(a, bot?.team, sign, nl);
   const rows = a.recipes ?? [];
   $('ag-table').innerHTML = rows.length ? table(rows, [
     ['Recept', (r) => `${esc(r.text)}${pub?.key === r.key ? ' <span class="badge ok">bot handelt hiermee</span>' : ''}`],
     ['Rondes', (r) => `<span class="num">${r.score.tested}</span>`, 'r'],
     ['Gemiddeld (eindtests)', (r) => r.score.avg != null ? `<span class="${r.score.avg > 0 ? 'up' : 'down'}">${sign(r.score.avg)}</span> per trade <span class="muted">· ${r.score.trades} trades</span>` : `<span class="muted">${esc(r.last?.reason ?? '–')}</span>`],
+    ['Per marktfase', (r) => REGIMES.map(([k, ic]) => { const x = r.byRegime?.[k]; return x?.trades ? `<span title="${k}: ${x.trades} trades" class="${(x.edge ?? 0) > 0 ? 'up' : 'down'}">${ic} ${x.edge != null ? sign(x.edge) : '–'}</span>` : `<span class="muted" title="${k}: nog geen trades">${ic} –</span>`; }).join(' ')],
     ['Beter dan de markt', (r) => r.score.edge != null ? `<span class="${r.score.edge > 0 ? 'up' : 'down'}">${sign(r.score.edge)}</span> per trade` : '<span class="muted">nog niet gemeten</span>'],
     ['Grootste terugval', (r) => r.score.drawdown != null ? `<span class="num ${r.score.drawdown > 25 ? 'down' : ''}">${sign(-r.score.drawdown)}</span>` : '–', 'r'],
     ['Winst / terugval', (r) => r.score.ratio != null ? `<span class="num">${nl(r.score.ratio, 2)}</span>` : '–', 'r'],

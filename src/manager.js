@@ -153,6 +153,10 @@ export class BotManager {
     if (!this.trainerAccess()) return;
     const r = await this.trainerRequest('/agent.json', { etag: this.ml.agentEtag }).catch(() => null);
     if (r && !r.notModified && r.data && !validateAgent(r.data)) {
+      // Recepten per marktfase (Strategy Agent): een onbruikbaar recept valt terug op het hoofdrecept.
+      for (const [reg, p] of Object.entries(r.data.regimes ?? {})) {
+        if (p?.agent && validateAgent(p.agent)) r.data.regimes[reg] = { ...p, key: r.data.recipeKey ?? null, why: 'weinig bewijs', agent: undefined };
+      }
       const before = this.ml.agent;
       this.ml.agent = r.data;
       this.ml.agentEtag = r.etag;

@@ -290,7 +290,7 @@ export function createApp({ users, manager, log = console }) {
       lastSummary: bot.store.state.lastSummary ?? null,
       bandit: bot.banditSummary(),
       thoughts: bot.thoughts.slice(-40),
-      agent: (() => { const a = bot.getAgent?.(); return a ? { timeframe: a.timeframe, stage: a.stage, coins: a.coins ?? null, allowed: bot.agentAllowed(a), live: a.live ?? null } : null; })(),
+      agent: (() => { const a = bot.getAgent?.(); return a ? { timeframe: a.timeframe, stage: a.stage, coins: a.coins ?? null, allowed: bot.agentAllowed(a), live: a.live ?? null, team: bot.agentTeam() } : null; })(),
       serverTime: new Date().toISOString(),
     });
   });

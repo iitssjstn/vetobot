@@ -826,13 +826,18 @@ def agent_round():
         st = agent_search.status(best)
         a = read_json(os.path.join('agents', best['key'].replace('|', '_') + '.json'), None)
         lv = data['live'].get(best['key']) or {}
-        proven = lv.get('n', 0) >= AGENT_PROVEN_MIN and lv['sum'] / lv['n'] >= AGENT_PROVEN_AVG
-        a['stage'] = ('bewezen' if proven else 'getest') if st in ('betrouwbaar', 'veelbelovend') else 'oefenen'
+        a['stage'] = agent_stage(best, lv)
         a['recipeKey'] = best['key']
         a['recipeStatus'] = st
         a['live'] = lv
+        a['regimes'] = regime_plan(board, best, data)
         write_json('agent.json', a)
-        data['published'] = {'key': best['key'], 'timeframe': a['timeframe'], 'stage': a['stage'], 'status': st, 'at': report['at']}
+        plan_now = {reg: p['key'] for reg, p in a['regimes'].items()}
+        plan_before = (prev or {}).get('regimes')
+        data['published'] = {'key': best['key'], 'timeframe': a['timeframe'], 'stage': a['stage'], 'status': st, 'at': report['at'],
+                             'regimes': plan_now}
+        if plan_now != plan_before:
+            think(regime_plan_text(a['regimes'], data['recipes']), kind='insight')
         if not prev or prev.get('key') != best['key'] or prev.get('stage') != a['stage']:
             sc = agent_search.score(best)
             coins = a.get('coins') or []
@@ -856,6 +861,52 @@ def agent_round():
             think(f"Mijn recept {agent_mod.recipe_text(old['recipe'])} zakte in een test meer dan {agent_search.DANGER_DRAWDOWN}% terug. "
                   'Dat is te riskant: de bot handelt er niet meer mee, ook niet in paper, tot ik een veiliger recept vind.', kind='warn')
     write_json('agents.json', data)
+
+
+def agent_stage(entry, lv):
+    """Hoe ver een recept is: oefenen (paper, als dat mag), getest (paper) of bewezen (ook live)."""
+    st = agent_search.status(entry)
+    proven = lv.get('n', 0) >= AGENT_PROVEN_MIN and lv['sum'] / lv['n'] >= AGENT_PROVEN_AVG
+    return ('bewezen' if proven else 'getest') if st in ('betrouwbaar', 'veelbelovend') else 'oefenen'
+
+
+AGENT_PART_KEYS = ('version', 'kind', 'timeframe', 'threshold', 'maxHoldCandles', 'safetyStopPct', 'costPct', 'coins', 'recipe', 'entry', 'exit', 'meta')
+
+
+def regime_plan(board, best, data):
+    """Strategy Agent: per marktfase welk recept de bot gebruikt. Een ander recept dan het
+    hoofdrecept gaat in zijn geheel mee in agent.json, zodat de bot het zelf kan uitrekenen."""
+    out = {}
+    for reg, p in agent_search.choose_per_regime(board, best).items():
+        item = dict(p)
+        if p['key'] and p['key'] != best['key']:
+            sub = read_json(os.path.join('agents', p['key'].replace('|', '_') + '.json'), None)
+            entry = data['recipes'].get(p['key'])
+            if not sub or not entry:
+                item = {'key': best['key'], 'why': 'weinig bewijs', 'edge': None, 'trades': 0}
+            else:
+                lv = data['live'].get(p['key']) or {}
+                item['agent'] = {**{k: sub[k] for k in AGENT_PART_KEYS if k in sub}, 'recipeKey': p['key'],
+                                 'recipeStatus': agent_search.status(entry), 'stage': agent_stage(entry, lv), 'live': lv}
+        out[reg] = item
+    return out
+
+
+REGIME_NAME = {'stijgend': 'een stijgende markt', 'zijwaarts': 'een zijwaartse markt', 'dalend': 'een dalende markt'}
+
+
+def regime_plan_text(plan, recipes):
+    parts = []
+    for reg in agent_search.REGIMES:
+        p = plan.get(reg) or {}
+        if not p.get('key'):
+            parts.append(f"in {REGIME_NAME[reg]} handel ik niet (daar deed ik het slechter dan de markt)")
+            continue
+        rec = agent_mod.recipe_text((recipes.get(p['key']) or {}).get('recipe') or {})
+        why = {'best': f"daar het best, {thoughts.pct(p.get('edge'))} per trade beter dan de markt",
+               'weinig bewijs': 'mijn hoofdrecept, nog te weinig bewijs per marktfase'}.get(p['why'], p['why'])
+        parts.append(f"in {REGIME_NAME[reg]} gebruik ik {rec} ({why})")
+    return 'Strategy Agent: ' + '; '.join(parts) + '.'
 
 
 def agent_mod_say(r, entry=None):
@@ -933,13 +984,15 @@ def agent_info():
     for e in rows:
         last = e['rounds'][-1] if e.get('rounds') else {}
         board.append({'key': e['key'], 'recipe': e['recipe'], 'text': agent_mod.recipe_text(e['recipe']), 'status': agent_search.status(e),
-                      'score': agent_search.score(e), 'last': last, 'live': data.get('live', {}).get(e['key'])})
+                      'score': agent_search.score(e), 'byRegime': agent_search.regime_score(e), 'last': last, 'live': data.get('live', {}).get(e['key'])})
     return {'enabled': cfg['agent']['enabled'], 'config': cfg['agent'], 'busy': state.get('agentBusy', False),
             'progress': state.get('agentProgress') if state.get('agentBusy') else None, 'nextAt': state.get('nextAgentAt'),
             'recipes': board, 'tried': len(data.get('recipes', {})),
             'possible': len(agent_search.all_recipes(cfg['agent']['timeframes'] or agent_mod.DEFAULT_TIMEFRAMES)),
             'published': data.get('published'), 'coins': (pub or {}).get('coins'),
             'stage': (pub or {}).get('stage'), 'rounds': data.get('round', 0),
+            'regimes': {reg: {k: v for k, v in p.items() if k != 'agent'} | {'text': agent_mod.recipe_text(data['recipes'][p['key']]['recipe']) if p.get('key') in data.get('recipes', {}) else None}
+                        for reg, p in ((pub or {}).get('regimes') or {}).items()},
             'provenMin': AGENT_PROVEN_MIN, 'provenAvg': AGENT_PROVEN_AVG}
 
 
@@ -1008,7 +1061,11 @@ class Handler(BaseHTTPRequestHandler):
             a = read_json('agent.json', None)
             if not a:
                 return self.send(404, {'error': 'Nog geen AI-trader'})
-            a['live'] = load_agents().get('live', {}).get(a.get('recipeKey') or a['timeframe'], {})
+            live = load_agents().get('live', {})
+            a['live'] = live.get(a.get('recipeKey') or a['timeframe'], {})
+            for p in (a.get('regimes') or {}).values():
+                if p.get('agent'):
+                    p['agent']['live'] = live.get(p['agent'].get('recipeKey'), {})
             data = json.dumps(a).encode()
             etag = '"' + hashlib.sha1(data).hexdigest()[:16] + '"'
             if self.headers.get('If-None-Match') == etag:

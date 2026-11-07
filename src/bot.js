@@ -8,6 +8,7 @@ import { fetchClosedCandles, fetchPrice, hasTradingKeys } from './exchange.js';
 import { checkEntry } from './risk.js';
 import { Bandit } from './bandit.js';
 import { analyzeBook, bookProblem } from './orderbook.js';
+import { MARKET_TF, RISK, agentForRecipe, allAgentCoins, chooseForRegime, assessRisk, riskStake, slippagePct, execSummary, lossStreak } from './agents.js';
 import path from 'node:path';
 
 // Bedragen en koersen in Nederlandse notatie voor meldingen (€ 81,31 / € 0,3455 / −€ 0,36).
@@ -665,7 +666,7 @@ export class Bot {
       // Gevolgde coins plus coins waarin nog een positie open staat, zodat een positie
       // altijd bewaakt blijft, ook als de coin uit de lijst is gehaald.
       // Met de AI-trader aan: ook de coins die hij zelf gekozen heeft (hij zoekt uit waar hij het best handelt).
-      const agentCoins = this.strategy.agentMode && !this.following ? (this.getAgent?.()?.coins ?? []) : [];
+      const agentCoins = this.strategy.agentMode && !this.following ? allAgentCoins(this.getAgent?.()) : [];
       const pairs = [...new Set([...this.pairs, ...agentCoins, ...Object.keys(this.store.state.positions)])];
       await this.#prefetch(pairs);
       for (const pair of pairs) {
@@ -1050,7 +1051,34 @@ export class Bot {
     return f ? { f, ts, close: candles.at(-1)[4] } : null;
   }
 
-  async #agentSignal(pair, agent) {
+  // Market Agent: marktfase van deze coin op 1h-candles (zelfde berekening als de leerserver).
+  // Bewaard tot er een nieuw 1h-candle gesloten is.
+  async #marketRegime(pair) {
+    this.marketRegimes ??= {};
+    const c = this.marketRegimes[pair];
+    if (c && Date.now() - c.at < 5 * 60000) return c.regime;
+    const candles = await fetchClosedCandles(this.ex, pair, MARKET_TF, CANDLES_NEEDED).catch(() => null);
+    const f = candles?.length ? computeFeatures(candles, {}) : null;
+    const regime = f ? regimeOf(f) : null;
+    this.marketRegimes[pair] = { regime, at: Date.now() };
+    return regime;
+  }
+
+  // Strategy Agent: welke AI-trader past bij de marktfase van deze coin.
+  async #agentSignal(pair, main) {
+    const regime = await this.#marketRegime(pair);
+    const choice = chooseForRegime(main, regime);
+    this.agentChoice ??= {};
+    this.agentChoice[pair] = { regime, recipe: choice.agent?.recipeKey ?? null, why: choice.why };
+    if (!choice.agent) {
+      const reason = `Strategy Agent: in een ${REGIME_LABEL[regime] ?? regime} handel ik niet, daar deed geen recept het beter dan de markt`;
+      (this.agentReason ??= {})[pair] = reason;
+      return { buy: false, reason };
+    }
+    return this.#agentBuy(pair, choice.agent, regime, choice);
+  }
+
+  async #agentBuy(pair, agent, regime, choice) {
     const tf = agent.timeframe;
     this.agentTs ??= {};
     const key = `${pair}|${tf}`;
@@ -1085,21 +1113,32 @@ export class Bot {
       this.think(`Ik zie een kans bij ${pair}: ik verwacht ${nl(q)}% na kosten.${whyTxt} Maar ${blocked ? why : this.mode === 'live' ? 'live handel ik pas als ik me in paper bewezen heb' : 'oefenen in paper staat uit'}.`, pair, 'info');
       return { buy: false, reason };
     }
+    // Risk Agent: is deze trade verantwoord, en met welke inzet?
+    const risk = assessRisk({ pair, trades: this.store.state.trades, choice, execLog: this.store.state.execLog ?? [] });
+    if (risk.block) {
+      const reason = `Risk Agent: ${risk.block}`;
+      this.agentReason[pair] = reason;
+      this.think(`Ik zie een kans bij ${pair} (${nl(q)}% verwacht), maar de Risk Agent houdt me tegen: ${risk.block}.`, pair, 'warn');
+      return { buy: false, reason };
+    }
     this.agentReason[pair] = null;
     this.lastFeatures[pair] = { ts: x.ts, timeframe: tf, features: x.f, prob: null, at: Date.now() };
-    this.think(`Ik koop ${pair}: ik verwacht ${nl(q)}% na kosten (ik koop vanaf ${nl(agent.threshold)}%).${whyTxt} Wanneer ik verkoop beslis ik zelf, elke ${tf}-candle opnieuw.`, pair, 'doing');
+    const phase = regime ? ` Markt: ${REGIME_LABEL[regime]}${choice?.why === 'best' ? ', en dit recept doet het daar het best' : ''}.` : '';
+    this.think(`Ik koop ${pair}: ik verwacht ${nl(q)}% na kosten (ik koop vanaf ${nl(agent.threshold)}%).${whyTxt}${phase}` +
+      `${risk.notes.length ? ` Risk Agent: ${risk.notes.join('; ')}.` : ''} Wanneer ik verkoop beslis ik zelf, elke ${tf}-candle opnieuw.`, pair, 'doing');
     return {
-      buy: true, why, regime: regimeOf(x.f),
+      buy: true, why, regime: regime ?? regimeOf(x.f),
       reason: `AI-trader (${tf}): verwacht ${nl(q)}% na kosten (drempel ${nl(agent.threshold)}%)`,
       plan: { timeframe: tf, recipe: agent.recipeKey ?? null, expectedPct: +q.toFixed(3), version: agent.meta?.trainedAt ?? null, safetyStopPct: agent.safetyStopPct,
-        maxHoldMinutes: agent.maxHoldCandles * tfMs / 60000, entryClose: x.close },
+        maxHoldMinutes: agent.maxHoldCandles * tfMs / 60000, entryClose: x.close, marketRegime: regime, stakeFactor: risk.stakeFactor },
     };
   }
 
   // Elke nieuwe candle: is vasthouden nog de moeite waard? Zo niet: verkopen.
   async #agentExit(pair, position, price) {
-    const agent = this.getAgent?.();
     const a = position.agent;
+    // Verkopen met dezelfde AI-trader (recept) die kocht.
+    const agent = agentForRecipe(this.getAgent?.(), a.recipe);
     if (!agent || !this.strategy.agentMode) return false;
     position.highest = Math.max(position.highest ?? position.entryPrice, price);
     const tf = a.timeframe;
@@ -1338,15 +1377,18 @@ export class Bot {
   async #open(pair, reason, indicators = null) {
     this.#step(`${pair}: kopen`);
     const stakeInfo = this.stakeInfo();
-    const stake = stakeInfo.effective;
+    // Risk Agent: bij weinig bewijs een kleinere inzet.
+    const stake = riskStake(stakeInfo.effective, indicators?.agent?.stakeFactor ?? 1);
     const opts = this.#orderOpts();
     if (opts.limit) this.#step(`${pair}: limietorder, wacht max. ${opts.waitSec} sec op vulling`);
+    const expected = await fetchPrice(this.ex, pair).catch(() => null);
     const fill = await this.broker.buy(pair, stake, opts);
     if (!fill) {
       this.#event('info', pair, `Limietorder niet gevuld binnen ${opts.waitSec} sec: de koers liep weg, aankoop overgeslagen`);
       return false;
     }
     if (this.tickStats) this.tickStats.opened++;
+    this.#execution(pair, 'buy', expected, fill);
     if (this.broker.mode === 'paper') this.store.state.balanceEur -= fill.costEur;
     this.store.state.positions[pair] = {
       pair,
@@ -1362,7 +1404,8 @@ export class Bot {
     // AI-trader: hij beslist zelf wanneer hij verkoopt; alleen de noodstop en maximale duur als vangnet.
     if (indicators?.agent) {
       const g = indicators.agent;
-      this.store.state.positions[pair].agent = { timeframe: g.timeframe, version: g.version, expectedPct: g.expectedPct, recipe: g.recipe ?? null };
+      this.store.state.positions[pair].agent = { timeframe: g.timeframe, version: g.version, expectedPct: g.expectedPct, recipe: g.recipe ?? null,
+        marketRegime: g.marketRegime ?? null };
       this.store.state.positions[pair].plan = { key: null, stopLossPct: g.safetyStopPct, takeProfitPct: 0, maxHoldMinutes: g.maxHoldMinutes };
     }
     // Zelflerend gekozen strategie: eigen stop, doel en duur voor deze trade.
@@ -1377,7 +1420,8 @@ export class Bot {
     }
     delete this.lastFeatures[pair];
     this.#event('info', pair, `Gekocht: ${fmtAmount(fill.amount)} @ ${fmtPrice(fill.price)} (${this.broker.mode}${fill.limit ? `, limietorder${fill.partial ? ', deels gevuld' : ''}` : ''})` +
-      (stakeInfo.extra > 0 ? `, inzet ${fmtEur(stake)} waarvan ${fmtEur(stakeInfo.extra)} herinvesteerde winst` : ''));
+      (stakeInfo.extra > 0 ? `, inzet ${fmtEur(stake)} waarvan ${fmtEur(stakeInfo.extra)} herinvesteerde winst` : '') +
+      (stake < stakeInfo.effective ? `, inzet verlaagd naar ${fmtEur(stake)} door de Risk Agent` : ''));
     // Volgers laten meedoen (alleen gezet op de bot van de leider).
     this.onTrade?.('open', { pair, reason, indicators });
     this.#notify('trades', {
@@ -1529,13 +1573,40 @@ export class Bot {
     return closed;
   }
 
+  // Execution Agent: hoe goed werd de order uitgevoerd? Prijs t.o.v. de koers vlak ervoor.
+  #execution(pair, side, expected, fill) {
+    const slip = slippagePct(side, expected, fill?.price);
+    if (slip == null) return;
+    const log = (this.store.state.execLog ??= []);
+    log.unshift({ at: new Date().toISOString(), pair, side, mode: this.broker.mode, expected, price: fill.price, slipPct: +slip.toFixed(4),
+      limit: Boolean(fill.limit), partial: Boolean(fill.partial) });
+    log.length = Math.min(log.length, 100);
+    if (slip > 0.3) {
+      this.think(`Execution Agent: mijn ${side === 'buy' ? 'aankoop' : 'verkoop'} van ${pair} kwam ${slip.toFixed(2).replace('.', ',')}% slechter uit dan de koers vlak ervoor.`, pair, 'warn');
+    }
+  }
+
+  // Wat het team achter de AI-trader nu ziet en doet, voor het dashboard.
+  agentTeam() {
+    const trades = this.store.state.trades;
+    const streak = lossStreak(trades);
+    return {
+      market: Object.fromEntries(Object.entries(this.marketRegimes ?? {}).map(([p, x]) => [p, x.regime])),
+      choice: this.agentChoice ?? {},
+      risk: { lossStreak: streak, rules: RISK },
+      execution: execSummary(this.store.state.execLog ?? []),
+    };
+  }
+
   async #close(pair, reason) {
     this.#step(`${pair}: verkopen`);
     if (this.tickStats) this.tickStats.closed++;
     const pos = this.store.state.positions[pair];
     const opts = this.#orderOpts(reason);
     if (opts.limit) this.#step(`${pair}: limietorder verkopen, wacht max. ${opts.waitSec} sec`);
+    const expected = await fetchPrice(this.ex, pair).catch(() => null);
     const fill = await this.broker.sell(pair, pos.amount, opts);
+    this.#execution(pair, 'sell', expected, fill);
     const pnlEur = fill.costEur - pos.costEur;
     if (this.broker.mode === 'paper') this.store.state.balanceEur += fill.costEur;
     delete this.store.state.positions[pair];
@@ -1555,6 +1626,7 @@ export class Bot {
       feesEur: (pos.entryFeeEur ?? 0) + (fill.feeEur ?? 0),
       entryReason: pos.reason,
       exitReason: reason,
+      ...(pos.agent ? { agent: { recipe: pos.agent.recipe ?? null, marketRegime: pos.agent.marketRegime ?? null } } : {}),
     });
     const how = fill.limitFallback ? (fill.limit ? ', limietorder deels gevuld, rest market' : ', limietorder niet gevuld, market') : fill.limit ? ', limietorder' : '';
     this.#event(pnlEur >= 0 ? 'info' : 'warn', pair, `Verkocht @ ${fmtPrice(fill.price)}, resultaat ${fmtSigned(pnlEur)} (${reason}${how})`);

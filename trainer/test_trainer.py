@@ -474,6 +474,10 @@ class AgentTrader(unittest.TestCase):
         self.assertGreater(r['test']['avgPct'], 0)
         self.assertIsNotNone(r['test']['marketPct'], 'vergeleken met de markt tijdens de trades')
         self.assertGreater(r['test']['edgePct'], 0)
+        by = r['test']['byRegime']
+        self.assertTrue(by, 'Market Agent: resultaat per marktfase')
+        self.assertTrue(set(by) <= {'stijgend', 'zijwaarts', 'dalend'})
+        self.assertEqual(sum(x['trades'] for x in by.values()), r['test']['trades'])
         self.assertGreater(r['test']['exits']['zelf verkocht'], 0, 'hij verkoopt zelf, zonder vast doel of stop')
         self.assertEqual(a['exit']['features'][-4:], agent.POS_FEATURES)
         # Exportformaat rekent hetzelfde als sklearn (ook getest in Node met de fixture)
@@ -511,6 +515,8 @@ class AgentTrader(unittest.TestCase):
         self.assertTrue(any(t.startswith('Ik probeer nu: 15m-candles') for t in said), said)
         self.assertTrue(any(t.startswith('Resultaat 15m-candles') for t in said), said)
         self.assertTrue(any('Mijn beste manier van traden is nu' in t for t in said))
+        self.assertEqual(set(pub['regimes']), {'stijgend', 'zijwaarts', 'dalend'}, 'Strategy Agent: plan per marktfase')
+        self.assertTrue(any(t.startswith('Strategy Agent:') for t in said), said)
         info = s.agent_info()
         self.assertEqual(info['published']['timeframe'], '15m')
         self.assertEqual(len(info['recipes']), 1)
@@ -589,6 +595,44 @@ class RecipeSearch(unittest.TestCase):
         self.assertAlmostEqual(agent.market_move([a, b], 60000, 180000), ((103 / 101 - 1) * 100 + 10) / 2)
         self.assertAlmostEqual(agent.market_move([a, b], 0, 240000), 4.0, msg='alleen coins met beide candles tellen')
         self.assertIsNone(agent.market_move([b], 0, 60000))
+
+    def test_strategy_agent_per_regime(self):
+        import agent_search as A
+        import train
+        self.assertEqual(A.REGIMES, train.REGIMES)
+        recipes = {}
+        ra = {'timeframe': '1h', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
+        rb = {'timeframe': '30m', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
+        def rep(avg, edge, by):
+            return {'ok': True, 'test': {'trades': 60, 'avgPct': avg, 'totalPct': avg * 60, 'edgePct': edge, 'maxDrawdownPct': 3, 'byRegime': by}}
+        for _ in range(2):
+            A.add_round(recipes, ra, rep(0.3, 0.2, {'stijgend': {'trades': 30, 'avgPct': 0.5, 'edgePct': 0.4},
+                                                    'dalend': {'trades': 25, 'avgPct': -0.2, 'edgePct': -0.1},
+                                                    'zijwaarts': {'trades': 5, 'avgPct': 0.1, 'edgePct': 0.1}}))
+            A.add_round(recipes, rb, rep(0.1, 0.05, {'stijgend': {'trades': 30, 'avgPct': 0.2, 'edgePct': 0.1},
+                                                     'zijwaarts': {'trades': 30, 'avgPct': 0.2, 'edgePct': 0.15}}))
+        ea, eb = recipes[A.key_of(ra)], recipes[A.key_of(rb)]
+        self.assertEqual(A.regime_score(ea)['stijgend']['trades'], 60)
+        plan = A.choose_per_regime([ea, eb], ea)
+        self.assertEqual(plan['stijgend']['key'], ea['key'], 'het meest beter dan de markt')
+        self.assertEqual(plan['zijwaarts']['key'], eb['key'], 'een ander recept doet het daar beter')
+        self.assertEqual((plan['dalend']['key'], plan['dalend']['why']), (None, 'pauze'), 'verloor van de markt: niet handelen')
+        # Zonder bewijs per fase: het hoofdrecept.
+        plan = A.choose_per_regime([], ea)
+        self.assertEqual(plan['zijwaarts'], {'key': ea['key'], 'why': 'weinig bewijs', 'edge': 0.1, 'trades': 10})
+
+    def test_market_agent_regime_lookup(self):
+        import market as M
+        c = market(600, 3, momentum=0.0)
+        look = M.RegimeLookup()
+        look.add('A/EUR', c)
+        self.assertIsNone(look.at('B/EUR', c[-1][0]))
+        self.assertIsNone(look.at('A/EUR', c[0][0]), 'te vroeg: nog geen gesloten candle met kenmerken')
+        r = look.at('A/EUR', c[-1][0] + M.REF_MS)
+        self.assertIn(r, M.REGIMES)
+        # Precies op de sluiting van het laatste candle telt dat candle; een milliseconde eerder het vorige.
+        self.assertEqual(look.at('A/EUR', look.ts['A/EUR'][-1] + M.REF_MS), look.reg['A/EUR'][-1])
+        self.assertEqual(look.at('A/EUR', look.ts['A/EUR'][-1] + M.REF_MS - 1), look.reg['A/EUR'][-2])
 
     def test_pick_retests_builds_on_best_and_learns_timeframes(self):
         import agent_search as A
