@@ -475,11 +475,13 @@ export function createApp({ users, manager, log = console }) {
   }));
 
   // AI-trader: aan/uit, candle-tijden, noodstop, pauze.
-  app.post('/api/admin/trainer/agent', adminOnly, wrap(async (req) => {
+  app.post('/api/admin/trainer/agent', adminOnly, wrap(async (req, { bot }) => {
     const b = req.body ?? {};
     const agent = { enabled: Boolean(b.enabled), timeframes: Array.isArray(b.timeframes) ? b.timeframes.map(String) : [],
       safetyStopPct: Number(b.safetyStopPct) || 10, pauseMinutes: Number.isFinite(Number(b.pauseMinutes)) ? Number(b.pauseMinutes) : 1,
-      coinPool: b.coinPool === 'eigen' ? 'eigen' : 'top' };
+      coinPool: b.coinPool === 'eigen' ? 'eigen' : 'top',
+      // De portefeuille in de backtest rekent met evenveel open trades als de bot.
+      maxOpen: Math.max(1, Math.min(20, Number(bot?.risk?.maxOpenTrades) || 2)) };
     const r = await manager.trainerRequest('/config', { method: 'POST', body: { agent } });
     log.info(`AI-trader gewijzigd door ${req.user.username}: ${JSON.stringify(agent)}`);
     return { ok: true, config: r.data.config };

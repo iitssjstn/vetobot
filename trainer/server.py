@@ -47,7 +47,7 @@ DEFAULTS = {'timeframe': '5m', 'days': 60, 'targetPct': 3.0, 'stopPct': 2.0, 'ho
             # Orderboek en transacties opnemen (elke minuut); useMicro wordt door het experiment gezet.
             'micro': {'enabled': True}, 'useMicro': False,
             # De AI-trader: leert zelf wanneer kopen en verkopen (zie agent.py). Draait doorlopend.
-            'agent': {'enabled': True, 'timeframes': [], 'safetyStopPct': 10, 'pauseMinutes': 1, 'coinPool': 'top'}}
+            'agent': {'enabled': True, 'timeframes': [], 'safetyStopPct': 10, 'pauseMinutes': 1, 'coinPool': 'top', 'maxOpen': 2}}
 LIMITS = {'days': (7, 365), 'targetPct': (0.2, 50), 'stopPct': (0.2, 50), 'horizon': (3, 2000),
           'costPct': (0, 5), 'topN': (1, 50), 'maxSamples': (20_000, 2_000_000), 'halfLifeDays': (0, 365)}
 
@@ -200,7 +200,9 @@ def validate_config(body):
             raise ValueError('Noodstop moet tussen 2% en 30% liggen')
         cfg['agent'] = {'enabled': bool(a.get('enabled')), 'timeframes': tfs, 'safetyStopPct': stop,
                         'pauseMinutes': max(0, min(720, int(a.get('pauseMinutes') or 0))),
-                        'coinPool': 'eigen' if a.get('coinPool') == 'eigen' else 'top'}
+                        'coinPool': 'eigen' if a.get('coinPool') == 'eigen' else 'top',
+                        # Zoveel trades tegelijk als de bot: daarmee rekent de portefeuille in de backtest.
+                        'maxOpen': max(1, min(20, int(a.get('maxOpen') or 2)))}
     if isinstance(body.get('micro'), dict):
         cfg['micro'] = {'enabled': bool(body['micro'].get('enabled', cfg['micro']['enabled']))}
     # Zelf andere strategie-instellingen gekozen: dan is het niet meer de strategie van de zoeker.
@@ -716,22 +718,77 @@ AGENT_PROVEN_MIN = 20    # zoveel trades in paper/live voordat hij als bewezen g
 AGENT_PROVEN_AVG = 0.1   # gemiddeld minstens zoveel % per trade
 
 
+AGENTS_VERSION = 3   # 3: kiezen op validatie, portefeuille-terugval, werkelijke kosten
+
+
 def load_agents():
     d = read_json('agents.json', {})
-    # Oudere versie bewaarde per candle-tijd ('byTf'); recepten beginnen dan opnieuw.
-    return {'recipes': d.get('recipes') or {}, 'published': d.get('published') if d.get('recipes') else None,
+    if d.get('recipes') and d.get('version', 1) < AGENTS_VERSION:
+        # Oudere metingen (eindtest om te kiezen, opgetelde terugval, vaste kosten) zijn niet te
+        # vergelijken met de nieuwe: bewaren als archief, recepten beginnen opnieuw.
+        arch = read_json('agents-archief.json', [])
+        arch.append({'archivedAt': datetime.now().isoformat(timespec='seconds'), 'version': d.get('version', 1), 'recipes': d['recipes']})
+        write_json('agents-archief.json', arch[-5:])
+        d = {**d, 'version': AGENTS_VERSION, 'recipes': {}, 'published': None}
+        write_json('agents.json', d)
+        log('AI-trader: nieuwe manier van meten; oude receptresultaten staan in agents-archief.json, de recepten beginnen opnieuw.')
+    return {'version': AGENTS_VERSION, 'recipes': d.get('recipes') or {}, 'published': d.get('published') if d.get('recipes') else None,
             'live': d.get('live') or {}, 'round': d.get('round', 0)}
 
 
+COST_MIN_PAIR = 5     # zoveel gemeten trades per coin voordat die coin eigen kosten krijgt
+COST_MIN_ALL = 10     # zoveel in totaal voordat het gemiddelde van alle coins de ingestelde kosten vervangt
+
+
+def _p75(xs):
+    xs = sorted(xs)
+    return xs[min(len(xs) - 1, int(round(0.75 * (len(xs) - 1))))]
+
+
+def cost_table(cfg):
+    """Werkelijke kosten per ronde (kopen + verkopen, %) per coin, gemeten door de bot: fees plus
+    de afwijking van de koers. Voorzichtig: het 75e percentiel van de laatste 30 trades.
+    Geeft (kosten per coin, uitleg per coin, kosten voor coins zonder eigen metingen)."""
+    rows = [t for t in read_json('agent_trades.json', []) if isinstance(t.get('costPct'), (int, float))]
+    base = float(cfg['costPct'])
+    default = _p75([t['costPct'] for t in rows[-200:]]) if len(rows) >= COST_MIN_ALL else base
+    per, info = {}, {}
+    for pair in sorted({t['pair'] for t in rows if t.get('pair')}):
+        xs = [t['costPct'] for t in rows if t.get('pair') == pair][-30:]
+        if len(xs) >= COST_MIN_PAIR:
+            per[pair] = _p75(xs)
+        info[pair] = {'measured': round(_p75(xs), 4), 'median': round(sorted(xs)[len(xs) // 2], 4), 'n': len(xs),
+                      'used': round(per.get(pair, default), 4)}
+    return per, info, default
+
+
 def agent_extra(tf):
-    """Echte trades van de AI-trader (paper/live) als extra leervoorbeelden voor "kopen"."""
+    """Echte trades van de AI-trader (paper/live) als extra leervoorbeelden voor "kopen":
+    (kenmerken, resultaat %, tijdstip van kopen in ms of None). train_agent gebruikt alleen trades
+    van vóór de validatie."""
     out = []
     for t in read_json('agent_trades.json', []):
         if t.get('timeframe') != tf or not isinstance(t.get('features'), dict):
             continue
         f = t['features']
-        out.append(([float(f[k]) if isinstance(f.get(k), (int, float)) else float('nan') for k in agent_mod.FEATURES], float(t['pct'])))
+        out.append(([float(f[k]) if isinstance(f.get(k), (int, float)) else float('nan') for k in agent_mod.FEATURES], float(t['pct']),
+                    t.get('entryTs')))
     return out
+
+
+def _int_or_none(v):
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _float_or_none(v):
+    try:
+        f = float(v)
+        return f if math.isfinite(f) else None
+    except (TypeError, ValueError):
+        return None
 
 
 def add_agent_trades(items):
@@ -741,7 +798,10 @@ def add_agent_trades(items):
         try:
             clean.append({'timeframe': str(t['timeframe']), 'recipe': str(t.get('recipe') or ''), 'pct': float(t['pct']), 'version': str(t.get('version') or ''),
                           'features': {k: float(v) for k, v in (t.get('features') or {}).items() if isinstance(v, (int, float))},
-                          'mode': str(t.get('mode') or ''), 'pair': str(t.get('pair') or ''), 'at': datetime.now().isoformat(timespec='seconds')})
+                          'mode': str(t.get('mode') or ''), 'pair': str(t.get('pair') or ''), 'at': datetime.now().isoformat(timespec='seconds'),
+                          'entryTs': _int_or_none(t.get('entryTs')), 'openedAt': str(t.get('openedAt') or ''), 'closedAt': str(t.get('closedAt') or ''),
+                          'marketRegime': t.get('marketRegime') if t.get('marketRegime') in agent_search.REGIMES else None,
+                          'costPct': _float_or_none(t.get('costPct'))})
         except (KeyError, TypeError, ValueError):
             continue
     if not clean:
@@ -803,7 +863,8 @@ def agent_round():
         try:
             def prog(phase, done, total, text):
                 state['agentProgress'] = {**state['agentProgress'], 'done': done, 'total': total, 'text': text}
-            agent, report = agent_mod.train_agent({**cfg, 'agent': cfg['agent']}, recipe, fetch, pairs, log=log,
+            costs, _, cost_default = cost_table(cfg)
+            agent, report = agent_mod.train_agent({**cfg, 'agent': cfg['agent'], 'costPct': cost_default, 'costs': costs}, recipe, fetch, pairs, log=log,
                                                   progress=prog, extra=agent_extra(recipe['timeframe']), seed=data.get('round', 0) + 1)
         finally:
             state['agentBusy'] = False
@@ -841,7 +902,7 @@ def agent_round():
             sc = agent_search.score(best)
             coins = a.get('coins') or []
             think(f"Mijn beste manier van traden is nu: {agent_mod.recipe_text(best['recipe'])} ({st}; gemiddeld "
-                  f"{thoughts.pct(sc['avg'])} per trade over {sc['trades']} testtrades in {sc['tested']} ronde{'' if sc['tested'] == 1 else 's'}). "
+                  f"{thoughts.pct(sc['avg'])} per trade op de validatie, eindtest {thoughts.pct(sc['test']['avg'])} over {sc['test']['trades']} trades in {sc['tested']} ronde{'' if sc['tested'] == 1 else 's'}). "
                   f"Ik handel {len(coins)} coin{'' if len(coins) == 1 else 's'}: {', '.join(coins[:8])}{' …' if len(coins) > 8 else ''}. " +
                   {'getest': 'De bot gebruikt hem in paper; live pas als ik me in de praktijk bewezen heb.',
                    'bewezen': 'Ik heb me ook in de praktijk bewezen, dus ik mag ook live handelen.',
@@ -916,7 +977,9 @@ def agent_mod_say(r, entry=None):
     t = r['test']
     f = thoughts.pct
     held = (t.get('avgHeld') or 0) * agent_mod.TF_MIN.get(tf, 15)
-    s = (f"Resultaat {rec}: in de eindtest (de laatste {str(r.get('testDays')).replace('.', ',')} dagen, die ik nooit gezien had) "
+    per = r.get('periods') or {}
+    s = (f"Resultaat {rec}: in de eindtest ({' tot '.join(per['eindtest']) if per.get('eindtest') else 'de laatste ' + str(r.get('testDays')).replace('.', ',') + ' dagen'}, "
+         f"niet gebruikt bij het leren of kiezen) "
          f"deed ik {t['trades']} trades, gemiddeld {f(t['avgPct'])} per trade, {t['winRate']:.0f}% met winst, "
          f"gemiddeld {thoughts.hold(int(held))} vastgehouden. Kopen en vasthouden had {f(t.get('buyHoldPct'))} opgeleverd. "
          f"Mijn grootste terugval was {f(-(t.get('maxDrawdownPct') or 0))}, mijn slechtste trade {f(t.get('worstPct'))}. ")
@@ -940,7 +1003,8 @@ def agent_mod_say(r, entry=None):
         sc = agent_search.score(entry)
         st = agent_search.status(entry)
         if sc['tested'] > 1:
-            s += f"Over {sc['tested']} rondes met dit recept: gemiddeld {f(sc['avg'])} per trade ({sc['trades']} trades). "
+            s += (f"Over {sc['tested']} rondes met dit recept: op de validatie gemiddeld {f(sc['avg'])} per trade ({sc['trades']} trades), "
+                  f"in de eindtests {f(sc['test']['avg'])} ({sc['test']['trades']} trades). ")
         s += {'betrouwbaar': 'Dit recept houdt stand: betrouwbaar.',
               'veelbelovend': 'Veelbelovend, maar het moet zich nog herhalen voordat ik het vertrouw.',
               'oefenen': 'Nog niet goed genoeg.',
@@ -992,7 +1056,8 @@ def agent_info():
             'stage': (pub or {}).get('stage'), 'rounds': data.get('round', 0),
             'regimes': {reg: {k: v for k, v in p.items() if k != 'agent'} | {'text': agent_mod.recipe_text(data['recipes'][p['key']]['recipe']) if p.get('key') in data.get('recipes', {}) else None}
                         for reg, p in ((pub or {}).get('regimes') or {}).items()},
-            'provenMin': AGENT_PROVEN_MIN, 'provenAvg': AGENT_PROVEN_AVG}
+            'provenMin': AGENT_PROVEN_MIN, 'provenAvg': AGENT_PROVEN_AVG,
+            'costs': (lambda c: {'perCoin': c[1], 'default': round(c[2], 4), 'configured': cfg['costPct']})(cost_table(cfg))}
 
 
 def cache_info():

@@ -1430,6 +1430,7 @@ export class Bot {
       reason,
       highest: fill.price,
       atrAtEntry: indicators?.atr ?? null,
+      entrySlipPct: slippagePct('buy', expected, fill.price),
     };
     // AI-trader: hij beslist zelf wanneer hij verkoopt; alleen de noodstop en maximale duur als vangnet.
     if (indicators?.agent) {
@@ -1638,6 +1639,11 @@ export class Bot {
     const fill = await this.broker.sell(pair, pos.amount, opts);
     this.#execution(pair, 'sell', expected, fill);
     const pnlEur = fill.costEur - pos.costEur;
+    // Werkelijke kosten van deze ronde in %: fees plus de gemeten afwijking bij kopen en verkopen.
+    const sellSlip = slippagePct('sell', expected, fill.price);
+    const tradeCost = pos.costEur > 0
+      ? +(((pos.entryFeeEur ?? 0) + (fill.feeEur ?? 0)) / pos.costEur * 100 + Math.max(0, pos.entrySlipPct ?? 0) + Math.max(0, sellSlip ?? 0)).toFixed(4)
+      : null;
     if (this.broker.mode === 'paper') this.store.state.balanceEur += fill.costEur;
     delete this.store.state.positions[pair];
     this.store.state.lastExit ??= {};
@@ -1656,6 +1662,7 @@ export class Bot {
       feesEur: (pos.entryFeeEur ?? 0) + (fill.feeEur ?? 0),
       entryReason: pos.reason,
       exitReason: reason,
+      costPct: tradeCost,
       ...(pos.agent ? { agent: { recipe: pos.agent.recipe ?? null, marketRegime: pos.agent.marketRegime ?? null } } : {}),
     });
     const how = fill.limitFallback ? (fill.limit ? ', limietorder deels gevuld, rest market' : ', limietorder niet gevuld, market') : fill.limit ? ', limietorder' : '';
@@ -1666,7 +1673,8 @@ export class Bot {
       const pct = (pnlEur / pos.costEur) * 100;
       try {
         this.onFeedback?.({ kind: 'agentTrade', pair, timeframe: pos.agent.timeframe, recipe: pos.agent.recipe ?? null, pct, version: pos.agent.version,
-          features: pos.ml?.features ?? null, mode: this.broker.mode });
+          features: pos.ml?.features ?? null, mode: this.broker.mode, entryTs: pos.ml?.ts ?? Date.parse(pos.openedAt),
+          openedAt: pos.openedAt, closedAt: new Date().toISOString(), marketRegime: pos.agent.marketRegime ?? null, costPct: tradeCost });
       } catch { /* extraatje */ }
       this.think(`Trade ${pair} afgesloten met ${pct >= 0 ? '+' : ''}${pct.toFixed(2).replace('.', ',')}% (verwacht bij aankoop: ` +
         `${pos.agent.expectedPct >= 0 ? '+' : ''}${String(pos.agent.expectedPct).replace('.', ',')}%). ${pct > 0 ? 'Een beloning' : 'Een straf'}; ` +

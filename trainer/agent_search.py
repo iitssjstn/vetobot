@@ -56,48 +56,67 @@ def neighbours(r, allowed):
     return out
 
 
-def score(entry):
-    """Beoordeling van een recept over al zijn rondes in de eindtests:
-    - avg: gewogen gemiddeld resultaat per trade (gewogen naar aantal trades);
-    - edge: hetzelfde, maar min wat de markt (alle coins samen) deed tijdens die trades. Alleen dit
-      voordeel telt: winst die je ook met meedobberen had gehad, is geen verdienste;
-    - ratio: winst ten opzichte van de grootste terugval (gemiddelde winst per ronde boven de markt,
-      gedeeld door de grootste terugval). Hoe hoger, hoe meer winst per risico;
-    - drawdown: de grootste terugval in een ronde."""
-    rounds = [x for x in entry.get('rounds', []) if (x.get('test') or {}).get('trades')]
-    n = sum(x['test']['trades'] for x in rounds)
+PART_FIELDS = ('trades', 'avgPct', 'totalPct', 'winRate', 'avgHeld', 'buyHoldPct', 'maxDrawdownPct', 'worstPct', 'marketPct',
+               'edgePct', 'beatMarketRate', 'byRegime', 'portfolio')
+
+
+def _agg(rounds, part):
+    """Samenvatting van één deel (val of test) over alle rondes."""
+    rs = [x[part] for x in rounds if (x.get(part) or {}).get('trades')]
+    n = sum(r['trades'] for r in rs)
     if not n:
-        return {'avg': None, 'edge': None, 'ratio': None, 'trades': 0, 'rounds': len(entry.get('rounds', [])), 'tested': 0,
-                'positive': 0, 'drawdown': None, 'safe': None}
-    avg = sum(x['test']['avgPct'] * x['test']['trades'] for x in rounds) / n
-    dd = max((x['test'].get('maxDrawdownPct') or 0) for x in rounds)
-    er = [x for x in rounds if x['test'].get('edgePct') is not None]
-    en = sum(x['test']['trades'] for x in er)
-    edge = sum(x['test']['edgePct'] * x['test']['trades'] for x in er) / en if en else None
-    # Winst/terugval: liever iets minder winst met kleine verliezen dan veel winst met diepe dalen.
-    # Rondes van voor de marktvergelijking tellen met hun gewone winst.
-    gain = sum((x['test']['edgePct'] if x['test'].get('edgePct') is not None else x['test']['avgPct']) * x['test']['trades']
-               for x in rounds) / len(rounds)
-    ratio = gain / max(dd, MIN_DD)
-    return {'avg': avg, 'edge': edge, 'ratio': ratio, 'trades': n, 'rounds': len(entry.get('rounds', [])), 'tested': len(rounds),
-            'positive': sum(1 for x in rounds if x['test']['avgPct'] > 0), 'drawdown': dd, 'safe': ratio}
+        return {'avg': None, 'edge': None, 'ratio': None, 'trades': 0, 'rounds': 0, 'positive': 0, 'drawdown': None}
+    avg = sum(r['avgPct'] * r['trades'] for r in rs) / n
+    dd = max((r.get('maxDrawdownPct') or 0) for r in rs)
+    er = [r for r in rs if r.get('edgePct') is not None]
+    en = sum(r['trades'] for r in er)
+    edge = sum(r['edgePct'] * r['trades'] for r in er) / en if en else None
+    # Winst/terugval: het resultaat van de portefeuille boven de markt, gedeeld door de grootste
+    # terugval van die portefeuille. Rondes zonder portefeuille: winst per trade × trades.
+    def gain(r):
+        pf = r.get('portfolio') or {}
+        if pf.get('excessPct') is not None:
+            return pf['excessPct']
+        return (r['edgePct'] if r.get('edgePct') is not None else r['avgPct']) * r['trades']
+    ratio = sum(gain(r) for r in rs) / len(rs) / max(dd, MIN_DD)
+    return {'avg': avg, 'edge': edge, 'ratio': ratio, 'trades': n, 'rounds': len(rs),
+            'positive': sum(1 for r in rs if r['avgPct'] > 0), 'drawdown': dd}
+
+
+def score(entry):
+    """Beoordeling van een recept over al zijn rondes.
+    Kiezen en rangschikken gebeurt op de VALIDATIE (alle coins, de periode waarop ook de koopdrempel
+    gekozen is). De EINDTEST is alleen de controle: houdt het stand op een periode die bij het kiezen
+    niet meetelde? Zo is het beste recept niet het recept dat toevallig het best op de eindtest scoorde.
+    - avg / edge: gemiddeld resultaat per trade en het voordeel boven de markt (validatie);
+    - ratio: winst boven de markt ten opzichte van de grootste terugval (validatie);
+    - drawdown: de grootste terugval, validatie of eindtest;
+    - test: dezelfde cijfers voor de eindtest (alleen voor de controle)."""
+    rounds = entry.get('rounds', [])
+    v, t = _agg(rounds, 'val'), _agg(rounds, 'test')
+    dds = [x for x in (v['drawdown'], t['drawdown']) if x is not None]
+    return {'avg': v['avg'], 'edge': v['edge'], 'ratio': v['ratio'], 'trades': v['trades'], 'rounds': len(rounds),
+            'tested': t['rounds'], 'positive': t['positive'], 'drawdown': max(dds) if dds else None, 'safe': v['ratio'],
+            'test': {'avg': t['avg'], 'edge': t['edge'], 'trades': t['trades'], 'drawdown': t['drawdown']}}
 
 
 def status(entry):
-    """betrouwbaar: houdt stand over meerdere rondes en verslaat de markt · veelbelovend: één goede
-    ronde, moet zich nog herhalen · oefenen: nog geen winst · afgevallen: meerdere rondes verlies ·
-    te riskant: een terugval van meer dan DANGER_DRAWDOWN%, nooit gebruiken (ook niet in paper)."""
+    """betrouwbaar: goed op de validatie én de eindtest houdt stand over meerdere rondes, beter dan
+    de markt · veelbelovend: de laatste ronde haalde de eindtest, moet zich nog herhalen · oefenen:
+    nog niet goed genoeg · afgevallen: meerdere eindtests verlies · te riskant: een terugval van meer
+    dan DANGER_DRAWDOWN%, nooit gebruiken (ook niet in paper)."""
     sc = score(entry)
-    if sc['avg'] is None:
+    if sc['avg'] is None and sc['test']['avg'] is None:
         return 'oefenen'
-    if entry.get('risky') or sc['drawdown'] > DANGER_DRAWDOWN:
+    if entry.get('risky') or (sc['drawdown'] or 0) > DANGER_DRAWDOWN:
         return 'te riskant'
+    t = sc['test']
     last_ok = bool(entry['rounds'] and entry['rounds'][-1].get('ok'))
-    if (sc['tested'] >= RELIABLE_ROUNDS and sc['avg'] >= RELIABLE_AVG and sc['trades'] >= RELIABLE_TRADES
+    if (sc['tested'] >= RELIABLE_ROUNDS and t['avg'] is not None and t['avg'] >= RELIABLE_AVG and t['trades'] >= RELIABLE_TRADES
             and sc['positive'] >= sc['tested'] - 1 and last_ok and sc['drawdown'] <= MAX_DRAWDOWN
-            and sc['edge'] is not None and sc['edge'] > 0):
+            and t['edge'] is not None and t['edge'] > 0 and sc['edge'] is not None and sc['edge'] > 0):
         return 'betrouwbaar'
-    if sc['tested'] >= 3 and sc['avg'] < 0:
+    if sc['tested'] >= 3 and t['avg'] is not None and t['avg'] < 0:
         return 'afgevallen'
     if last_ok:
         return 'veelbelovend'
@@ -105,15 +124,15 @@ def status(entry):
 
 
 REGIMES = ['stijgend', 'zijwaarts', 'dalend']
-REGIME_MIN_TRADES = 20    # zoveel eindtest-trades in een marktfase voordat de Strategy Agent erop afgaat
+REGIME_MIN_TRADES = 20    # zoveel validatie-trades in een marktfase voordat de Strategy Agent erop afgaat
 
 
-def regime_score(entry):
-    """Per marktfase: aantal eindtest-trades, gemiddeld resultaat en voordeel boven de markt,
-    over alle rondes van dit recept."""
+def regime_score(entry, part='val'):
+    """Per marktfase: aantal trades, gemiddeld resultaat en voordeel boven de markt, over alle
+    rondes van dit recept. Standaard op de validatie: daarop wordt gekozen, niet op de eindtest."""
     out = {}
     for reg in REGIMES:
-        rows = [((x.get('test') or {}).get('byRegime') or {}).get(reg) for x in entry.get('rounds', [])]
+        rows = [((x.get(part) or {}).get('byRegime') or {}).get(reg) for x in entry.get('rounds', [])]
         rows = [r for r in rows if r and r.get('trades')]
         n = sum(r['trades'] for r in rows)
         er = [r for r in rows if r.get('edgePct') is not None]
@@ -216,12 +235,13 @@ def add_round(recipes, recipe, report):
     k = key_of(recipe)
     e = recipes.setdefault(k, {'key': k, 'recipe': recipe, 'rounds': []})
     slim = {'ts': time.time(), 'at': report.get('at'), 'ok': report.get('ok'), 'reason': report.get('reason'),
-            'test': {x: (report.get('test') or {}).get(x) for x in ('trades', 'avgPct', 'totalPct', 'winRate', 'avgHeld', 'buyHoldPct', 'maxDrawdownPct', 'worstPct', 'marketPct', 'edgePct', 'beatMarketRate', 'byRegime')} if report.get('test') else None,
-            'val': {x: (report.get('validation') or {}).get(x) for x in ('trades', 'avgPct', 'totalPct')} if report.get('validation') else None,
-            'coins': report.get('coins'), 'threshold': report.get('threshold'), 'testDays': report.get('testDays')}
+            'test': {x: report['test'].get(x) for x in PART_FIELDS} if report.get('test') else None,
+            'val': {x: report['validation'].get(x) for x in PART_FIELDS} if report.get('validation') else None,
+            'coins': report.get('coins'), 'threshold': report.get('threshold'), 'testDays': report.get('testDays'),
+            'periods': report.get('periods')}
     e['rounds'] = (e['rounds'] + [slim])[-KEEP_ROUNDS:]
     # Eén keer te diep gezakt is genoeg: dat blijft onthouden, ook als die ronde uit de lijst valt.
-    if (slim['test'] or {}).get('maxDrawdownPct') is not None and slim['test']['maxDrawdownPct'] > DANGER_DRAWDOWN:
+    if any((slim[p] or {}).get('maxDrawdownPct') is not None and slim[p]['maxDrawdownPct'] > DANGER_DRAWDOWN for p in ('val', 'test')):
         e['risky'] = True
     e['status'] = status(e)
     e['score'] = score(e)

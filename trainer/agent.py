@@ -114,9 +114,12 @@ class Market:
         self.tf_ms = int(candles[1][0] - candles[0][0]) if len(candles) > 1 else 0
 
 
-def _split(n):
+def _split(n, gap=0):
+    """Leren, validatie en eindtest in de tijd na elkaar, met een buffer van gap candles (de
+    maximale duur van een trade) tussen de delen: een trade aan het eind van het ene deel loopt
+    dan nooit door in het volgende."""
     a, b = int(n * 0.70), int(n * 0.85)
-    return (WARMUP, a), (a, b), (b, n)
+    return (WARMUP, a), (a + gap, b), (b + gap, n)
 
 
 MAX_EXIT_ROWS = 250_000   # plafond voor het aantal leervoorbeelden bij verkopen (geheugen)
@@ -242,7 +245,7 @@ def learn_entry(markets, exit_model, exit_med, H, cost, safety_stop, step=2, ext
         res = simulate_exits(mk, idx, exit_model, exit_med, H, safety_stop)
         for i, r in zip(idx, res):
             X.append(mk.X[i])
-            y.append(r[0] - cost)
+            y.append(r[0] - getattr(mk, 'cost', cost))
             w.append(1.0)
     for row, ret in extra or []:  # echte trades van de bot (zwaarder)
         X.append(row)
@@ -293,6 +296,81 @@ def market_move(bench, t0, t1):
     return sum(moves) / len(moves) if moves else None
 
 
+def portfolio(trades, markets, slots=2, start=100.0):
+    """Een echte portefeuille door de tijd: startvermogen, hooguit `slots` trades tegelijk, elke
+    nieuwe trade krijgt een gelijk deel van het vermogen (vermogen / slots, nooit meer dan het vrije
+    geld). Trades van alle coins op echte tijd door elkaar; is alles bezet, dan wordt een trade
+    overgeslagen. Het vermogen wordt elke candle gewaardeerd tegen de koers van dat moment, dus ook
+    verlies tijdens een trade telt mee in de terugval.
+    trades: [{'pair', 'i' (candle van kopen), 'held' (candles), 'ret' (% na kosten), 'mkt' (% markt)}].
+    Geeft returnPct, excessPct (resultaat boven de markt tijdens de trades), maxDrawdownPct (% van
+    het vermogen), underwaterDays (langste periode onder de top), taken en skipped."""
+    if not trades:
+        return {'returnPct': 0.0, 'excessPct': 0.0, 'maxDrawdownPct': 0.0, 'underwaterDays': 0.0, 'taken': 0, 'skipped': 0}
+    mks = {m.pair: m for m in markets}
+    for m in mks.values():
+        _times(m)
+    entries = sorted(trades, key=lambda t: (int(mks[t['pair']].ts[t['i']]), t['pair']))
+    grid = sorted({int(mks[t['pair']].ts[j]) for t in trades
+                   for j in range(t['i'], min(t['i'] + max(1, t['held']), len(mks[t['pair']].ts) - 1) + 1)})
+    cash, excess, open_, k = start, 0.0, [], 0
+    peak, dd, taken, skipped = start, 0.0, 0, 0
+    under_since, under_max = None, 0
+    for now in grid:
+        # Eerst verkopen wat nu afloopt, dan kopen.
+        keep = []
+        for p in open_:
+            if p['exit_ts'] <= now:
+                cash += p['alloc'] * (1 + p['ret'] / 100)
+                if p['mkt'] is not None:
+                    excess += p['alloc'] * (p['ret'] - p['mkt']) / 100
+            else:
+                keep.append(p)
+        open_ = keep
+        while k < len(entries) and int(mks[entries[k]['pair']].ts[entries[k]['i']]) <= now:
+            t = entries[k]
+            k += 1
+            if len(open_) >= slots or any(p['pair'] == t['pair'] for p in open_):
+                skipped += 1
+                continue
+            m = mks[t['pair']]
+            equity = cash + sum(_value(p, now) for p in open_)
+            alloc = min(cash, equity / slots)
+            if alloc <= 0:
+                skipped += 1
+                continue
+            end = min(t['i'] + max(1, t['held']), len(m.ts) - 1)
+            cash -= alloc
+            open_.append({'pair': t['pair'], 'm': m, 'i': t['i'], 'alloc': alloc, 'ret': t['ret'], 'mkt': t.get('mkt'),
+                          'exit_ts': int(m.ts[end])})
+            taken += 1
+        equity = cash + sum(_value(p, now) for p in open_)
+        if equity >= peak:
+            peak = equity
+            if under_since is not None:
+                under_max = max(under_max, now - under_since)
+            under_since = None
+        else:
+            dd = max(dd, (peak - equity) / peak * 100)
+            under_since = now if under_since is None else under_since
+    for p in open_:
+        cash += p['alloc'] * (1 + p['ret'] / 100)
+        if p['mkt'] is not None:
+            excess += p['alloc'] * (p['ret'] - p['mkt']) / 100
+    if under_since is not None:
+        under_max = max(under_max, grid[-1] - under_since)
+    return {'returnPct': (cash / start - 1) * 100, 'excessPct': excess / start * 100, 'maxDrawdownPct': dd,
+            'underwaterDays': round(under_max / 86_400_000, 1), 'taken': taken, 'skipped': skipped}
+
+
+def _value(p, now):
+    """Waarde van een open positie op tijdstip now (slotkoers van die candle)."""
+    m = p['m']
+    j = int(np.searchsorted(m.ts, now, side='right')) - 1
+    j = max(p['i'], min(j, len(m.close) - 1))
+    return p['alloc'] * m.close[j] / m.close[p['i']]
+
+
 def _by_regime(trades):
     """Resultaat per marktfase bij het kopen (voor de Strategy Agent)."""
     out = {}
@@ -304,7 +382,7 @@ def _by_regime(trades):
     return out
 
 
-def backtest(markets, part, entry_model, entry_med, exit_model, exit_med, H, cost, safety_stop, thresholds, cache=None, bench=None, regimes=None):
+def backtest(markets, part, entry_model, entry_med, exit_model, exit_med, H, cost, safety_stop, thresholds, cache=None, bench=None, regimes=None, slots=2):
     """Handelen zoals in het echt op een deel van de tijd (1 = validatie, 2 = eindtest):
     één positie per coin, kopen als de verwachte waarde > drempel, verkopen met het geleerde
     gedrag. Geeft per drempel het resultaat, ook vergeleken met de markt (bench: de coins waarmee
@@ -323,7 +401,8 @@ def backtest(markets, part, entry_model, entry_med, exit_model, exit_med, H, cos
             oc, lo, hi = cache[key]
             if hi - lo < 10:
                 continue
-            bh.append((mk.close[hi - 1] / mk.close[lo] - 1) * 100 - cost)
+            c_mk = getattr(mk, 'cost', cost)
+            bh.append((mk.close[hi - 1] / mk.close[lo] - 1) * 100 - c_mk)
             i = lo
             while i < hi - 1:
                 o = oc.get(i)
@@ -332,25 +411,23 @@ def backtest(markets, part, entry_model, entry_med, exit_model, exit_med, H, cos
                     end = min(i + held, len(mk.c) - 1)
                     mkt = market_move(bench, int(mk.c[i][0]), int(mk.c[end][0]))
                     reg = regimes.at(mk.pair, int(mk.c[i][0]) + mk.tf_ms) if regimes else None
-                    trades.append({'pair': mk.pair, 'i': i, 'ret': ret - cost, 'held': held, 'why': why, 'mkt': mkt, 'reg': reg})
+                    trades.append({'pair': mk.pair, 'i': i, 'ret': ret - c_mk, 'held': held, 'why': why, 'mkt': mkt, 'reg': reg})
                     i += max(1, held)
                 else:
                     i += 1
         n = len(trades)
         total = sum(t['ret'] for t in trades)
-        # Risico: grootste terugval van het opgetelde resultaat (in tijdsvolgorde) en slechtste trade.
-        cum = peak = dd = 0.0
-        for t in sorted(trades, key=lambda x: x['i']):
-            cum += t['ret']
-            peak = max(peak, cum)
-            dd = max(dd, peak - cum)
+        # Risico: de terugval van een echte portefeuille (zoveel trades tegelijk als de bot, op echte
+        # tijd, ook verlies tijdens een trade), in % van het vermogen.
+        pf = portfolio(trades, markets, slots)
+        dd = pf['maxDrawdownPct']
         # Vergelijken met meedobberen: wat de markt tijdens elke trade deed, en het voordeel daarboven.
         cmp = [t for t in trades if t['mkt'] is not None]
         out[thr] = {
             'marketPct': sum(t['mkt'] for t in cmp) / len(cmp) if cmp else None,
             'edgePct': sum(t['ret'] - t['mkt'] for t in cmp) / len(cmp) if cmp else None,
             'beatMarketRate': sum(1 for t in cmp if t['ret'] > t['mkt']) / len(cmp) * 100 if cmp else None,
-            'maxDrawdownPct': dd, 'worstPct': min((t['ret'] for t in trades), default=None),
+            'maxDrawdownPct': dd, 'portfolio': pf, 'worstPct': min((t['ret'] for t in trades), default=None),
             'trades': n, 'avgPct': total / n if n else None, 'totalPct': total,
             'winRate': sum(1 for t in trades if t['ret'] > 0) / n * 100 if n else None,
             'avgHeld': sum(t['held'] for t in trades) / n if n else None,
@@ -389,6 +466,7 @@ def train_agent(cfg, recipe, fetch, pairs, log=print, progress=None, extra=None,
     rnd = random.Random(seed)
     cost = float(cfg['costPct'])
     safety = float((cfg.get('agent') or {}).get('safetyStopPct') or 10)
+    slots = int((cfg.get('agent') or {}).get('maxOpen') or 2)
     H = int(min(400, max(12, recipe['holdDays'] * 1440 // TF_MIN.get(tf, 15))))
     fit_kw = {'depth': recipe['depth'], 'leaf': recipe['leaf']}
     step('agent', 0, 5, f'AI-trader {tf}: koersen klaarzetten')
@@ -406,7 +484,9 @@ def train_agent(cfg, recipe, fetch, pairs, log=print, progress=None, extra=None,
         if len(c) < WARMUP + 6 * H:
             continue
         mk = Market(pair, c, ctx)
-        mk.split = _split(len(c))
+        mk.split = _split(len(c), H)
+        # Werkelijke kosten van deze coin (gemeten door de bot), anders de ingestelde kosten.
+        mk.cost = float((cfg.get('costs') or {}).get(pair, cost))
         markets.append(mk)
     base = {'timeframe': tf, 'recipe': recipe, 'ok': False}
     if len(markets) < 1:
@@ -417,13 +497,21 @@ def train_agent(cfg, recipe, fetch, pairs, log=print, progress=None, extra=None,
     if exit_model is None:
         return None, {**base, 'reason': 'Te weinig voorbeelden om verkopen te leren'}
     step('agent', 2, 5, f'AI-trader {tf}: leren wanneer kopen')
+    # Echte trades van de bot alleen als ze vóór de validatie liggen: anders lekt de eindtest
+    # (die altijd de nieuwste periode is) in het leren.
+    val_start = min(int(mk.c[mk.split[1][0]][0]) for mk in markets)
+    extra = [(row, ret) for row, ret, *ts in (extra or []) if ts and ts[0] and ts[0] < val_start]
     entry_model, entry_med = learn_entry(markets, exit_model, exit_med, H, cost, safety, extra=extra, fit_kw=fit_kw)
     if entry_model is None:
         return None, {**base, 'reason': 'Te weinig voorbeelden om kopen te leren'}
     step('agent', 3, 5, f'AI-trader {tf}: koopdrempel en coins kiezen')
-    # Koopdrempel kiezen op de validatieperiode (niet op de eindtest).
+    # Koopdrempel kiezen op de validatieperiode (niet op de eindtest). Het resultaat op de validatie
+    # (alle coins) is ook waarop recepten gekozen en gerangschikt worden; de eindtest is alleen de
+    # controle (goed genoeg: ja of nee).
+    regimes = market_agent.build(fetch, [m.pair for m in markets], int(cfg['days']), log=log)
     best = None
-    vals = backtest(markets, 1, entry_model, entry_med, exit_model, exit_med, H, cost, safety, (0.0, 0.1, 0.2, 0.3, 0.5, 0.8, 1.2))
+    vals = backtest(markets, 1, entry_model, entry_med, exit_model, exit_med, H, cost, safety, (0.0, 0.1, 0.2, 0.3, 0.5, 0.8, 1.2),
+                    bench=markets, regimes=regimes, slots=slots)
     for thr, v in vals.items():
         if v['trades'] >= max(10, len(markets) * 2) and (best is None or v['totalPct'] > best[1]['totalPct']):
             best = (thr, v)
@@ -437,13 +525,15 @@ def train_agent(cfg, recipe, fetch, pairs, log=print, progress=None, extra=None,
         coins = [m.pair for m in markets]
     chosen = [m for m in markets if m.pair in coins]
     step('agent', 4, 5, f'AI-trader {tf}: eindtest')
-    regimes = market_agent.build(fetch, [m.pair for m in chosen], int(cfg['days']), log=log)
-    test = backtest(chosen, 2, entry_model, entry_med, exit_model, exit_med, H, cost, safety, (thr,), bench=markets, regimes=regimes)[thr]
+    test = backtest(chosen, 2, entry_model, entry_med, exit_model, exit_med, H, cost, safety, (thr,), bench=markets, regimes=regimes, slots=slots)[thr]
     days_test = sum((mk.split[2][1] - mk.split[2][0]) for mk in chosen) / len(chosen) * TF_MIN.get(tf, 15) / 1440
     # Alleen goed als hij ook beter deed dan meedobberen met de markt tijdens zijn trades.
     ok = bool(val['totalPct'] > 0 and test['trades'] >= MIN_TEST_TRADES and (test['avgPct'] or 0) >= MIN_TEST_AVG
               and (test.get('edgePct') is None or test['edgePct'] > 0))
-    report = {**base, 'ok': ok, 'threshold': thr, 'validation': val, 'test': test, 'testDays': round(days_test, 1),
+    ref = max(markets, key=lambda m: len(m.c))
+    when = lambda i: time.strftime('%Y-%m-%d %H:%M', time.gmtime(ref.c[min(i, len(ref.c) - 1)][0] / 1000))
+    periods = {name: [when(lo), when(hi - 1)] for name, (lo, hi) in zip(('leren', 'validatie', 'eindtest'), ref.split)}
+    report = {**base, 'ok': ok, 'threshold': thr, 'validation': val, 'test': test, 'testDays': round(days_test, 1), 'periods': periods,
               'pairs': [m.pair for m in markets], 'coins': coins, 'maxHold': H, 'seconds': round(time.time() - started)}
     try:
         report['exitFocus'] = _importance(exit_model, FEATURES + POS_FEATURES, markets, exit_med, H)
@@ -451,7 +541,7 @@ def train_agent(cfg, recipe, fetch, pairs, log=print, progress=None, extra=None,
         pass
     agent = {
         'version': 2, 'kind': 'agent', 'timeframe': tf, 'threshold': thr, 'maxHoldCandles': H, 'safetyStopPct': safety,
-        'costPct': cost, 'coins': coins, 'recipe': recipe, 'entry': export_reg(entry_model, FEATURES, entry_med),
+        'costPct': round(sum(m.cost for m in chosen) / len(chosen), 4), 'costs': {m.pair: round(m.cost, 4) for m in chosen}, 'coins': coins, 'recipe': recipe, 'entry': export_reg(entry_model, FEATURES, entry_med),
         'exit': export_reg(exit_model, FEATURES + POS_FEATURES, exit_med),
         'meta': {'trainedAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'report': report},
     }

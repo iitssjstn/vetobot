@@ -10,6 +10,8 @@ import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
 
+import numpy as np
+
 import train
 from features import FEATURES, label_at
 
@@ -527,17 +529,22 @@ class AgentTrader(unittest.TestCase):
         self.assertEqual(len(s.agent_extra('15m')), 20)
 
 
+def R(ok, part):
+    """Rapport van een leerronde met dezelfde cijfers voor validatie en eindtest."""
+    return {'ok': ok, 'validation': dict(part), 'test': dict(part)}
+
+
 class RecipeSearch(unittest.TestCase):
     def test_status_needs_repeated_success(self):
         import agent_search as A
         r = {'timeframe': '15m', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
         recipes = {}
-        good = {'ok': True, 'test': {'trades': 50, 'avgPct': 0.3, 'totalPct': 15, 'winRate': 55, 'edgePct': 0.2, 'maxDrawdownPct': 4}}
+        good = R(True, {'trades': 50, 'avgPct': 0.3, 'totalPct': 15, 'winRate': 55, 'edgePct': 0.2, 'maxDrawdownPct': 4})
         e = A.add_round(recipes, r, good)
         self.assertEqual(e['status'], 'veelbelovend', 'één goede ronde is nog geen bewijs')
         e = A.add_round(recipes, r, good)
         self.assertEqual(e['status'], 'betrouwbaar')
-        bad = {'ok': False, 'test': {'trades': 50, 'avgPct': -0.6, 'totalPct': -30, 'winRate': 30}}
+        bad = R(False, {'trades': 50, 'avgPct': -0.6, 'totalPct': -30, 'winRate': 30})
         e = A.add_round(recipes, r, bad)
         self.assertNotEqual(e['status'], 'betrouwbaar', 'laatste ronde slecht: niet meer betrouwbaar')
         for _ in range(2):
@@ -549,7 +556,7 @@ class RecipeSearch(unittest.TestCase):
         r = {'timeframe': '15m', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
         recipes = {}
         # Winst, maar de markt steeg tijdens de trades nog harder: dat is meedobberen, geen verdienste.
-        rising = {'ok': True, 'test': {'trades': 50, 'avgPct': 0.4, 'totalPct': 20, 'winRate': 60, 'marketPct': 0.6, 'edgePct': -0.2, 'maxDrawdownPct': 3}}
+        rising = R(True, {'trades': 50, 'avgPct': 0.4, 'totalPct': 20, 'winRate': 60, 'marketPct': 0.6, 'edgePct': -0.2, 'maxDrawdownPct': 3})
         for _ in range(3):
             e = A.add_round(recipes, r, rising)
         self.assertNotEqual(e['status'], 'betrouwbaar')
@@ -561,8 +568,8 @@ class RecipeSearch(unittest.TestCase):
         calm = {'timeframe': '1h', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
         wild = {'timeframe': '30m', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
         for _ in range(2):
-            A.add_round(recipes, calm, {'ok': True, 'test': {'trades': 60, 'avgPct': 0.2, 'totalPct': 12, 'edgePct': 0.15, 'maxDrawdownPct': 2}})
-            A.add_round(recipes, wild, {'ok': True, 'test': {'trades': 60, 'avgPct': 0.5, 'totalPct': 30, 'edgePct': 0.4, 'maxDrawdownPct': 14}})
+            A.add_round(recipes, calm, R(True, {'trades': 60, 'avgPct': 0.2, 'totalPct': 12, 'edgePct': 0.15, 'maxDrawdownPct': 2}))
+            A.add_round(recipes, wild, R(True, {'trades': 60, 'avgPct': 0.5, 'totalPct': 30, 'edgePct': 0.4, 'maxDrawdownPct': 14}))
         board = A.leaderboard(recipes)
         self.assertEqual(board[0]['recipe'], calm, 'meer winst per risico wint van meer winst met diepe dalen')
         self.assertAlmostEqual(A.score(recipes[A.key_of(calm)])['ratio'], 0.15 * 60 / 2)
@@ -571,13 +578,13 @@ class RecipeSearch(unittest.TestCase):
         import agent_search as A
         recipes = {}
         r = {'timeframe': '15m', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
-        deep = {'ok': True, 'test': {'trades': 60, 'avgPct': 0.8, 'totalPct': 48, 'edgePct': 0.6, 'maxDrawdownPct': 30}}
+        deep = R(True, {'trades': 60, 'avgPct': 0.8, 'totalPct': 48, 'edgePct': 0.6, 'maxDrawdownPct': 30})
         e = A.add_round(recipes, r, deep)
         self.assertEqual(e['status'], 'te riskant')
         self.assertFalse(A.usable(e))
         # Ook na genoeg nette rondes (de diepe valt uit de lijst) blijft hij te riskant.
         for _ in range(A.KEEP_ROUNDS + 1):
-            e = A.add_round(recipes, r, {'ok': True, 'test': {'trades': 60, 'avgPct': 0.3, 'totalPct': 18, 'edgePct': 0.2, 'maxDrawdownPct': 3}})
+            e = A.add_round(recipes, r, R(True, {'trades': 60, 'avgPct': 0.3, 'totalPct': 18, 'edgePct': 0.2, 'maxDrawdownPct': 3}))
         self.assertEqual(e['status'], 'te riskant')
         for seed in range(20):
             rec, why = A.pick(recipes, ['15m'], rnd=random.Random(seed), now=time.time() + 7 * 3600)
@@ -604,7 +611,7 @@ class RecipeSearch(unittest.TestCase):
         ra = {'timeframe': '1h', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
         rb = {'timeframe': '30m', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
         def rep(avg, edge, by):
-            return {'ok': True, 'test': {'trades': 60, 'avgPct': avg, 'totalPct': avg * 60, 'edgePct': edge, 'maxDrawdownPct': 3, 'byRegime': by}}
+            return R(True, {'trades': 60, 'avgPct': avg, 'totalPct': avg * 60, 'edgePct': edge, 'maxDrawdownPct': 3, 'byRegime': by})
         for _ in range(2):
             A.add_round(recipes, ra, rep(0.3, 0.2, {'stijgend': {'trades': 30, 'avgPct': 0.5, 'edgePct': 0.4},
                                                     'dalend': {'trades': 25, 'avgPct': -0.2, 'edgePct': -0.1},
@@ -638,14 +645,14 @@ class RecipeSearch(unittest.TestCase):
         import agent_search as A
         recipes = {}
         good_r = {'timeframe': '30m', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
-        A.add_round(recipes, good_r, {'ok': True, 'test': {'trades': 60, 'avgPct': 0.4, 'totalPct': 24, 'winRate': 55}})
+        A.add_round(recipes, good_r, R(True, {'trades': 60, 'avgPct': 0.4, 'totalPct': 24, 'winRate': 55}))
         rec, why = A.pick(recipes, ['5m', '15m', '30m', '1h', '2h'], rnd=random.Random(1), now=time.time() + 3600)
         self.assertEqual((A.key_of(rec), why), (A.key_of(good_r), 'retest'), 'beste eerst nog eens bewijzen')
-        A.add_round(recipes, good_r, {'ok': True, 'test': {'trades': 60, 'avgPct': 0.4, 'totalPct': 24, 'winRate': 55}})
-        A.add_round(recipes, good_r, {'ok': True, 'test': {'trades': 60, 'avgPct': 0.4, 'totalPct': 24, 'winRate': 55}})
+        A.add_round(recipes, good_r, R(True, {'trades': 60, 'avgPct': 0.4, 'totalPct': 24, 'winRate': 55}))
+        A.add_round(recipes, good_r, R(True, {'trades': 60, 'avgPct': 0.4, 'totalPct': 24, 'winRate': 55}))
         # 5m: alles verlies
         for i, r in enumerate(A.all_recipes(['5m'])[:6]):
-            A.add_round(recipes, r, {'ok': False, 'test': {'trades': 40, 'avgPct': -0.5, 'totalPct': -20, 'winRate': 30}})
+            A.add_round(recipes, r, R(False, {'trades': 40, 'avgPct': -0.5, 'totalPct': -20, 'winRate': 30}))
         self.assertEqual(A.tf_weight(recipes, '5m'), 0.1)
         whys, tfs = [], []
         for seed in range(40):
@@ -654,6 +661,117 @@ class RecipeSearch(unittest.TestCase):
             tfs.append(rec['timeframe'])
         self.assertGreater(whys.count('near'), 10, 'bouwt verder op het beste recept')
         self.assertLess(tfs.count('5m'), 4, '5m (alles verlies) bijna niet meer')
+
+
+class HonestTesting(unittest.TestCase):
+    def test_split_has_buffer_between_parts(self):
+        import agent
+        (a0, a1), (b0, b1), (c0, c1) = agent._split(10000, 50)
+        self.assertEqual((b0 - a1, c0 - b1), (50, 50), 'buffer van de maximale duur tussen de delen')
+
+    def test_bot_trades_only_from_before_validation(self):
+        import agent
+        pairs = ['A/EUR', 'B/EUR']
+        data = {p: market(6000, i, momentum=0.6) for i, p in enumerate(pairs)}
+        data['BTC/EUR'] = market(6000, 99)
+        seen = {}
+        orig = agent.learn_entry
+        def spy(*a, extra=None, **k):
+            seen['extra'] = extra
+            return orig(*a, extra=extra, **k)
+        agent.learn_entry = spy
+        try:
+            row = [0.0] * len(agent.FEATURES)
+            early, late = data['A/EUR'][100][0], data['A/EUR'][-10][0]
+            agent.train_agent({'costPct': 0.2, 'days': 60, 'agent': {}}, {'timeframe': '15m', 'holdDays': 0.5}, lambda p, tf, d: data[p], pairs,
+                              extra=[(row, 1.0, early), (row, 2.0, late), (row, 3.0, None), (row, 4.0)])
+        finally:
+            agent.learn_entry = orig
+        self.assertEqual([r for _, r in seen['extra']], [1.0], 'alleen de trade van vóór de validatie')
+
+    def test_choose_on_validation_not_on_test(self):
+        import agent_search as A
+        recipes = {}
+        ra = {'timeframe': '1h', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
+        rb = {'timeframe': '30m', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
+        part = lambda avg, edge: {'trades': 60, 'avgPct': avg, 'totalPct': avg * 60, 'edgePct': edge, 'maxDrawdownPct': 3}
+        for _ in range(2):
+            # A: beter op de validatie; B: toevallig beter op de eindtest.
+            A.add_round(recipes, ra, {'ok': True, 'validation': part(0.4, 0.3), 'test': part(0.2, 0.1)})
+            A.add_round(recipes, rb, {'ok': True, 'validation': part(0.15, 0.1), 'test': part(0.6, 0.5)})
+        self.assertEqual(A.leaderboard(recipes)[0]['recipe'], ra)
+        sc = A.score(recipes[A.key_of(ra)])
+        self.assertAlmostEqual(sc['avg'], 0.4)
+        self.assertAlmostEqual(sc['test']['avg'], 0.2)
+        # De eindtest blijft wel de controle: verlies daar = niet betrouwbaar.
+        rc = {'timeframe': '2h', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
+        for _ in range(2):
+            e = A.add_round(recipes, rc, {'ok': False, 'validation': part(0.5, 0.4), 'test': part(-0.3, -0.4)})
+        self.assertNotEqual(e['status'], 'betrouwbaar')
+
+
+class Portfolio(unittest.TestCase):
+    class M:
+        def __init__(self, pair, closes):
+            self.pair = pair
+            self.close = np.array(closes, dtype=float)
+            self.c = [[i * 60000, x, x, x, x, 1] for i, x in enumerate(closes)]
+
+    def test_drawdown_of_a_real_portfolio(self):
+        import agent
+        a = self.M('A', [100, 100, 100, 100, 110, 110])
+        b = self.M('B', [50, 50, 40, 45, 45, 45])
+        trades = [{'pair': 'A', 'i': 0, 'held': 4, 'ret': 10.0, 'mkt': 0.0},
+                  {'pair': 'B', 'i': 1, 'held': 3, 'ret': -10.0, 'mkt': 0.0}]
+        pf = agent.portfolio(trades, [a, b], slots=2)
+        # A krijgt de helft; B de andere helft. Op candle 2 staat B op -20%: vermogen 90 van 100.
+        self.assertAlmostEqual(pf['maxDrawdownPct'], 10.0)
+        self.assertAlmostEqual(pf['returnPct'], 0.0)
+        self.assertEqual((pf['taken'], pf['skipped']), (2, 0))
+        one = agent.portfolio(trades, [a, b], slots=1)
+        self.assertEqual((one['taken'], one['skipped']), (1, 1), 'alles bezet: trade overgeslagen')
+        self.assertAlmostEqual(one['returnPct'], 10.0)
+        self.assertAlmostEqual(one['excessPct'], 10.0)
+        self.assertEqual(agent.portfolio([], [a])['maxDrawdownPct'], 0.0)
+
+
+class RealCosts(unittest.TestCase):
+    def setUp(self):
+        os.environ.setdefault('DATA_DIR', tempfile.mkdtemp())
+        import server
+        self.s = server
+
+    def test_cost_per_coin_from_bot_trades(self):
+        s = self.s
+        rows = [{'pair': 'A/EUR', 'costPct': c} for c in (0.5, 0.6, 0.7, 0.8, 0.9, 1.0)] + \
+               [{'pair': 'B/EUR', 'costPct': 0.4}] * 2 + [{'pair': 'C/EUR', 'costPct': 0.6}] * 3
+        s.write_json('agent_trades.json', rows)
+        per, info, default = s.cost_table({'costPct': 0.5})
+        self.assertEqual(set(per), {'A/EUR'}, 'eigen kosten pas na 5 metingen')
+        self.assertAlmostEqual(per['A/EUR'], 0.9, msg='voorzichtig: 75e percentiel')
+        self.assertEqual(info['B/EUR']['used'], round(default, 4))
+        self.assertNotEqual(default, 0.5, 'genoeg metingen: niet meer de ingestelde kosten')
+        s.write_json('agent_trades.json', [])
+        self.assertEqual(s.cost_table({'costPct': 0.5}), ({}, {}, 0.5))
+
+    def test_costs_used_in_learning(self):
+        import agent
+        pairs = ['A/EUR', 'B/EUR', 'C/EUR']
+        good = {p: market(9000, i, momentum=0.6) for i, p in enumerate(pairs)}
+        good['BTC/EUR'] = market(9000, 99, momentum=0.3)
+        a, r = agent.train_agent({'costPct': 0.2, 'days': 60, 'agent': {}, 'costs': {'A/EUR': 5.0}}, '15m', lambda p, tf, d: good[p], pairs)
+        self.assertNotIn('A/EUR', r.get('coins') or [], 'veel te dure coin valt af')
+        self.assertTrue(r['test'].get('portfolio'), 'portefeuille in het rapport')
+        self.assertIn('eindtest', r['periods'])
+
+    def test_old_results_are_archived(self):
+        s = self.s
+        s.write_json('agents.json', {'recipes': {'x': {'key': 'x', 'recipe': {}, 'rounds': []}}, 'published': {'key': 'x'}, 'live': {'x': {'n': 3}}, 'round': 7})
+        d = s.load_agents()
+        self.assertEqual(d['recipes'], {})
+        self.assertEqual(d['live'], {'x': {'n': 3}}, 'resultaten in de praktijk blijven')
+        self.assertEqual(s.read_json('agents-archief.json', [])[-1]['recipes'], {'x': {'key': 'x', 'recipe': {}, 'rounds': []}})
+        self.assertEqual(s.read_json('agents.json', {})['version'], s.AGENTS_VERSION)
 
 
 class Arms(unittest.TestCase):

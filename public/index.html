@@ -539,6 +539,7 @@
         <div class="panel-h"><h2><svg class="i"><use href="#i-pulse"/></svg>AI-trader</h2><span class="hint" id="ag-hint"></span></div>
         <div class="panel-b" id="ag-body"></div>
         <div class="scroll" id="ag-table"></div>
+        <div class="scroll" id="ag-costs"></div>
         <form class="panel-b" id="ag-form" style="border-top:1px solid var(--line)">
           <div class="fields">
             <div><label for="ag-on">Leren</label><select id="ag-on"><option value="1">Aan: doorlopend leren</option><option value="0">Uit</option></select></div>
@@ -1936,13 +1937,20 @@ function renderAgent(t, nl) {
       : '<p class="muted" style="margin:0 0 10px">Nog geen recept getraind. Na de eerste leerronde verschijnt hier het resultaat.</p>')
     + agentTeamHtml(a, bot?.team, sign, nl);
   const rows = a.recipes ?? [];
+  const cs = a.costs;
+  const cRows = Object.entries(cs?.perCoin ?? {});
+  $('ag-costs').innerHTML = cs ? `<p class="muted" style="margin:10px 0 6px;font-size:13px"><b>Kosten per ronde (kopen + verkopen).</b> Ingesteld: ${nl(cs.configured, 2)}%. De AI-trader rekent met wat de bot echt betaalde (fees plus afwijking van de koers, voorzichtig: 75e percentiel van de laatste 30 trades); coins met minder dan 5 metingen met ${nl(cs.default, 2)}%.</p>`
+    + (cRows.length ? table(cRows.map(([pair, x]) => ({ pair, ...x })), [
+      ['Coin', (x) => esc(x.pair)], ['Gemeten', (x) => `<span class="num">${nl(x.measured, 2)}%</span> <span class="muted">(mediaan ${nl(x.median, 2)}%, ${x.n} trades)</span>`],
+      ['Gebruikt in het leren', (x) => `<span class="num ${x.used > cs.configured * 1.5 ? 'down' : ''}">${nl(x.used, 2)}%</span>`, 'r']]) : '<p class="muted" style="margin:0">Nog geen gemeten trades.</p>') : '';
   $('ag-table').innerHTML = rows.length ? table(rows, [
     ['Recept', (r) => `${esc(r.text)}${pub?.key === r.key ? ' <span class="badge ok">bot handelt hiermee</span>' : ''}`],
     ['Rondes', (r) => `<span class="num">${r.score.tested}</span>`, 'r'],
-    ['Gemiddeld (eindtests)', (r) => r.score.avg != null ? `<span class="${r.score.avg > 0 ? 'up' : 'down'}">${sign(r.score.avg)}</span> per trade <span class="muted">· ${r.score.trades} trades</span>` : `<span class="muted">${esc(r.last?.reason ?? '–')}</span>`],
+    ['Validatie (kiezen)', (r) => r.score.avg != null ? `<span class="${r.score.avg > 0 ? 'up' : 'down'}">${sign(r.score.avg)}</span> per trade <span class="muted">· ${r.score.trades} trades</span>` : `<span class="muted">${esc(r.last?.reason ?? '–')}</span>`],
+    ['Eindtest (controle)', (r) => r.score.test?.avg != null ? `<span class="${r.score.test.avg > 0 ? 'up' : 'down'}">${sign(r.score.test.avg)}</span> <span class="muted">· ${r.score.test.trades} trades${r.score.test.edge != null ? ` · ${sign(r.score.test.edge)} t.o.v. markt` : ''}</span>` : '–'],
     ['Per marktfase', (r) => REGIMES.map(([k, ic]) => { const x = r.byRegime?.[k]; return x?.trades ? `<span title="${k}: ${x.trades} trades" class="${(x.edge ?? 0) > 0 ? 'up' : 'down'}">${ic} ${x.edge != null ? sign(x.edge) : '–'}</span>` : `<span class="muted" title="${k}: nog geen trades">${ic} –</span>`; }).join(' ')],
     ['Beter dan de markt', (r) => r.score.edge != null ? `<span class="${r.score.edge > 0 ? 'up' : 'down'}">${sign(r.score.edge)}</span> per trade` : '<span class="muted">nog niet gemeten</span>'],
-    ['Grootste terugval', (r) => r.score.drawdown != null ? `<span class="num ${r.score.drawdown > 25 ? 'down' : ''}">${sign(-r.score.drawdown)}</span>` : '–', 'r'],
+    ['Terugval portefeuille', (r) => r.score.drawdown != null ? `<span class="num ${r.score.drawdown > 25 ? 'down' : ''}">${sign(-r.score.drawdown)}</span>` : '–', 'r'],
     ['Winst / terugval', (r) => r.score.ratio != null ? `<span class="num">${nl(r.score.ratio, 2)}</span>` : '–', 'r'],
     ['Laatste ronde', (r) => r.last?.test ? `${sign(r.last.test.avgPct)} <span class="muted">(${r.last.test.trades}) · kopen en vasthouden ${sign(r.last.test.buyHoldPct)}</span>` : '–'],
     ['Coins', (r) => `<span class="num">${r.last?.coins?.length ?? '–'}</span>`, 'r'],
