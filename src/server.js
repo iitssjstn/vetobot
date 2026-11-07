@@ -290,10 +290,34 @@ export function createApp({ users, manager, log = console }) {
       lastSummary: bot.store.state.lastSummary ?? null,
       bandit: bot.banditSummary(),
       thoughts: bot.thoughts.slice(-40),
-      agent: (() => { const a = bot.getAgent?.(); return a ? { timeframe: a.timeframe, stage: a.stage, coins: a.coins ?? null, allowed: bot.agentAllowed(a), live: a.live ?? null, team: bot.agentTeam() } : null; })(),
+      agent: (() => {
+        const a = bot.getAgent?.();
+        if (!a) return null;
+        // Per recept dat de bot kan gebruiken: haalt het de eisen voor live, en heb jij het live toegestaan?
+        const parts = [a, ...Object.values(a.regimes ?? {}).map((p) => p?.agent).filter(Boolean)];
+        const approved = settings.agentLive.approved;
+        return { timeframe: a.timeframe, stage: a.stage, coins: a.coins ?? null, allowed: bot.agentAllowed(a), live: a.live ?? null, team: bot.agentTeam(),
+          recipes: [...new Map(parts.map((p) => [p.recipeKey, { recipe: p.recipeKey, stage: p.stage, ready: bot.agentLiveReady(p), approved: approved.includes(p.recipeKey),
+            checks: p.liveCheck?.checks ?? [] }])).values()] };
+      })(),
       serverTime: new Date().toISOString(),
     });
   });
+
+  // Een recept van de AI-trader live toestaan (alleen als alle eisen gehaald zijn) of dat intrekken.
+  app.post('/api/agent/live', wrap((req, { bot, settings }) => {
+    const { recipe, allow, password } = req.body ?? {};
+    confirm(req, password);
+    const main = bot.getAgent?.();
+    const part = [main, ...Object.values(main?.regimes ?? {}).map((p) => p?.agent)].find((p) => p?.recipeKey === recipe);
+    if (allow) {
+      if (!part) throw new Error('Dit recept gebruikt de AI-trader nu niet');
+      if (!bot.agentLiveReady(part)) throw new Error('Dit recept haalt nog niet alle eisen voor live');
+    }
+    settings.setAgentLive(recipe, Boolean(allow));
+    log.warn(`AI-trader ${recipe} live ${allow ? 'toegestaan' : 'ingetrokken'} door ${req.user.username}`);
+    return { ok: true, approved: settings.agentLive.approved };
+  }));
 
   // Gesprekken van het AI-team, nieuwste eerst.
   app.get('/api/aichat', wrap((req, { bot, settings }) => ({

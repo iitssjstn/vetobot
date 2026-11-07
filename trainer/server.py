@@ -30,6 +30,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import agent as agent_mod
 import agent_search
+import livecheck
 import micro as micro_mod
 import search as searcher
 import thoughts
@@ -719,8 +720,6 @@ def search_worker():
 
 # ---------- De AI-trader ----------
 agent_wake = threading.Event()
-AGENT_PROVEN_MIN = 20    # zoveel trades in paper/live voordat hij als bewezen geldt
-AGENT_PROVEN_AVG = 0.1   # gemiddeld minstens zoveel % per trade
 
 
 AGENTS_VERSION = 3   # 3: kiezen op validatie, portefeuille-terugval, werkelijke kosten
@@ -734,11 +733,11 @@ def load_agents():
         arch = read_json('agents-archief.json', [])
         arch.append({'archivedAt': datetime.now().isoformat(timespec='seconds'), 'version': d.get('version', 1), 'recipes': d['recipes']})
         write_json('agents-archief.json', arch[-5:])
-        d = {**d, 'version': AGENTS_VERSION, 'recipes': {}, 'published': None}
+        d = {**d, 'version': AGENTS_VERSION, 'recipes': {}, 'published': None, 'since': datetime.now().isoformat(timespec='seconds')}
         write_json('agents.json', d)
         log('AI-trader: nieuwe manier van meten; oude receptresultaten staan in agents-archief.json, de recepten beginnen opnieuw.')
     return {'version': AGENTS_VERSION, 'recipes': d.get('recipes') or {}, 'published': d.get('published') if d.get('recipes') else None,
-            'live': d.get('live') or {}, 'round': d.get('round', 0)}
+            'live': d.get('live') or {}, 'round': d.get('round', 0), 'since': d.get('since') or datetime.now().isoformat(timespec='seconds')}
 
 
 COST_MIN_PAIR = 5     # zoveel gemeten trades per coin voordat die coin eigen kosten krijgt
@@ -820,11 +819,11 @@ def add_agent_trades(items):
         lv['n'] += 1
         lv['sum'] += t['pct']
         lv['wins'] += t['pct'] > 0
-        if lv['n'] == AGENT_PROVEN_MIN:
+        if lv['n'] == livecheck.MIN_TRADES:
             avg = lv['sum'] / lv['n']
-            think(f"Na {lv['n']} echte trades op {t['timeframe']} doe ik gemiddeld {thoughts.pct(avg)} per trade. " +
-                  ('Daarmee heb ik me bewezen.' if avg >= AGENT_PROVEN_AVG else 'Dat is nog niet goed genoeg; ik blijf leren.'),
-                  kind='result' if avg >= AGENT_PROVEN_AVG else 'warn')
+            think(f"Na {lv['n']} echte trades met dit recept doe ik gemiddeld {thoughts.pct(avg)} per trade. "
+                  'Of ik live mag, hangt af van alle eisen op de pagina Trainer (en daarna van jouw akkoord).',
+                  kind='result' if avg >= livecheck.MIN_AVG else 'warn')
     write_json('agents.json', data)
     return len(clean)
 
@@ -854,6 +853,10 @@ def agent_round():
     """Eén leerronde: zelf een recept kiezen, trainen, testen, en de beste manier van traden kiezen."""
     cfg = config()
     tfs = cfg['agent']['timeframes'] or agent_mod.DEFAULT_TIMEFRAMES
+    try:
+        fill_trade_market(cfg)
+    except Exception as e:
+        log(f'Marktbeweging bij trades invullen mislukt: {e}')
     data = load_agents()
     recipe, why = agent_search.pick(data['recipes'], tfs, rnd=random.Random(data.get('round', 0) + int(time.time())))
     key = agent_search.key_of(recipe)
@@ -894,7 +897,8 @@ def agent_round():
         st = agent_search.status(best)
         a = read_json(os.path.join('agents', best['key'].replace('|', '_') + '.json'), None)
         lv = data['live'].get(best['key']) or {}
-        a['stage'] = agent_stage(best, lv)
+        a['liveCheck'] = live_check(best['key'], best, a.get('costPct'))
+        a['stage'] = agent_stage(best, a['liveCheck'])
         a['recipeKey'] = best['key']
         a['recipeStatus'] = st
         a['live'] = lv
@@ -912,8 +916,8 @@ def agent_round():
             think(f"Mijn beste manier van traden is nu: {agent_mod.recipe_text(best['recipe'])} ({st}; gemiddeld "
                   f"{thoughts.pct(sc['avg'])} per trade op de validatie, eindtest {thoughts.pct(sc['test']['avg'])} over {sc['test']['trades']} trades in {sc['tested']} ronde{'' if sc['tested'] == 1 else 's'}). "
                   f"Ik handel {len(coins)} coin{'' if len(coins) == 1 else 's'}: {', '.join(coins[:8])}{' …' if len(coins) > 8 else ''}. " +
-                  {'getest': 'De bot gebruikt hem in paper; live pas als ik me in de praktijk bewezen heb.',
-                   'bewezen': 'Ik heb me ook in de praktijk bewezen, dus ik mag ook live handelen.',
+                  {'getest': 'De bot gebruikt hem in paper; live pas als ik alle eisen voor live haal en jij het daarna aanzet.',
+                   'bewezen': 'Ik haal alle eisen voor live. Live handel ik pas als jij dat op de pagina Trainer aanzet.',
                    'oefenen': 'Hij maakt in de test nog niet genoeg winst, dus de bot oefent er alleen mee in paper (als je dat toestaat).'}[a['stage']],
                   kind='result' if a['stage'] != 'oefenen' else 'insight')
     elif prev and prev.get('stage') != 'geblokkeerd':
@@ -931,11 +935,45 @@ def agent_round():
     write_json('agents.json', data)
 
 
-def agent_stage(entry, lv):
-    """Hoe ver een recept is: oefenen (paper, als dat mag), getest (paper) of bewezen (ook live)."""
+def paper_rows(key=None):
+    """Paper-trades van de AI-trader (oud -> nieuw), eventueel alleen van één recept."""
+    return [t for t in read_json('agent_trades.json', []) if t.get('mode') == 'paper' and (key is None or t.get('recipe') == key)]
+
+
+def live_check(key, entry, assumed_cost=None):
+    """De eisen voor live voor één recept (zie livecheck.py)."""
+    return livecheck.check(paper_rows(key), agent_search.status(entry) if entry else 'onbekend',
+                           slots=int(config()['agent'].get('maxOpen') or 2), assumed_cost=assumed_cost)
+
+
+def agent_stage(entry, lc):
+    """Hoe ver een recept is: oefenen (paper, als dat mag), getest (paper), of bewezen: alle eisen
+    voor live gehaald (live handelt hij pas als de eigenaar dat daarna zelf aanzet)."""
     st = agent_search.status(entry)
-    proven = lv.get('n', 0) >= AGENT_PROVEN_MIN and lv['sum'] / lv['n'] >= AGENT_PROVEN_AVG
-    return ('bewezen' if proven else 'getest') if st in ('betrouwbaar', 'veelbelovend') else 'oefenen'
+    if lc and lc.get('allMet'):
+        return 'bewezen'
+    return 'getest' if st in ('betrouwbaar', 'veelbelovend') else 'oefenen'
+
+
+def fill_trade_market(cfg):
+    """Vult bij de echte trades in wat de markt deed tijdens de trade (voor 'beter dan de markt')."""
+    rows = read_json('agent_trades.json', [])
+    todo = [r for r in rows if r.get('mkt') is None and r.get('closedAt')]
+    if not todo:
+        return 0
+    cache = os.path.join(DATA, 'candles')
+    candles = {}
+    for pair in agent_pairs(cfg):
+        try:
+            candles[pair] = trainer.fetch_candles(pair, '1h', 30, cache_dir=cache)
+        except Exception as e:
+            log(f'Marktbeweging bij trades: {pair} ophalen mislukt: {e}')
+    with feedback_lock:
+        rows = read_json('agent_trades.json', [])
+        n = livecheck.fill_market(rows, candles)
+        if n:
+            write_json('agent_trades.json', rows)
+    return n
 
 
 AGENT_PART_KEYS = ('version', 'kind', 'timeframe', 'threshold', 'maxHoldCandles', 'safetyStopPct', 'costPct', 'coins', 'recipe', 'entry', 'exit', 'meta')
@@ -954,8 +992,9 @@ def regime_plan(board, best, data):
                 item = {'key': best['key'], 'why': 'weinig bewijs', 'edge': None, 'trades': 0}
             else:
                 lv = data['live'].get(p['key']) or {}
+                lc = live_check(p['key'], entry, sub.get('costPct'))
                 item['agent'] = {**{k: sub[k] for k in AGENT_PART_KEYS if k in sub}, 'recipeKey': p['key'],
-                                 'recipeStatus': agent_search.status(entry), 'stage': agent_stage(entry, lv), 'live': lv}
+                                 'recipeStatus': agent_search.status(entry), 'stage': agent_stage(entry, lc), 'live': lv, 'liveCheck': lc}
         out[reg] = item
     return out
 
@@ -1067,7 +1106,10 @@ def agent_info():
             'stage': (pub or {}).get('stage'), 'rounds': data.get('round', 0),
             'regimes': {reg: {k: v for k, v in p.items() if k != 'agent'} | {'text': agent_mod.recipe_text(data['recipes'][p['key']]['recipe']) if p.get('key') in data.get('recipes', {}) else None}
                         for reg, p in ((pub or {}).get('regimes') or {}).items()},
-            'provenMin': AGENT_PROVEN_MIN, 'provenAvg': AGENT_PROVEN_AVG,
+            'liveCheck': (pub or {}).get('liveCheck'),
+            'liveRules': {'minTrades': livecheck.MIN_TRADES, 'minDays': livecheck.MIN_DAYS, 'minAvg': livecheck.MIN_AVG, 'maxDd': livecheck.MAX_DD},
+            # De lange paper-test: per week, sinds de nieuwe manier van meten.
+            'paperTest': {'since': data.get('since'), 'weeks': livecheck.weeks(paper_rows(), data.get('since'))},
             'costs': (lambda c: {'perCoin': c[1], 'default': round(c[2], 4), 'configured': cfg['costPct']})(cost_table(cfg))}
 
 
@@ -1136,11 +1178,16 @@ class Handler(BaseHTTPRequestHandler):
             a = read_json('agent.json', None)
             if not a:
                 return self.send(404, {'error': 'Nog geen AI-trader'})
-            live = load_agents().get('live', {})
+            data = load_agents()
+            live = data.get('live', {})
             a['live'] = live.get(a.get('recipeKey') or a['timeframe'], {})
-            for p in (a.get('regimes') or {}).values():
-                if p.get('agent'):
-                    p['agent']['live'] = live.get(p['agent'].get('recipeKey'), {})
+            # Eisen voor live steeds actueel (nieuwe paper-trades komen tussen de leerrondes binnen).
+            for part in [a] + [p['agent'] for p in (a.get('regimes') or {}).values() if p.get('agent')]:
+                part['live'] = live.get(part.get('recipeKey'), {})
+                entry = data['recipes'].get(part.get('recipeKey'))
+                if entry and part.get('stage') != 'geblokkeerd':
+                    part['liveCheck'] = live_check(part['recipeKey'], entry, part.get('costPct'))
+                    part['stage'] = agent_stage(entry, part['liveCheck'])
             data = json.dumps(a).encode()
             etag = '"' + hashlib.sha1(data).hexdigest()[:16] + '"'
             if self.headers.get('If-None-Match') == etag:

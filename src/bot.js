@@ -8,7 +8,7 @@ import { fetchClosedCandles, fetchPrice, hasTradingKeys } from './exchange.js';
 import { checkEntry } from './risk.js';
 import { Bandit } from './bandit.js';
 import { analyzeBook, bookProblem } from './orderbook.js';
-import { MARKET_TF, RISK, agentForRecipe, allAgentCoins, chooseForRegime, assessRisk, riskStake, slippagePct, execSummary, lossStreak } from './agents.js';
+import { MARKET_TF, RISK, agentParts, agentForRecipe, allAgentCoins, chooseForRegime, assessRisk, riskStake, slippagePct, execSummary, lossStreak } from './agents.js';
 import path from 'node:path';
 
 // Bedragen en koersen in Nederlandse notatie voor meldingen (€ 81,31 / € 0,3455 / −€ 0,36).
@@ -26,6 +26,9 @@ const fmtAmount = (n) => nl(n, Math.abs(n) >= 100 ? 2 : Math.abs(n) >= 1 ? 4 : 8
 //   1. Open positie? Dan eerst stop-loss / take-profit / verkoopsignaal. Verkopen gaat
 //      NOOIT langs de AI, zodat een AI-fout een stop-loss niet kan blokkeren.
 //   2. Geen positie en een koopsignaal? Dan eerst de harde risicoregels, daarna de AI-veto.
+
+// Zoveel live-trades van de AI-trader (met gemiddeld winst) voordat hij live meer dan de kleinste inzet gebruikt.
+const LIVE_AGENT_PROVEN = 20;
 
 export class Bot {
   // brokers en stores: { paper, live }. De actieve modus komt uit settings en
@@ -721,6 +724,7 @@ export class Bot {
       await this.#settleShadows();
       this.#armSummary();
       this.#agentSummary();
+      this.#agentLiveWatch();
       this.lastTickAt = new Date().toISOString();
       if (!errors) this.lastError = null;
       this.store.save();
@@ -1052,12 +1056,35 @@ export class Bot {
   // ---------- De AI-trader ----------
   // Mag de AI-trader nu echt handelen? Bewezen: overal. Getest: in paper (live pas na bewijs in
   // de praktijk). Oefenen: alleen in paper als proefstrategieën dat mogen.
+  // Live alleen als de leerserver zegt dat ALLE eisen gehaald zijn (agent.liveCheck) én de eigenaar
+  // dit recept daarna zelf live heeft toegestaan.
   agentAllowed(agent) {
-    const lv = agent.live ?? {};
-    const proven = agent.stage === 'bewezen' || (agent.stage === 'getest' && lv.n >= 20 && lv.sum / lv.n >= 0.1);
-    if (proven) return true;
-    if (this.mode !== 'paper') return false;
-    return agent.stage === 'getest' || (agent.stage === 'oefenen' && this.strategy.mlTrialPaper !== 0);
+    if (agent.stage === 'geblokkeerd') return false;
+    if (this.mode === 'live') return this.agentLiveReady(agent) && this.settings.agentLive.approved.includes(agent.recipeKey);
+    return agent.stage === 'getest' || agent.stage === 'bewezen' || (agent.stage === 'oefenen' && this.strategy.mlTrialPaper !== 0);
+  }
+
+  agentLiveReady(agent) {
+    return Boolean(agent?.liveCheck?.allMet) && agent.stage !== 'geblokkeerd';
+  }
+
+  // Valt een eis weg terwijl de AI-trader live mocht: niet meer live handelen, akkoord intrekken en melden.
+  #agentLiveWatch() {
+    const main = this.strategy.agentMode && !this.following ? this.getAgent?.() : null;
+    if (!main || this.mode !== 'live') return;
+    for (const a of agentParts(main)) {
+      if (!this.settings.agentLive.approved.includes(a.recipeKey) || this.agentLiveReady(a)) continue;
+      this.settings.setAgentLive(a.recipeKey, false);
+      const missing = (a.liveCheck?.checks ?? []).filter((c) => !c.ok).map((c) => `${c.label} (nu: ${c.now})`);
+      this.#event('warn', null, `AI-trader ${a.recipeKey}: niet meer live, een eis voor live wordt niet meer gehaald`);
+      this.#notify('mode', {
+        title: 'AI-trader handelt niet meer live',
+        message: `Recept ${a.recipeKey} haalt niet meer alle eisen voor live:\n${missing.join('\n') || 'onbekend'}\n\n` +
+          'Hij koopt live niets meer (open posities worden nog gewoon bewaakt) en blijft in paper leren. Je akkoord is ingetrokken; ' +
+          'als alle eisen weer gehaald zijn, kun je hem op de pagina Trainer opnieuw live toestaan.',
+        level: 'warn',
+      });
+    }
   }
 
   // Uitleg bij een regressiemodel: bijdrage per kenmerk in procentpunt verwachte winst.
@@ -1137,10 +1164,11 @@ export class Bot {
     if (!this.agentAllowed(agent)) {
       const blocked = agent.stage === 'geblokkeerd';
       const why = blocked ? 'mijn recept is te riskant (te diepe terugval in de test), daar handel ik niet mee'
-        : this.mode === 'live' ? 'live handel ik pas als ik me bewezen heb' : 'oefenen in paper staat uit';
+        : this.mode === 'live' ? (this.agentLiveReady(agent) ? 'live handel ik pas als je dit recept zelf live toestaat (pagina Trainer)' : 'live handel ik pas als ik alle eisen voor live haal')
+          : 'oefenen in paper staat uit';
       const reason = `AI-trader (${tf}): ik zie een kans (${nl(q)}% verwacht), maar ${why}`;
       this.agentReason[pair] = reason;
-      this.think(`Ik zie een kans bij ${pair}: ik verwacht ${nl(q)}% na kosten.${whyTxt} Maar ${blocked ? why : this.mode === 'live' ? 'live handel ik pas als ik me in paper bewezen heb' : 'oefenen in paper staat uit'}.`, pair, 'info');
+      this.think(`Ik zie een kans bij ${pair}: ik verwacht ${nl(q)}% na kosten.${whyTxt} Maar ${why}.`, pair, 'info');
       return { buy: false, reason };
     }
     // Risk Agent: is deze trade verantwoord, en met welke inzet?
@@ -1408,7 +1436,13 @@ export class Bot {
     this.#step(`${pair}: kopen`);
     const stakeInfo = this.stakeInfo();
     // Risk Agent: bij weinig bewijs een kleinere inzet.
-    const stake = riskStake(stakeInfo.effective, indicators?.agent?.stakeFactor ?? 1);
+    let stake = riskStake(stakeInfo.effective, indicators?.agent?.stakeFactor ?? 1);
+    // Live begint de AI-trader met de kleinste inzet, tot hij live 20 trades met gemiddeld winst heeft.
+    if (this.broker.mode === 'live' && indicators?.agent) {
+      const lt = this.store.state.trades.filter((t) => t.agent);
+      const avg = lt.length ? lt.reduce((x, t) => x + (t.pnlPct ?? 0), 0) / lt.length : 0;
+      if (lt.length < LIVE_AGENT_PROVEN || avg <= 0) stake = Math.min(stake, LIVE_MIN_STAKE_EUR);
+    }
     const opts = this.#orderOpts();
     if (opts.limit) this.#step(`${pair}: limietorder, wacht max. ${opts.waitSec} sec op vulling`);
     const expected = await fetchPrice(this.ex, pair).catch(() => null);

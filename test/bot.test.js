@@ -1020,12 +1020,47 @@ test('AI-trader: koopt en verkoopt zelf, uitkomst naar de trainer; live pas na b
   assert.ok(fb.pct > 0);
   assert.ok(fb.features && Number.isFinite(fb.features.rsi14), 'kenmerken bij aankoop, om van te leren');
   assert.ok(bot.thoughts.some((t) => /Ik verkoop BTC\/EUR/.test(t.text)));
-  // Live: alleen als hij zich bewezen heeft
-  const live = await run(mkAgent('getest', false), 'live');
+  // Live: alleen als alle eisen gehaald zijn én de eigenaar het recept zelf live toestond
+  const live = await run({ ...mkAgent('getest', false), recipeKey: 'R' }, 'live');
   assert.equal(live.bot.store.state.positions['BTC/EUR'], undefined);
-  assert.match(live.bot.pairStatus['BTC/EUR'].reason, /live handel ik pas als ik me bewezen heb/);
-  const proven = await run({ ...mkAgent('getest', false), live: { n: 25, sum: 5, wins: 15 } }, 'live');
-  assert.ok(proven.bot.agentAllowed({ ...mkAgent('getest', false), live: { n: 25, sum: 5, wins: 15 } }));
+  assert.match(live.bot.pairStatus['BTC/EUR'].reason, /live handel ik pas als ik alle eisen voor live haal/);
+  const ready = { ...mkAgent('bewezen', false), recipeKey: 'R', liveCheck: { allMet: true, checks: [] } };
+  const notYet = await run(ready, 'live');
+  assert.match(notYet.bot.pairStatus['BTC/EUR'].reason, /als je dit recept zelf live toestaat/);
+  assert.equal(notYet.bot.agentAllowed(ready), false, 'eisen gehaald, maar nog geen akkoord');
+  notYet.bot.settings.setAgentLive('R', true);
+  assert.equal(notYet.bot.agentAllowed(ready), true);
+  assert.equal(notYet.bot.agentAllowed({ ...ready, liveCheck: { allMet: false } }), false, 'eis weggevallen');
+});
+
+test('AI-trader live: kleinste inzet in het begin, en terug uit live als een eis wegvalt', async () => {
+  const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
+  const { bot, ex } = setup({});
+  const sent = [];
+  bot.notifier = { send: async (event, payload) => { sent.push({ event, ...payload }); return true; }, heartbeat: async () => null };
+  await bot.setRisk({ cooldownMinutes: 0, stakeEur: 20 });
+  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0 });
+  bot.settings.data.mode = 'live';
+  bot.liveBalance = { eurFree: 1000 };
+  ex.apiKey = 'k'; ex.secret = 's';
+  const pb = new PaperBroker(ex, 0.25);
+  Object.assign(bot.brokers.live, { buy: (...a) => pb.buy(...a), sell: (...a) => pb.sell(...a) });
+  let agent = { ...fx.agent, stage: 'bewezen', recipeKey: 'R', liveCheck: { allMet: true, checks: [] }, entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 },
+    regimes: { stijgend: { key: 'R', why: 'best' }, zijwaarts: { key: 'R', why: 'best' }, dalend: { key: 'R', why: 'best' } } };
+  bot.getAgent = () => agent;
+  bot.settings.setAgentLive('R', true);
+  ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+  await bot.tick();
+  const pos = bot.store.state.positions['BTC/EUR'];
+  assert.ok(pos, bot.pairStatus['BTC/EUR']?.reason);
+  assert.ok(pos.costEur <= 5.5, `live begint met de kleinste inzet: ${pos.costEur}`);
+  // Een eis valt weg: akkoord ingetrokken en een melding.
+  agent = { ...agent, liveCheck: { allMet: false, checks: [{ ok: false, label: 'Beter dan de markt', now: '-0,1%' }] } };
+  await bot.tick();
+  assert.deepEqual(bot.settings.agentLive.approved, []);
+  const m = sent.find((x) => x.title === 'AI-trader handelt niet meer live');
+  assert.ok(m, 'melding');
+  assert.match(m.message, /Beter dan de markt \(nu: -0,1%\)/);
 });
 
 test('AI-trader: handelt alleen de coins die hij zelf gekozen heeft, ook buiten je eigen lijst', async () => {

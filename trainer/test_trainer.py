@@ -518,6 +518,8 @@ class AgentTrader(unittest.TestCase):
         self.assertTrue(any(t.startswith('Resultaat 15m-candles') for t in said), said)
         self.assertTrue(any('Mijn beste manier van traden is nu' in t for t in said))
         self.assertEqual(set(pub['regimes']), {'stijgend', 'zijwaarts', 'dalend'}, 'Strategy Agent: plan per marktfase')
+        self.assertIn('liveCheck', pub, 'eisen voor live in agent.json')
+        self.assertFalse(pub['liveCheck']['allMet'], 'zonder paper-trades nooit live')
         self.assertTrue(any(t.startswith('Strategy Agent:') for t in said), said)
         info = s.agent_info()
         self.assertEqual(info['published']['timeframe'], '15m')
@@ -673,6 +675,54 @@ class RoundMessages(unittest.TestCase):
         # Met trades maar zonder sommige getallen: ook geen crash.
         r['test'] = {'trades': 3, 'avgPct': 0.1, 'winRate': None, 'avgHeld': None, 'buyHoldPct': None, 'maxDrawdownPct': None, 'worstPct': None}
         self.assertIn('Resultaat', server.agent_mod_say(r))
+
+
+class LiveAdmission(unittest.TestCase):
+    def rows(self, n=60, days=25, pct=0.4, mkt=0.1, regimes=('stijgend', 'zijwaarts'), cost=0.5):
+        from datetime import datetime, timedelta
+        t0 = datetime(2026, 10, 1)
+        out = []
+        for i in range(n):
+            at = t0 + timedelta(days=days * i / max(1, n - 1))
+            out.append({'pct': pct + (0.3 if i % 2 else -0.3), 'mkt': mkt, 'closedAt': at.isoformat(), 'openedAt': (at - timedelta(hours=3)).isoformat(),
+                        'marketRegime': regimes[i % len(regimes)], 'costPct': cost})
+        return out
+
+    def test_all_requirements(self):
+        import livecheck as L
+        r = L.check(self.rows(), 'betrouwbaar', slots=2, assumed_cost=0.5)
+        self.assertTrue(r['allMet'], [c for c in r['checks'] if not c['ok']])
+        bad = {
+            'status': L.check(self.rows(), 'veelbelovend', 2, 0.5),
+            'trades': L.check(self.rows(n=30), 'betrouwbaar', 2, 0.5),
+            'trades ': L.check(self.rows(days=10), 'betrouwbaar', 2, 0.5),
+            'avg': L.check(self.rows(pct=0.05), 'betrouwbaar', 2, 0.5),
+            'market': L.check(self.rows(mkt=0.6), 'betrouwbaar', 2, 0.5),
+            'regimes': L.check(self.rows(regimes=('dalend',)), 'betrouwbaar', 2, 0.5),
+            'cost': L.check(self.rows(cost=0.9), 'betrouwbaar', 2, 0.5),
+        }
+        for key, res in bad.items():
+            self.assertFalse(res['allMet'], key)
+            self.assertFalse(next(c for c in res['checks'] if c['key'] == key.strip())['ok'], key)
+        deep = self.rows(pct=0.4)
+        for r in deep[10:20]:
+            r['pct'] = -4.0
+        self.assertFalse(next(c for c in L.check(deep, 'betrouwbaar', 2, 0.5)['checks'] if c['key'] == 'drawdown')['ok'])
+
+    def test_market_move_and_weeks(self):
+        import livecheck as L
+        h = 3600_000
+        candles = {'A': [[i * h, 0, 0, 0, 100 + i, 0] for i in range(10)], 'B': [[i * h, 0, 0, 0, 50.0, 0] for i in range(10)]}
+        from datetime import datetime, timezone
+        iso = lambda ms: datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat()
+        rows = [{'pct': 1.0, 'openedAt': iso(2 * h + 60_000), 'closedAt': iso(5 * h + 60_000)}, {'pct': 1.0, 'mkt': 9.0}]
+        self.assertEqual(L.fill_market(rows, candles), 1)
+        self.assertAlmostEqual(rows[0]['mkt'], ((105 / 102 - 1) * 100 + 0) / 2)
+        self.assertEqual(rows[1]['mkt'], 9.0, 'bestaande waarde blijft')
+        wk = L.weeks(self.rows(n=30, days=20))
+        self.assertGreaterEqual(len(wk), 3)
+        self.assertTrue(all(w['beatMarket'] for w in wk))
+        self.assertEqual(sum(w['trades'] for w in wk), 30)
 
 
 class HonestTesting(unittest.TestCase):

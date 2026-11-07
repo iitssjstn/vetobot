@@ -247,6 +247,21 @@ export class Settings {
     return this.data.follow;
   }
 
+  // Recepten van de AI-trader die de eigenaar zelf live heeft toegestaan (nadat alle eisen gehaald waren).
+  get agentLive() {
+    return { approved: [], ...(this.data.agentLive ?? {}) };
+  }
+
+  setAgentLive(recipe, allowed) {
+    const key = String(recipe ?? '');
+    if (!key) throw new Error('Geen recept opgegeven');
+    const cur = new Set(this.agentLive.approved);
+    if (allowed) cur.add(key);
+    else cur.delete(key);
+    this.data.agentLive = { approved: [...cur], changedAt: new Date().toISOString() };
+    this.#save();
+  }
+
   setFollow(enabled) {
     this.data.follow = { enabled: Boolean(enabled), since: enabled ? new Date().toISOString() : null };
     this.#save();
