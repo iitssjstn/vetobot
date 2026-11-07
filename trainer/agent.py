@@ -237,10 +237,16 @@ def _part_outcomes(mk, part, entry_model, entry_med, exit_model, exit_med, H, sa
     return {i: (qmap[i], r) for i, r in zip(idx, res)}, lo, hi
 
 
-def _ts_index(mk):
-    if getattr(mk, 'ts_index', None) is None:
-        mk.ts_index = {int(x[0]): j for j, x in enumerate(mk.c)}
-    return mk.ts_index
+def _times(mk):
+    """Tijdstippen van de candles als numpy-array (zuinig: 8 bytes per candle)."""
+    if getattr(mk, 'ts', None) is None:
+        mk.ts = np.fromiter((x[0] for x in mk.c), dtype=np.int64, count=len(mk.c))
+    return mk.ts
+
+
+def _find(ts, t):
+    j = int(np.searchsorted(ts, t))
+    return j if j < len(ts) and ts[j] == t else None
 
 
 def market_move(bench, t0, t1):
@@ -248,8 +254,8 @@ def market_move(bench, t0, t1):
     die op beide momenten een candle hebben. None als geen enkele coin dat heeft."""
     moves = []
     for m in bench:
-        ix = _ts_index(m)
-        a, b = ix.get(t0), ix.get(t1)
+        ts = _times(m)
+        a, b = _find(ts, t0), _find(ts, t1)
         if a is not None and b is not None and m.close[a] > 0:
             moves.append((m.close[b] / m.close[a] - 1) * 100)
     return sum(moves) / len(moves) if moves else None
