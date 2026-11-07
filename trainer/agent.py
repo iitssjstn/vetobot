@@ -20,6 +20,7 @@ Hoe hij leert (reinforcement learning, "fitted Q-iteration"):
 Modellen: HistGradientBoostingRegressor (snel, werkt zonder GPU), geëxporteerd als dezelfde
 JSON-bomen die de bot in JavaScript uitrekent.
 """
+import math
 import random
 import time
 
@@ -101,11 +102,11 @@ class Market:
         self.pair = pair
         self.c = candles
         s = series(candles)
-        rows = []
-        for i in range(len(candles)):
-            f = features_at(candles, s, i, ctx) if i >= WARMUP else None
-            rows.append([np.nan if f is None or f[k] is None else f[k] for k in FEATURES])
-        self.X = np.array(rows, dtype=float)
+        self.X = np.full((len(candles), len(FEATURES)), np.nan)
+        for i in range(WARMUP, len(candles)):
+            f = features_at(candles, s, i, ctx)
+            if f is not None:
+                self.X[i] = [np.nan if f[k] is None else f[k] for k in FEATURES]
         self.close = np.array([x[4] for x in candles], dtype=float)
         self.high = np.array([x[2] for x in candles], dtype=float)
         self.low = np.array([x[3] for x in candles], dtype=float)
@@ -118,12 +119,33 @@ def _split(n):
     return (WARMUP, a), (a, b), (b, n)
 
 
+MAX_EXIT_ROWS = 250_000   # plafond voor het aantal leervoorbeelden bij verkopen (geheugen)
+MAX_ENTRY_ROWS = 300_000  # en bij kopen
+
+
+def _pos_block(entry, price, hmax, h):
+    """pos_state voor veel rijen tegelijk (numpy)."""
+    pnl = (price / entry - 1) * 100
+    mx = (hmax / entry - 1) * 100
+    return np.column_stack([pnl, h.astype(float), mx, mx - pnl])
+
+
+def _step_for(markets, part_len, step, per_row, cap):
+    """Grotere stap als er anders meer dan cap voorbeelden zouden komen."""
+    est = sum(max(0, part_len(mk)) for mk in markets) / step * per_row
+    return step if est <= cap else int(math.ceil(step * est / cap))
+
+
 def learn_exit(markets, H, rnd, say, iters=5, per_entry=6, step=3, fit_kw=None):
     """Stap 1: de waarde van vasthouden leren (fitted Q-iteration).
-    Elk voorbeeld: positie geopend op candle i, nu h candles later."""
+    Elk voorbeeld: positie geopend op candle i, nu h candles later.
+    Per coin als numpy-blok opgebouwd en met een plafond, zodat het geheugen niet meegroeit met
+    het aantal dagen en coins."""
+    step = _step_for(markets, lambda mk: mk.split[0][1] - H - 2 - mk.split[0][0], step, min(per_entry, H - 1), MAX_EXIT_ROWS)
     S, S2, R, last = [], [], [], []
     for mk in markets:
         lo, hi = mk.split[0]
+        ts, es, hs_, rm, rm2 = [], [], [], [], []
         for i in range(lo, hi - H - 2, step):
             if not mk.valid[i]:
                 continue
@@ -137,13 +159,22 @@ def learn_exit(markets, H, rnd, say, iters=5, per_entry=6, step=3, fit_kw=None):
                 j_prev = t + 1
                 if not (mk.valid[t] and mk.valid[t + 1]):
                     continue
-                p, p2 = mk.close[t], mk.close[t + 1]
-                m2 = max(run_max, mk.high[t + 1])
-                S.append(list(mk.X[t]) + pos_state(entry, p, run_max, h))
-                S2.append(list(mk.X[t + 1]) + pos_state(entry, p2, m2, h + 1))
-                R.append((p2 / p - 1) * 100 * (p / entry))  # verandering als % van de inleg
-                last.append(h + 1 >= H - 1)
-    S, S2, R, last = np.array(S), np.array(S2), np.array(R), np.array(last)
+                ts.append(t)
+                es.append(entry)
+                hs_.append(h)
+                rm.append(run_max)
+                rm2.append(max(run_max, mk.high[t + 1]))
+        if not ts:
+            continue
+        t, e, h, r1, r2 = np.array(ts), np.array(es), np.array(hs_), np.array(rm), np.array(rm2)
+        p, p2 = mk.close[t], mk.close[t + 1]
+        S.append(np.hstack([mk.X[t], _pos_block(e, p, r1, h)]))
+        S2.append(np.hstack([mk.X[t + 1], _pos_block(e, p2, r2, h + 1)]))
+        R.append((p2 / p - 1) * 100 * (p / e))  # verandering als % van de inleg
+        last.append(h + 1 >= H - 1)
+    if not S:
+        return None, None
+    S, S2, R, last = np.vstack(S), np.vstack(S2), np.concatenate(R), np.concatenate(last)
     if len(S) < 2000:
         return None, None
     med = _medians(S)
@@ -202,6 +233,7 @@ def simulate_exits(mk, idx, exit_model, exit_med, H, safety_stop):
 def learn_entry(markets, exit_model, exit_med, H, cost, safety_stop, step=2, extra=None, fit_kw=None):
     """Stap 2: de waarde van "nu kopen" leren: nagespeeld met het eigen verkoopgedrag, na kosten."""
     X, y, w = [], [], []
+    step = _step_for(markets, lambda mk: mk.split[0][1] - H - 2 - mk.split[0][0], step, 1, MAX_ENTRY_ROWS)
     for mk in markets:
         lo, hi = mk.split[0]
         idx = [i for i in range(lo, hi - H - 2, step) if mk.valid[i]]
