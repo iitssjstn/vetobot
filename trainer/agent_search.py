@@ -25,6 +25,8 @@ RELIABLE_ROUNDS = 2       # zoveel rondes met eindtest voordat een recept "betro
 RELIABLE_AVG = 0.1        # gewogen gemiddeld minstens zoveel % per trade in de eindtests
 RELIABLE_TRADES = 60      # samen minstens zoveel eindtest-trades
 MAX_DRAWDOWN = 15         # grootste terugval in een eindtest (opgeteld % per trade) mag niet groter zijn
+DANGER_DRAWDOWN = 25      # boven deze terugval nooit gebruiken, ook niet om in paper te oefenen
+MIN_DD = 1.0              # ondergrens voor de terugval bij winst/terugval (anders deelt hij door bijna 0)
 
 
 def key_of(r):
@@ -55,30 +57,45 @@ def neighbours(r, allowed):
 
 
 def score(entry):
-    """Beoordeling van een recept over al zijn rondes: gewogen gemiddeld resultaat per trade in
-    de eindtests (gewogen naar aantal trades), plus hoeveel rondes en trades erachter zitten."""
+    """Beoordeling van een recept over al zijn rondes in de eindtests:
+    - avg: gewogen gemiddeld resultaat per trade (gewogen naar aantal trades);
+    - edge: hetzelfde, maar min wat de markt (alle coins samen) deed tijdens die trades. Alleen dit
+      voordeel telt: winst die je ook met meedobberen had gehad, is geen verdienste;
+    - ratio: winst ten opzichte van de grootste terugval (gemiddelde winst per ronde boven de markt,
+      gedeeld door de grootste terugval). Hoe hoger, hoe meer winst per risico;
+    - drawdown: de grootste terugval in een ronde."""
     rounds = [x for x in entry.get('rounds', []) if (x.get('test') or {}).get('trades')]
     n = sum(x['test']['trades'] for x in rounds)
     if not n:
-        return {'avg': None, 'trades': 0, 'rounds': len(entry.get('rounds', [])), 'tested': 0, 'positive': 0, 'drawdown': None, 'safe': None}
+        return {'avg': None, 'edge': None, 'ratio': None, 'trades': 0, 'rounds': len(entry.get('rounds', [])), 'tested': 0,
+                'positive': 0, 'drawdown': None, 'safe': None}
     avg = sum(x['test']['avgPct'] * x['test']['trades'] for x in rounds) / n
     dd = max((x['test'].get('maxDrawdownPct') or 0) for x in rounds)
-    # Risico-gewogen: winst per trade, minus een straf voor grote terugvallen. Liever iets minder
-    # winst met kleine verliezen dan veel winst met diepe dalen.
-    safe = avg - dd / 100
-    return {'avg': avg, 'trades': n, 'rounds': len(entry.get('rounds', [])), 'tested': len(rounds),
-            'positive': sum(1 for x in rounds if x['test']['avgPct'] > 0), 'drawdown': dd, 'safe': safe}
+    er = [x for x in rounds if x['test'].get('edgePct') is not None]
+    en = sum(x['test']['trades'] for x in er)
+    edge = sum(x['test']['edgePct'] * x['test']['trades'] for x in er) / en if en else None
+    # Winst/terugval: liever iets minder winst met kleine verliezen dan veel winst met diepe dalen.
+    # Rondes van voor de marktvergelijking tellen met hun gewone winst.
+    gain = sum((x['test']['edgePct'] if x['test'].get('edgePct') is not None else x['test']['avgPct']) * x['test']['trades']
+               for x in rounds) / len(rounds)
+    ratio = gain / max(dd, MIN_DD)
+    return {'avg': avg, 'edge': edge, 'ratio': ratio, 'trades': n, 'rounds': len(entry.get('rounds', [])), 'tested': len(rounds),
+            'positive': sum(1 for x in rounds if x['test']['avgPct'] > 0), 'drawdown': dd, 'safe': ratio}
 
 
 def status(entry):
-    """betrouwbaar: houdt stand over meerdere rondes · veelbelovend: één goede ronde, moet zich nog
-    herhalen · oefenen: nog geen winst · afgevallen: meerdere rondes verlies."""
+    """betrouwbaar: houdt stand over meerdere rondes en verslaat de markt · veelbelovend: één goede
+    ronde, moet zich nog herhalen · oefenen: nog geen winst · afgevallen: meerdere rondes verlies ·
+    te riskant: een terugval van meer dan DANGER_DRAWDOWN%, nooit gebruiken (ook niet in paper)."""
     sc = score(entry)
     if sc['avg'] is None:
         return 'oefenen'
+    if entry.get('risky') or sc['drawdown'] > DANGER_DRAWDOWN:
+        return 'te riskant'
     last_ok = bool(entry['rounds'] and entry['rounds'][-1].get('ok'))
     if (sc['tested'] >= RELIABLE_ROUNDS and sc['avg'] >= RELIABLE_AVG and sc['trades'] >= RELIABLE_TRADES
-            and sc['positive'] >= sc['tested'] - 1 and last_ok and sc['drawdown'] <= MAX_DRAWDOWN):
+            and sc['positive'] >= sc['tested'] - 1 and last_ok and sc['drawdown'] <= MAX_DRAWDOWN
+            and sc['edge'] is not None and sc['edge'] > 0):
         return 'betrouwbaar'
     if sc['tested'] >= 3 and sc['avg'] < 0:
         return 'afgevallen'
@@ -90,8 +107,13 @@ def status(entry):
 def rank_key(entry):
     st = status(entry)
     sc = score(entry)
-    order = {'betrouwbaar': 3, 'veelbelovend': 2, 'oefenen': 1, 'afgevallen': 0}[st]
-    return (order, sc['safe'] if sc['safe'] is not None else -99, sc['trades'])
+    order = {'betrouwbaar': 3, 'veelbelovend': 2, 'oefenen': 1, 'afgevallen': 0, 'te riskant': -1}[st]
+    return (order, sc['ratio'] if sc['ratio'] is not None else -99, sc['trades'])
+
+
+def usable(entry):
+    """Mag dit recept gebruikt worden (ook om te oefenen)? Nooit als het te riskant is."""
+    return status(entry) != 'te riskant'
 
 
 def leaderboard(recipes, limit=12):
@@ -116,7 +138,7 @@ def pick(recipes, timeframes, rnd=None, now=None):
     rnd = rnd or random.Random()
     now = now or time.time()
     allowed = {key_of(r): r for r in all_recipes(timeframes)}
-    board = [e for e in leaderboard(recipes, 5) if key_of(e['recipe']) in allowed and status(e) != 'afgevallen']
+    board = [e for e in leaderboard(recipes, 5) if key_of(e['recipe']) in allowed and status(e) not in ('afgevallen', 'te riskant')]
     # 1. De beste opnieuw als die nog geen bewijs over meerdere rondes heeft, of al even niet getest is.
     if board:
         best = board[0]
@@ -137,7 +159,7 @@ def pick(recipes, timeframes, rnd=None, now=None):
         w = [tf_weight(recipes, r['timeframe']) for r in fresh]
         return rnd.choices(fresh, weights=w, k=1)[0], 'fresh'
     # Alles al eens geprobeerd: het langst niet geteste goede recept opnieuw.
-    old = sorted((e for e in recipes.values() if key_of(e['recipe']) in allowed and status(e) != 'afgevallen'),
+    old = sorted((e for e in recipes.values() if key_of(e['recipe']) in allowed and status(e) not in ('afgevallen', 'te riskant')),
                  key=lambda e: e['rounds'][-1].get('ts', 0) if e.get('rounds') else 0)
     return (old[0]['recipe'], 'old') if old else (rnd.choice(list(allowed.values())), 'fresh')
 
@@ -146,10 +168,13 @@ def add_round(recipes, recipe, report):
     k = key_of(recipe)
     e = recipes.setdefault(k, {'key': k, 'recipe': recipe, 'rounds': []})
     slim = {'ts': time.time(), 'at': report.get('at'), 'ok': report.get('ok'), 'reason': report.get('reason'),
-            'test': {x: (report.get('test') or {}).get(x) for x in ('trades', 'avgPct', 'totalPct', 'winRate', 'avgHeld', 'buyHoldPct', 'maxDrawdownPct', 'worstPct')} if report.get('test') else None,
+            'test': {x: (report.get('test') or {}).get(x) for x in ('trades', 'avgPct', 'totalPct', 'winRate', 'avgHeld', 'buyHoldPct', 'maxDrawdownPct', 'worstPct', 'marketPct', 'edgePct', 'beatMarketRate')} if report.get('test') else None,
             'val': {x: (report.get('validation') or {}).get(x) for x in ('trades', 'avgPct', 'totalPct')} if report.get('validation') else None,
             'coins': report.get('coins'), 'threshold': report.get('threshold'), 'testDays': report.get('testDays')}
     e['rounds'] = (e['rounds'] + [slim])[-KEEP_ROUNDS:]
+    # Eén keer te diep gezakt is genoeg: dat blijft onthouden, ook als die ronde uit de lijst valt.
+    if (slim['test'] or {}).get('maxDrawdownPct') is not None and slim['test']['maxDrawdownPct'] > DANGER_DRAWDOWN:
+        e['risky'] = True
     e['status'] = status(e)
     e['score'] = score(e)
     return e

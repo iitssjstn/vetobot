@@ -472,6 +472,8 @@ class AgentTrader(unittest.TestCase):
         a, r = agent.train_agent({'costPct': 0.2, 'days': 60, 'agent': {}}, '15m', lambda p, tf, d: good[p], pairs)
         self.assertTrue(r['ok'], r)
         self.assertGreater(r['test']['avgPct'], 0)
+        self.assertIsNotNone(r['test']['marketPct'], 'vergeleken met de markt tijdens de trades')
+        self.assertGreater(r['test']['edgePct'], 0)
         self.assertGreater(r['test']['exits']['zelf verkocht'], 0, 'hij verkoopt zelf, zonder vast doel of stop')
         self.assertEqual(a['exit']['features'][-4:], agent.POS_FEATURES)
         # Exportformaat rekent hetzelfde als sklearn (ook getest in Node met de fixture)
@@ -524,7 +526,7 @@ class RecipeSearch(unittest.TestCase):
         import agent_search as A
         r = {'timeframe': '15m', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
         recipes = {}
-        good = {'ok': True, 'test': {'trades': 50, 'avgPct': 0.3, 'totalPct': 15, 'winRate': 55}}
+        good = {'ok': True, 'test': {'trades': 50, 'avgPct': 0.3, 'totalPct': 15, 'winRate': 55, 'edgePct': 0.2, 'maxDrawdownPct': 4}}
         e = A.add_round(recipes, r, good)
         self.assertEqual(e['status'], 'veelbelovend', 'één goede ronde is nog geen bewijs')
         e = A.add_round(recipes, r, good)
@@ -535,6 +537,58 @@ class RecipeSearch(unittest.TestCase):
         for _ in range(2):
             e = A.add_round(recipes, r, bad)
         self.assertEqual(e['status'], 'afgevallen')
+
+    def test_only_edge_over_market_counts(self):
+        import agent_search as A
+        r = {'timeframe': '15m', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
+        recipes = {}
+        # Winst, maar de markt steeg tijdens de trades nog harder: dat is meedobberen, geen verdienste.
+        rising = {'ok': True, 'test': {'trades': 50, 'avgPct': 0.4, 'totalPct': 20, 'winRate': 60, 'marketPct': 0.6, 'edgePct': -0.2, 'maxDrawdownPct': 3}}
+        for _ in range(3):
+            e = A.add_round(recipes, r, rising)
+        self.assertNotEqual(e['status'], 'betrouwbaar')
+        self.assertLess(e['score']['edge'], 0)
+
+    def test_rank_on_gain_versus_drawdown(self):
+        import agent_search as A
+        recipes = {}
+        calm = {'timeframe': '1h', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
+        wild = {'timeframe': '30m', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
+        for _ in range(2):
+            A.add_round(recipes, calm, {'ok': True, 'test': {'trades': 60, 'avgPct': 0.2, 'totalPct': 12, 'edgePct': 0.15, 'maxDrawdownPct': 2}})
+            A.add_round(recipes, wild, {'ok': True, 'test': {'trades': 60, 'avgPct': 0.5, 'totalPct': 30, 'edgePct': 0.4, 'maxDrawdownPct': 14}})
+        board = A.leaderboard(recipes)
+        self.assertEqual(board[0]['recipe'], calm, 'meer winst per risico wint van meer winst met diepe dalen')
+        self.assertAlmostEqual(A.score(recipes[A.key_of(calm)])['ratio'], 0.15 * 60 / 2)
+
+    def test_too_deep_drawdown_never_used(self):
+        import agent_search as A
+        recipes = {}
+        r = {'timeframe': '15m', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
+        deep = {'ok': True, 'test': {'trades': 60, 'avgPct': 0.8, 'totalPct': 48, 'edgePct': 0.6, 'maxDrawdownPct': 30}}
+        e = A.add_round(recipes, r, deep)
+        self.assertEqual(e['status'], 'te riskant')
+        self.assertFalse(A.usable(e))
+        # Ook na genoeg nette rondes (de diepe valt uit de lijst) blijft hij te riskant.
+        for _ in range(A.KEEP_ROUNDS + 1):
+            e = A.add_round(recipes, r, {'ok': True, 'test': {'trades': 60, 'avgPct': 0.3, 'totalPct': 18, 'edgePct': 0.2, 'maxDrawdownPct': 3}})
+        self.assertEqual(e['status'], 'te riskant')
+        for seed in range(20):
+            rec, why = A.pick(recipes, ['15m'], rnd=random.Random(seed), now=time.time() + 7 * 3600)
+            self.assertNotIn(why, ('retest', 'old'), 'een te riskant recept wordt niet opnieuw gebruikt')
+
+    def test_market_move_during_trade(self):
+        import agent
+        class M:
+            pass
+        a, b = M(), M()
+        a.c = [[t * 60000, 0, 0, 0, 0] for t in range(5)]
+        a.close = __import__('numpy').array([100, 101, 102, 103, 104.0])
+        b.c = [[t * 60000, 0, 0, 0, 0] for t in range(1, 5)]
+        b.close = __import__('numpy').array([50, 50, 55, 55.0])
+        self.assertAlmostEqual(agent.market_move([a, b], 60000, 180000), ((103 / 101 - 1) * 100 + 10) / 2)
+        self.assertAlmostEqual(agent.market_move([a, b], 0, 240000), 4.0, msg='alleen coins met beide candles tellen')
+        self.assertIsNone(agent.market_move([b], 0, 60000))
 
     def test_pick_retests_builds_on_best_and_learns_timeframes(self):
         import agent_search as A

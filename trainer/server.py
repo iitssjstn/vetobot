@@ -817,8 +817,9 @@ def agent_round():
         write_json(os.path.join('agents', key.replace('|', '_') + '.json'), agent)
     think(agent_mod_say(report, entry), kind='result' if report.get('ok') else 'warn')
     # De beste manier van traden kiezen: hoogste status, dan gemiddelde over de rondes.
-    board = [e for e in agent_search.leaderboard(data['recipes'], 50)
-             if os.path.exists(path(os.path.join('agents', e['key'].replace('|', '_') + '.json')))]
+    # Te riskante recepten (terugval > 25%) nooit gebruiken, ook niet om in paper te oefenen.
+    board = [e for e in agent_search.leaderboard(data['recipes'], 50) if agent_search.usable(e)
+             and os.path.exists(path(os.path.join('agents', e['key'].replace('|', '_') + '.json')))]
     prev = data.get('published')
     if board:
         best = board[0]
@@ -842,6 +843,18 @@ def agent_round():
                    'bewezen': 'Ik heb me ook in de praktijk bewezen, dus ik mag ook live handelen.',
                    'oefenen': 'Hij maakt in de test nog niet genoeg winst, dus de bot oefent er alleen mee in paper (als je dat toestaat).'}[a['stage']],
                   kind='result' if a['stage'] != 'oefenen' else 'insight')
+    elif prev and prev.get('stage') != 'geblokkeerd':
+        # Geen bruikbaar recept meer, en het recept waar de bot mee handelde is te riskant geworden:
+        # de bot mag er niet meer mee handelen.
+        old = data['recipes'].get(prev.get('key'))
+        a = read_json('agent.json', None)
+        if a and old and not agent_search.usable(old):
+            a['stage'] = 'geblokkeerd'
+            a['recipeStatus'] = 'te riskant'
+            write_json('agent.json', a)
+            data['published'] = {**prev, 'stage': 'geblokkeerd', 'status': 'te riskant', 'at': report['at']}
+            think(f"Mijn recept {agent_mod.recipe_text(old['recipe'])} zakte in een test meer dan {agent_search.DANGER_DRAWDOWN}% terug. "
+                  'Dat is te riskant: de bot handelt er niet meer mee, ook niet in paper, tot ik een veiliger recept vind.', kind='warn')
     write_json('agents.json', data)
 
 
@@ -857,6 +870,14 @@ def agent_mod_say(r, entry=None):
          f"deed ik {t['trades']} trades, gemiddeld {f(t['avgPct'])} per trade, {t['winRate']:.0f}% met winst, "
          f"gemiddeld {thoughts.hold(int(held))} vastgehouden. Kopen en vasthouden had {f(t.get('buyHoldPct'))} opgeleverd. "
          f"Mijn grootste terugval was {f(-(t.get('maxDrawdownPct') or 0))}, mijn slechtste trade {f(t.get('worstPct'))}. ")
+    if t.get('edgePct') is not None:
+        beat = '' if t.get('beatMarketRate') is None else f" ({t['beatMarketRate']:.0f}% van de trades beter)"
+        s += (f"De markt deed tijdens mijn trades gemiddeld {f(t.get('marketPct'))}; ik deed het per trade {f(t['edgePct'])} "
+              f"{'beter' if t['edgePct'] > 0 else 'slechter'} dan meedobberen{beat}. ")
+        if t['edgePct'] <= 0:
+            s += 'Winst die ik ook met meedobberen had gehad, telt niet. '
+    if (t.get('maxDrawdownPct') or 0) > agent_search.DANGER_DRAWDOWN:
+        s += f"Die terugval is meer dan {agent_search.DANGER_DRAWDOWN}%: te riskant, dit recept gebruik ik nooit meer. "
     coins, pairs = r.get('coins') or [], r.get('pairs') or []
     if len(coins) < len(pairs):
         s += f"Ik koos {len(coins)} van de {len(pairs)} coins om te handelen (op de andere verloor ik in de validatie). "
@@ -873,7 +894,8 @@ def agent_mod_say(r, entry=None):
         s += {'betrouwbaar': 'Dit recept houdt stand: betrouwbaar.',
               'veelbelovend': 'Veelbelovend, maar het moet zich nog herhalen voordat ik het vertrouw.',
               'oefenen': 'Nog niet goed genoeg.',
-              'afgevallen': 'Dit recept verliest steeds; ik laat het vallen.'}[st]
+              'afgevallen': 'Dit recept verliest steeds; ik laat het vallen.',
+              'te riskant': 'Te riskant (te diepe terugval); dit recept gebruik ik nooit, ook niet om te oefenen.'}[st]
     return s
 
 
@@ -904,7 +926,11 @@ def agent_info():
     data = load_agents()
     pub = read_json('agent.json', None)
     board = []
-    for e in agent_search.leaderboard(data.get('recipes', {}), 12):
+    rows = agent_search.leaderboard(data.get('recipes', {}), 12)
+    pk = (data.get('published') or {}).get('key')
+    if pk and pk in data.get('recipes', {}) and all(e['key'] != pk for e in rows):
+        rows.append(data['recipes'][pk])  # het recept van de bot altijd tonen, ook als het onderaan staat
+    for e in rows:
         last = e['rounds'][-1] if e.get('rounds') else {}
         board.append({'key': e['key'], 'recipe': e['recipe'], 'text': agent_mod.recipe_text(e['recipe']), 'status': agent_search.status(e),
                       'score': agent_search.score(e), 'last': last, 'live': data.get('live', {}).get(e['key'])})

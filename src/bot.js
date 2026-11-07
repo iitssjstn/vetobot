@@ -1077,9 +1077,12 @@ export class Bot {
     const why = Bot.explainReg(agent.entry, x.f);
     const whyTxt = why.length ? ` Vooral door: ${why.slice(0, 3).map((w) => `${w.label} ${w.text} (${w.effect > 0 ? '+' : ''}${w.effect.toFixed(2).replace('.', ',')})`).join(', ')}.` : '';
     if (!this.agentAllowed(agent)) {
-      const reason = `AI-trader (${tf}): ik zie een kans (${nl(q)}% verwacht), maar ${this.mode === 'live' ? 'live handel ik pas als ik me bewezen heb' : 'oefenen in paper staat uit'}`;
+      const blocked = agent.stage === 'geblokkeerd';
+      const why = blocked ? 'mijn recept is te riskant (te diepe terugval in de test), daar handel ik niet mee'
+        : this.mode === 'live' ? 'live handel ik pas als ik me bewezen heb' : 'oefenen in paper staat uit';
+      const reason = `AI-trader (${tf}): ik zie een kans (${nl(q)}% verwacht), maar ${why}`;
       this.agentReason[pair] = reason;
-      this.think(`Ik zie een kans bij ${pair}: ik verwacht ${nl(q)}% na kosten.${whyTxt} Maar ${this.mode === 'live' ? 'live handel ik pas als ik me in paper bewezen heb' : 'oefenen in paper staat uit'}.`, pair, 'info');
+      this.think(`Ik zie een kans bij ${pair}: ik verwacht ${nl(q)}% na kosten.${whyTxt} Maar ${blocked ? why : this.mode === 'live' ? 'live handel ik pas als ik me in paper bewezen heb' : 'oefenen in paper staat uit'}.`, pair, 'info');
       return { buy: false, reason };
     }
     this.agentReason[pair] = null;

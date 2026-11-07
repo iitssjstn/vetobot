@@ -242,12 +242,32 @@ def _part_outcomes(mk, part, entry_model, entry_med, exit_model, exit_med, H, sa
     return {i: (qmap[i], r) for i, r in zip(idx, res)}, lo, hi
 
 
-def backtest(markets, part, entry_model, entry_med, exit_model, exit_med, H, cost, safety_stop, thresholds, cache=None):
+def _ts_index(mk):
+    if getattr(mk, 'ts_index', None) is None:
+        mk.ts_index = {int(x[0]): j for j, x in enumerate(mk.c)}
+    return mk.ts_index
+
+
+def market_move(bench, t0, t1):
+    """Wat de markt deed tussen twee tijdstippen: gemiddelde koersverandering (%) van alle coins
+    die op beide momenten een candle hebben. None als geen enkele coin dat heeft."""
+    moves = []
+    for m in bench:
+        ix = _ts_index(m)
+        a, b = ix.get(t0), ix.get(t1)
+        if a is not None and b is not None and m.close[a] > 0:
+            moves.append((m.close[b] / m.close[a] - 1) * 100)
+    return sum(moves) / len(moves) if moves else None
+
+
+def backtest(markets, part, entry_model, entry_med, exit_model, exit_med, H, cost, safety_stop, thresholds, cache=None, bench=None):
     """Handelen zoals in het echt op een deel van de tijd (1 = validatie, 2 = eindtest):
     één positie per coin, kopen als de verwachte waarde > drempel, verkopen met het geleerde
-    gedrag. Geeft per drempel het resultaat."""
+    gedrag. Geeft per drempel het resultaat, ook vergeleken met de markt (bench: de coins waarmee
+    vergeleken wordt, standaard dezelfde) tijdens precies dezelfde trades."""
     if cache is None:
         cache = {}
+    bench = bench or markets
     out = {}
     for thr in thresholds:
         trades, bh = [], []
@@ -264,7 +284,9 @@ def backtest(markets, part, entry_model, entry_med, exit_model, exit_med, H, cos
                 o = oc.get(i)
                 if o and o[0] > thr:
                     ret, held, why = o[1]
-                    trades.append({'pair': mk.pair, 'i': i, 'ret': ret - cost, 'held': held, 'why': why})
+                    end = min(i + held, len(mk.c) - 1)
+                    mkt = market_move(bench, int(mk.c[i][0]), int(mk.c[end][0]))
+                    trades.append({'pair': mk.pair, 'i': i, 'ret': ret - cost, 'held': held, 'why': why, 'mkt': mkt})
                     i += max(1, held)
                 else:
                     i += 1
@@ -276,7 +298,12 @@ def backtest(markets, part, entry_model, entry_med, exit_model, exit_med, H, cos
             cum += t['ret']
             peak = max(peak, cum)
             dd = max(dd, peak - cum)
+        # Vergelijken met meedobberen: wat de markt tijdens elke trade deed, en het voordeel daarboven.
+        cmp = [t for t in trades if t['mkt'] is not None]
         out[thr] = {
+            'marketPct': sum(t['mkt'] for t in cmp) / len(cmp) if cmp else None,
+            'edgePct': sum(t['ret'] - t['mkt'] for t in cmp) / len(cmp) if cmp else None,
+            'beatMarketRate': sum(1 for t in cmp if t['ret'] > t['mkt']) / len(cmp) * 100 if cmp else None,
             'maxDrawdownPct': dd, 'worstPct': min((t['ret'] for t in trades), default=None),
             'trades': n, 'avgPct': total / n if n else None, 'totalPct': total,
             'winRate': sum(1 for t in trades if t['ret'] > 0) / n * 100 if n else None,
@@ -365,9 +392,11 @@ def train_agent(cfg, recipe, fetch, pairs, log=print, think=None, progress=None,
         coins = [m.pair for m in markets]
     chosen = [m for m in markets if m.pair in coins]
     step('agent', 4, 5, f'AI-trader {tf}: eindtest')
-    test = backtest(chosen, 2, entry_model, entry_med, exit_model, exit_med, H, cost, safety, (thr,))[thr]
+    test = backtest(chosen, 2, entry_model, entry_med, exit_model, exit_med, H, cost, safety, (thr,), bench=markets)[thr]
     days_test = sum((mk.split[2][1] - mk.split[2][0]) for mk in chosen) / len(chosen) * TF_MIN.get(tf, 15) / 1440
-    ok = bool(val['totalPct'] > 0 and test['trades'] >= MIN_TEST_TRADES and (test['avgPct'] or 0) >= MIN_TEST_AVG)
+    # Alleen goed als hij ook beter deed dan meedobberen met de markt tijdens zijn trades.
+    ok = bool(val['totalPct'] > 0 and test['trades'] >= MIN_TEST_TRADES and (test['avgPct'] or 0) >= MIN_TEST_AVG
+              and (test.get('edgePct') is None or test['edgePct'] > 0))
     report = {**base, 'ok': ok, 'threshold': thr, 'validation': val, 'test': test, 'testDays': round(days_test, 1),
               'pairs': [m.pair for m in markets], 'coins': coins, 'maxHold': H, 'seconds': round(time.time() - started)}
     try:
