@@ -1020,6 +1020,10 @@ test('AI-trader: koopt en verkoopt zelf, uitkomst naar de trainer; live pas na b
   assert.ok(fb.pct > 0);
   assert.ok(fb.features && Number.isFinite(fb.features.rsi14), 'kenmerken bij aankoop, om van te leren');
   assert.ok(bot.thoughts.some((t) => /Ik verkoop BTC\/EUR/.test(t.text)));
+  const sold = bot.store.state.agentChats[0];
+  assert.equal(sold.kind, 'sell');
+  assert.deepEqual(sold.talk.map((m) => m.role), ['aitrader', 'execution', 'result']);
+  assert.match(sold.talk.at(-1).text, /bij het kopen verwachtte ik/);
   // Live: alleen als alle eisen gehaald zijn én de eigenaar het recept zelf live toestond
   const live = await run({ ...mkAgent('getest', false), recipeKey: 'R' }, 'live');
   assert.equal(live.bot.store.state.positions['BTC/EUR'], undefined);
@@ -1117,6 +1121,12 @@ test('AI-trader-team: Strategy Agent per marktfase, Risk Agent inzet, Execution 
   assert.equal(p1.agent.marketRegime, regime);
   assert.ok(Math.abs(p1.costEur - b1.stakeInfo().effective / 2) < 0.6, `halve inzet: ${p1.costEur}`);
   assert.ok(b1.store.state.execLog.length >= 1 && b1.store.state.execLog[0].side === 'buy', 'Execution Agent meet de aankoop');
+  // Overleg op AI-chat: elk onderdeel in de juiste volgorde.
+  const chat = b1.store.state.agentChats[0];
+  assert.equal(chat.outcome, 'bought');
+  assert.deepEqual(chat.talk.map((m) => m.role), ['market', 'strategy', 'aitrader', 'risk', 'controleur', 'execution']);
+  assert.match(chat.talk.find((m) => m.role === 'risk').text, /halve inzet/);
+  assert.match(chat.talk.at(-1).text, /^Gekocht: € /);
   // In deze fase niet handelen: niets kopen.
   const all = (p) => ({ stijgend: p, zijwaarts: p, dalend: p });
   const b2 = await run({ ...base, regimes: all({ key: null, why: 'pauze', edge: -0.3, trades: 40 }) });
@@ -1140,6 +1150,10 @@ test('AI-trader-team: Strategy Agent per marktfase, Risk Agent inzet, Execution 
   await bot.tick();
   assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
   assert.match(bot.pairStatus['BTC/EUR'].reason, /Risk Agent: 3 verliezen op rij/);
+  const blocked = bot.store.state.agentChats[0];
+  assert.equal(blocked.outcome, 'blocked');
+  assert.equal(blocked.talk.at(-1).role, 'risk');
+  assert.equal(blocked.talk.at(-1).decision, 'reject');
 });
 
 test('dagoverzicht met de AI-trader: geen ongeteste voorstellen, AI-trader in de data, model zichtbaar', async () => {

@@ -324,6 +324,8 @@ export function createApp({ users, manager, log = console }) {
     mode: settings.ai.mode ?? 'single',
     chats: bot.store.state.decisions.filter((d) => d.team).slice(0, 60)
       .map((d) => ({ at: d.at, pair: d.pair, outcome: d.outcome, reason: d.reason, provider: d.provider, strategyReason: d.strategyReason, team: d.team })),
+    // Overleg van de AI-trader en zijn team (Market, Strategy, Risk, Execution Agent) bij kopen, tegenhouden en verkopen.
+    agentChats: (bot.store.state.agentChats ?? []).slice(0, 80),
   })));
 
   app.post('/api/pause', wrap((_req, { bot }) => {

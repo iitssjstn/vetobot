@@ -4,11 +4,11 @@ Doel van de eigenaar: een AI-trader die hij kan vertrouwen voordat hij live gaat
 
 Volgorde: stap 1, 2 en 3 veranderen hoe resultaten gemeten worden. Oude rondes zijn daarna niet meer vergelijkbaar. Na stap 3 beginnen de receptstatistieken daarom opnieuw (oude rondes bewaren als archief, niet meer meetellen).
 
-Status per stap: ☐ open · ◐ bezig · ☑ klaar.
+Status per stap: ☐ open · ◐ bezig · ☑ klaar. Stap 1 t/m 4 en 6 zijn gebouwd (7 november 2026). Bij stap 5 is het weekoverzicht gebouwd; de test zelf (minstens 6 weken paper) moet nog lopen.
 
 ---
 
-## ☐ 1. Validatie en eindtest volledig van elkaar scheiden
+## ☑ 1. Validatie en eindtest volledig van elkaar scheiden
 
 **Nu.** De koersgeschiedenis wordt in de tijd gesplitst: 70% leren, 15% validatie (koopdrempel en coins kiezen), 15% eindtest. Toch lekt de eindtest op vier manieren:
 - De recepten-zoeker en de Strategy Agent kiezen recepten op hun **eindtest**-resultaten. Na veel rondes is het beste recept deels geluk op de eindtest (veel proberen, het beste kiezen).
@@ -24,7 +24,7 @@ Status per stap: ☐ open · ◐ bezig · ☑ klaar.
 
 **Klaar als.** Een test bewijst dat niets uit de eindtest-periode het leren of de keuze beïnvloedt. De pagina Trainer toont de keuze op validatie apart van de eindtest.
 
-## ☐ 2. Drawdown berekenen op basis van een echte portefeuille
+## ☑ 2. Drawdown berekenen op basis van een echte portefeuille
 
 **Nu.** De terugval is het opgetelde % per trade, gesorteerd op candle-nummer per coin. Dat is geen echte tijdsvolgorde tussen coins. Ook houdt het geen rekening met:
 - trades die tegelijk openstaan;
@@ -42,7 +42,7 @@ Status per stap: ☐ open · ◐ bezig · ☑ klaar.
 
 **Klaar als.** Unittest met een bekende reeks trades geeft de juiste terugval, ook bij overlappende trades. De pagina Trainer toont de portefeuille-terugval.
 
-## ☐ 3. Werkelijke fees en slippage verwerken in het leerproces
+## ☑ 3. Werkelijke fees en slippage verwerken in het leerproces
 
 **Nu.** De leerserver rekent met een vaste kostenpost (`costPct`, standaard 0,5% per ronde) voor elke coin. De bot meet sinds de Execution Agent de echte afwijking per order (`execLog`), maar die gaat niet terug naar de leerserver.
 
@@ -54,7 +54,7 @@ Status per stap: ☐ open · ◐ bezig · ☑ klaar.
 
 **Klaar als.** De pagina Trainer toont per coin "aangenomen kosten tegenover gemeten". Een test bewijst dat hogere gemeten kosten minder trades en een lagere verwachte winst geven.
 
-## ☐ 4. Live-toelating strenger maken
+## ☑ 4. Live-toelating strenger maken
 
 **Nu.** Live mag na 20 echte trades (paper) met gemiddeld ≥ +0,1% per trade (`AGENT_PROVEN_MIN`, `AGENT_PROVEN_AVG`).
 
@@ -74,7 +74,7 @@ Status per stap: ☐ open · ◐ bezig · ☑ klaar.
 
 **Klaar als.** Het dashboard toont per eis "gehaald / nog niet" met de stand. Tests dekken elke eis en het automatisch terugvallen.
 
-## ☐ 5. Daarna langere paper tests uitvoeren
+## ◐ 5. Daarna langere paper tests uitvoeren
 
 **Pas starten als stap 1 t/m 4 klaar zijn en de recepten opnieuw zijn begonnen.**
 
@@ -86,7 +86,7 @@ Status per stap: ☐ open · ◐ bezig · ☑ klaar.
 - Goed genoeg om live te overwegen: alle eisen van stap 4 gehaald, en in ten minste 4 van de 6 weken beter dan de markt.
 - Niet goed genoeg: geen nieuwe functies erbij, eerst uitzoeken waarom (welke fase, welke coins, kosten of voorspelling).
 
-## ☐ 6. Overleg van de AI-trader terug te lezen (pagina AI-chat)
+## ☑ 6. Overleg van de AI-trader terug te lezen (pagina AI-chat)
 
 Gevraagd door de eigenaar: "is het mogelijk om dit ook voor de AI trader te doen die wij zelf maken?" Hij wil dit zoals de gesprekken van het AI-team bij de AI-veto. Bij voorkeur vóór stap 5 bouwen, zodat de lange paper-test terug te lezen is.
 

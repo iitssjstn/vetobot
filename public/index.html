@@ -2227,7 +2227,18 @@ const ROLE_STYLE = {
   decider: { initials: 'BE', color: '#7c5cff', side: 'left' },
   filters: { initials: 'HF', color: '#6b7280', side: 'left' },
   error: { initials: '!', color: '#d64545', side: 'left' },
+  market: { initials: 'MA', color: '#0e9f8a', side: 'left' },
+  strategy: { initials: 'SA', color: '#4f7cff', side: 'right' },
+  aitrader: { initials: 'AT', color: '#7c5cff', side: 'left' },
+  risk: { initials: 'RA', color: '#e8902a', side: 'right' },
+  gate: { initials: 'TL', color: '#6b7280', side: 'right' },
+  controleur: { initials: 'AI', color: '#c2417a', side: 'left' },
+  execution: { initials: 'EA', color: '#2f9e44', side: 'right' },
+  result: { initials: '€', color: '#6b7280', side: 'left' },
 };
+let chatFilter = 'all';
+const AGENT_OUTCOME = { bought: ['ok', 'Gekocht'], approved: ['ok', 'Goedgekeurd'], vetoed: ['bad', 'Afgewezen door de AI'], blocked: ['bad', 'Tegengehouden'],
+  notFilled: ['soft', 'Niet gevuld'], sold: ['wait', 'Verkocht'] };
 async function loadChats() {
   chatsLoadedAt = Date.now();
   try { chatData = await api('api/aichat'); renderChats(); }
@@ -2240,7 +2251,13 @@ function renderChats() {
   $('chat-intro').innerHTML = team
     ? `<p style="margin:0">Bij elk koopsignaal overleggen drie AI's: de <b style="color:${ROLE_STYLE.analyst.color}">analist</b> bekijkt het signaal, de <b style="color:${ROLE_STYLE.critic.color}">criticus</b> zoekt wat er mis kan gaan, en de <b style="color:${ROLE_STYLE.decider.color}">beslisser</b> weegt beide af en beslist. Signalen die al op een harde eis afvallen, worden niet besproken. Nieuwste gesprek bovenaan.</p>`
     : `<p style="margin:0">Hier zie je het overleg van het AI-team. Zet bij Instellingen → AI-veto de werkwijze op <b>Team van drie</b> om het te gebruiken.${d.chats.length ? ' Hieronder staan de gesprekken van toen het nog aan stond.' : ''}</p>`;
-  const html = d.chats.length ? d.chats.map(chatHtml).join('') : `<div class="panel"><div class="empty">${icon('chat')}Nog geen gesprekken. Ze verschijnen bij het eerstvolgende koopsignaal.</div></div>`;
+  $('chat-intro').innerHTML += '<p style="margin:8px 0 0">Bij de <b>AI-trader</b> zie je per aankoop, tegengehouden aankoop en verkoop wat elk onderdeel zag en besloot: Market Agent, Strategy Agent, de AI-trader zelf, Risk Agent, de AI-controleur en de Execution Agent. Dit is geen gesprek tussen taalmodellen, maar een verslag met de echte getallen waarop de bot besliste.</p>';
+  const all = [...d.chats.map((c) => ({ ...c, src: 'team' })), ...(d.agentChats ?? []).map((c) => ({ ...c, src: 'agent' }))]
+    .filter((c) => chatFilter === 'all' || c.src === chatFilter).sort((a, b) => (a.at < b.at ? 1 : -1));
+  const tabs = [['all', 'Alles'], ['team', 'AI-team'], ['agent', 'AI-trader']].map(([k, l]) =>
+    `<button class="btn${chatFilter === k ? ' primary' : ''}" type="button" data-chat-filter="${k}">${l}</button>`).join(' ');
+  const html = `<div class="row-actions" style="margin:0 0 12px">${tabs}</div>` + (all.length ? all.map((c) => (c.src === 'agent' ? agentChatHtml(c) : chatHtml(c))).join('')
+    : `<div class="panel"><div class="empty">${icon('chat')}Nog geen gesprekken. Ze verschijnen bij het eerstvolgende koopsignaal${chatFilter === 'agent' ? ' of de eerstvolgende verkoop van de AI-trader' : ''}.</div></div>`);
   if ($('chats')._html !== html) { $('chats')._html = html; $('chats').innerHTML = html; }
   if (chatFocus) {
     const el = document.querySelector(`[data-chat-at="${CSS.escape(chatFocus)}"]`);
@@ -2266,6 +2283,25 @@ function chatHtml(c) {
       ${msgs}
     </div></div>`;
 }
+// Overleg van de AI-trader: dezelfde opmaak als het AI-team, met zijn eigen onderdelen.
+function agentChatHtml(c) {
+  const [cls, label] = AGENT_OUTCOME[c.outcome] ?? ['soft', c.outcome];
+  const msgs = (c.talk ?? []).map((m) => {
+    const st = ROLE_STYLE[m.role] ?? ROLE_STYLE.filters;
+    const badge = m.decision ? ` <span class="badge ${m.decision === 'approve' ? 'ok' : 'bad'}">${m.role === 'result' ? (m.decision === 'approve' ? 'winst' : 'verlies') : m.decision === 'approve' ? 'akkoord' : 'niet kopen'}</span>` : '';
+    return `<div class="msgrow ${st.side === 'right' ? 'right' : ''}">
+      <div class="avatar" style="background:${st.color}" aria-hidden="true">${st.initials}</div>
+      <div class="bubble ${m.decision ? `verdict ${m.decision === 'approve' ? 'ok' : 'no'}` : ''}">
+        <div class="who"><b style="color:${st.color}">${esc(m.label)}</b>${badge}<span>${esc(m.model ?? '')}</span></div><div class="txt">${esc(m.text)}</div></div></div>`;
+  }).join('');
+  return `<div class="panel chat" data-chat-at="${esc(c.at)}">
+    <div class="panel-h"><h2>${pairHtml(c.pair)} <span class="badge ${cls}">${esc(label)}</span> <span class="muted" style="font-size:13px;font-weight:500">AI-trader · ${c.kind === 'sell' ? 'verkopen' : 'kopen'}</span></h2><span class="when">${time(c.at)}</span></div>
+    <div class="chat-body">${msgs}</div></div>`;
+}
+document.addEventListener('click', (e) => {
+  const f = e.target.closest('[data-chat-filter]');
+  if (f) { chatFilter = f.dataset.chatFilter; renderChats(); }
+});
 document.addEventListener('click', (e) => {
   const a = e.target.closest('[data-chat]');
   if (!a) return;
