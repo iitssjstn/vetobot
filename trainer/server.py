@@ -20,6 +20,11 @@ import secrets
 import threading
 import time
 import traceback
+import warnings
+
+# scikit-learn waarschuwt (onschuldig) bij elk model dat in een eigen thread traint; dat vult de
+# log zonder dat er iets mis is. Alleen déze melding uitzetten, andere waarschuwingen blijven.
+warnings.filterwarnings('ignore', message=r'.*sklearn\.utils\.parallel\.delayed.*')
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -875,7 +880,10 @@ def agent_round():
     os.makedirs(path('agents'), exist_ok=True)
     if agent:
         write_json(os.path.join('agents', key.replace('|', '_') + '.json'), agent)
-    think(agent_mod_say(report, entry), kind='result' if report.get('ok') else 'warn')
+    try:
+        think(agent_mod_say(report, entry), kind='result' if report.get('ok') else 'warn')
+    except Exception as e:  # een bericht mag een leerronde nooit laten mislukken
+        log(f'AI-trader: bericht over de ronde mislukt: {e}')
     # De beste manier van traden kiezen: hoogste status, dan gemiddelde over de rondes.
     # Te riskante recepten (terugval > 25%) nooit gebruiken, ook niet om in paper te oefenen.
     board = [e for e in agent_search.leaderboard(data['recipes'], 50) if agent_search.usable(e)
@@ -975,12 +983,15 @@ def agent_mod_say(r, entry=None):
     if not r.get('test'):
         return f"Recept {rec}: {r.get('reason') or 'geen resultaat'}."
     t = r['test']
+    if not t.get('trades'):
+        return (f"Resultaat {rec}: in de eindtest deed ik geen enkele trade (mijn koopdrempel werd daar nooit gehaald). "
+                'Zonder trades kan ik niet laten zien dat dit werkt, dus dit recept is niet goed genoeg.')
     f = thoughts.pct
     held = (t.get('avgHeld') or 0) * agent_mod.TF_MIN.get(tf, 15)
     per = r.get('periods') or {}
     s = (f"Resultaat {rec}: in de eindtest ({' tot '.join(per['eindtest']) if per.get('eindtest') else 'de laatste ' + str(r.get('testDays')).replace('.', ',') + ' dagen'}, "
          f"niet gebruikt bij het leren of kiezen) "
-         f"deed ik {t['trades']} trades, gemiddeld {f(t['avgPct'])} per trade, {t['winRate']:.0f}% met winst, "
+         f"deed ik {t['trades']} trades, gemiddeld {f(t['avgPct'])} per trade, {'?' if t.get('winRate') is None else format(t['winRate'], '.0f')}% met winst, "
          f"gemiddeld {thoughts.hold(int(held))} vastgehouden. Kopen en vasthouden had {f(t.get('buyHoldPct'))} opgeleverd. "
          f"Mijn grootste terugval was {f(-(t.get('maxDrawdownPct') or 0))}, mijn slechtste trade {f(t.get('worstPct'))}. ")
     if t.get('edgePct') is not None:

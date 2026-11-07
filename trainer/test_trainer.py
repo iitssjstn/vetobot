@@ -663,6 +663,18 @@ class RecipeSearch(unittest.TestCase):
         self.assertLess(tfs.count('5m'), 4, '5m (alles verlies) bijna niet meer')
 
 
+class RoundMessages(unittest.TestCase):
+    def test_round_without_test_trades_does_not_crash(self):
+        os.environ.setdefault('DATA_DIR', tempfile.mkdtemp())
+        import server
+        r = {'timeframe': '15m', 'recipe': {'timeframe': '15m', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}, 'ok': False,
+             'test': {'trades': 0, 'avgPct': None, 'totalPct': 0, 'winRate': None, 'avgHeld': None, 'maxDrawdownPct': 0, 'worstPct': None}}
+        self.assertIn('geen enkele trade', server.agent_mod_say(r))
+        # Met trades maar zonder sommige getallen: ook geen crash.
+        r['test'] = {'trades': 3, 'avgPct': 0.1, 'winRate': None, 'avgHeld': None, 'buyHoldPct': None, 'maxDrawdownPct': None, 'worstPct': None}
+        self.assertIn('Resultaat', server.agent_mod_say(r))
+
+
 class HonestTesting(unittest.TestCase):
     def test_split_has_buffer_between_parts(self):
         import agent
