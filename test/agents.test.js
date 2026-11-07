@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { agentForRecipe, allAgentCoins, chooseForRegime, assessRisk, riskStake, slippagePct, execSummary, lossStreak, RISK } from '../src/agents.js';
+import { onlineCorrection, correctedExpectation, LEARN, agentForRecipe, allAgentCoins, chooseForRegime, assessRisk, riskStake, slippagePct, execSummary, lossStreak, RISK } from '../src/agents.js';
 
 const main = { recipeKey: 'A', coins: ['BTC/EUR'], regimes: {
   stijgend: { key: 'B', why: 'best', edge: 0.3, trades: 40, agent: { recipeKey: 'B', coins: ['ETH/EUR'] } },
@@ -50,4 +50,22 @@ test('Execution Agent: afwijking van de verwachte prijs', () => {
   assert.equal(s.orders, 2);
   assert.equal(s.worst.pair, 'B');
   assert.equal(execSummary([]), null);
+});
+
+test('Directe bijsturing: leert meteen van afgesloten trades, voorzichtig bij weinig data', () => {
+  const t = (pair, exp, got, explore = false) => ({ pair, pnlPct: got, agent: { expectedPct: exp, ...(explore ? { explore: true } : {}) } });
+  assert.equal(correctedExpectation(0.3, 'A', onlineCorrection([])).adj, 0, 'zonder trades niets');
+  // 20 trades rond +0,3% verwacht die steeds 0,4 punt slechter uitkwamen (ook verkenner telt mee).
+  const rows = [...Array(20)].map((_, i) => t(i % 2 ? 'A' : 'B', 0.3, -0.1, i % 3 === 0));
+  const c = onlineCorrection(rows);
+  const r = correctedExpectation(0.3, 'A', c);
+  // Groep: -0,4 × 20 / (20 + 20) = -0,2. Coin A (10 trades) houdt daarna -0,2 per trade over: -2 / (10 + 20).
+  const expect = (-0.4 * 20) / (20 + LEARN.prior) + (-0.2 * 10) / (10 + LEARN.prior);
+  assert.ok(Math.abs(r.adj - expect) < 1e-9, `krimp naar 0: ${r.adj}`);
+  assert.equal(correctedExpectation(-1, 'Z', c).adj, 0, 'andere groep verwachtingen en een coin zonder trades: geen bijsturing');
+  // Eén coin structureel slechter: die coin extra omlaag.
+  const more = [...rows, ...[...Array(30)].map(() => t('C', 0.3, -1.0))];
+  const c2 = onlineCorrection(more);
+  assert.ok(correctedExpectation(0.3, 'C', c2).adj < correctedExpectation(0.3, 'A', c2).adj);
+  assert.ok(Math.abs(correctedExpectation(5, 'C', onlineCorrection([...Array(500)].map(() => t('C', 5, -50)))).adj) <= LEARN.maxAdj * 2, 'begrensd');
 });

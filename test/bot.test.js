@@ -1254,3 +1254,20 @@ test('opslaan wacht niet tot een hele check klaar is, alleen tot de coin die nu 
   assert.equal(bot.tick() === bot.tick(), true, 'één check tegelijk');
   await bot.tick();
 });
+
+test('Directe bijsturing in de bot: slechte ervaringen verlagen de verwachting meteen', async () => {
+  const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
+  const { bot, ex } = setup({});
+  await bot.setRisk({ cooldownMinutes: 0 });
+  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0, agentExplore: 0 });
+  const agent = { ...fx.agent, stage: 'getest', recipeKey: 'R', threshold: 0.2 };
+  bot.getAgent = () => agent;
+  ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+  // Veel eerdere trades op BTC/EUR die 1 procentpunt slechter uitkwamen dan verwacht.
+  const q0 = 0.25;
+  bot.store.state.trades = [...Array(200)].map(() => ({ pair: 'BTC/EUR', pnlEur: -1, pnlPct: q0 - 1, closedAt: '2026-01-01T00:00:00Z', agent: { recipe: 'R', expectedPct: q0 } }));
+  await bot.tick();
+  assert.ok(bot.learnCorr.trades > 0);
+  const adj = bot.agentTeam().learning;
+  assert.ok(adj.coins.length || adj.bins.some((b) => b.adj < 0), 'bijsturing omlaag zichtbaar');
+});

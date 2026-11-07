@@ -115,3 +115,44 @@ export function execSummary(log = []) {
 export function exploreWanted({ mode, enabled }) {
   return mode === 'paper' && Boolean(enabled);
 }
+
+// ---------- Directe bijsturing (leert meteen van elke afgesloten trade) ----------
+// Het model zelf wordt alleen op de leerserver opnieuw getraind, en echte trades tellen daar pas mee
+// als ze vóór de validatie liggen (anders lekt de controle). De bot stuurt zijn verwachting wél
+// direct bij: per groep verwachtingen en per coin het verschil tussen verwacht en echt, over de
+// laatste trades (verkenner en AI-trader samen). Met weinig trades voorzichtig (krimp naar 0).
+export const LEARN = {
+  edges: [-0.5, 0, 0.2, 0.5],  // grenzen van de groepen verwachtingen (%)
+  prior: 20,                   // zoveel "denkbeeldige" trades met verschil 0: voorzichtig bij weinig data
+  window: 300,                 // laatste zoveel trades
+  maxAdj: 1.0,                 // nooit meer dan zoveel procentpunt bijsturen
+};
+
+const binOf = (q, edges) => edges.filter((e) => q >= e).length;
+const clamp = (v, m) => Math.max(-m, Math.min(m, v));
+
+export function onlineCorrection(trades, rules = LEARN) {
+  const rows = trades.filter((t) => t.agent && Number.isFinite(t.agent.expectedPct) && Number.isFinite(t.pnlPct)).slice(0, rules.window);
+  const bins = Array.from({ length: rules.edges.length + 1 }, () => ({ n: 0, sum: 0 }));
+  for (const t of rows) {
+    const b = bins[binOf(t.agent.expectedPct, rules.edges)];
+    b.n++;
+    b.sum += t.pnlPct - t.agent.expectedPct;
+  }
+  const binAdj = bins.map((b) => ({ n: b.n, adj: clamp(b.sum / (b.n + rules.prior), rules.maxAdj) }));
+  const coins = {};
+  for (const t of rows) {
+    const c = (coins[t.pair] ??= { n: 0, sum: 0 });
+    c.n++;
+    c.sum += t.pnlPct - t.agent.expectedPct - binAdj[binOf(t.agent.expectedPct, rules.edges)].adj;
+  }
+  for (const c of Object.values(coins)) c.adj = clamp(c.sum / (c.n + rules.prior), rules.maxAdj);
+  return { trades: rows.length, bins: binAdj, coins, edges: rules.edges };
+}
+
+// Bijgestuurde verwachting: model + groep + coin.
+export function correctedExpectation(q, pair, corr) {
+  if (!corr?.trades) return { q, adj: 0 };
+  const adj = (corr.bins[binOf(q, corr.edges)]?.adj ?? 0) + (corr.coins[pair]?.adj ?? 0);
+  return { q: q + adj, adj };
+}

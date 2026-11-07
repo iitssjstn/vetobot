@@ -1414,9 +1414,11 @@ function render() {
   if (isOn('trades')) $('trades').innerHTML = table(s.trades, [
     ['Gesloten', t => `<span class="muted">${time(t.closedAt)}</span>`],
     ['Coin', t => pairHtml(t.pair)],
+    ['Wie', t => t.agent ? (t.agent.explore ? '<span class="badge soft">verkenner</span>' : '<span class="badge ok">AI-trader</span>') : '<span class="muted">strategie</span>'],
     ['In', t => `<span class="num">${eur(t.entryPrice)}</span>`, 'r'],
     ['Uit', t => `<span class="num">${eur(t.exitPrice)}</span>`, 'r'],
     ['Resultaat', t => `<span class="num">${signEur(t.pnlEur)} <span class="${cls(t.pnlPct)}">(${pct(t.pnlPct)})</span></span>`, 'r'],
+    ['Verwacht', t => Number.isFinite(t.agent?.expectedPct) ? `<span class="num muted">${pct(t.agent.expectedPct)}</span>` : '<span class="muted">–</span>', 'r'],
     ['Exit', t => `<span class="muted">${esc(t.exitReason)}</span>`],
   ], 'Nog geen afgesloten trades.', 'history');
 
@@ -1919,6 +1921,9 @@ function agentTeamHtml(a, team, sign, nl) {
     ['Market Agent', 'bepaalt per coin de marktfase op 1h-candles: stijgend, zijwaarts of dalend', mk.length ? `${count} <span class="muted">(${mk.length} coins)</span>` : 'nog niet gemeten'],
     ['Strategy Agent', 'kiest per marktfase het recept dat daar het meest beter deed dan de markt, of niet handelen', planTxt],
     ['Risk Agent', `na ${rk?.rules?.lossStreak ?? 3} verliezen op rij ${rk?.rules?.pauseHours ?? 6} uur pauze; halve inzet bij weinig bewijs voor de marktfase; geen coins met slechte uitvoering; plus de daglimiet, noodstop en AI-controleur`, rk ? `${rk.lossStreak} verlies${rk.lossStreak === 1 ? '' : 'zen'} op rij` : '–'],
+    ['Directe bijsturing', 'vergelijkt na elke afgesloten trade (ook van de verkenner) wat het model verwachtte met wat het werd, en stuurt zijn verwachting per groep en per coin meteen bij; voorzichtig bij weinig trades',
+      team?.learning?.trades ? `${team.learning.trades} trades · per verwachting: ${team.learning.bins.map((b, i) => `${['< −0,5%', '−0,5–0%', '0–0,2%', '0,2–0,5%', '> 0,5%'][i]} ${b.n ? sign(b.adj) : '–'}`).join(' · ')}`
+        + (team.learning.coins.length ? `<br><span class="muted">Coins: ${team.learning.coins.map((c) => `${esc(c.pair)} ${sign(c.adj)} (${c.n})`).join(', ')}</span>` : '') : 'nog geen afgesloten trades met een verwachting'],
     ['Verkenner', 'alleen paper: koopt elke kans die de AI-trader zelf laat liggen, met de kleinste inzet, om ervan te leren (telt niet mee voor live)',
       team?.explorer ? (team.explorer.on ? `aan · ${team.explorer.trades} trades${team.explorer.trades ? `, gemiddeld ${sign(team.explorer.avgPct)}, ${team.explorer.wins} met winst` : ''} · ${team.explorer.open} open` : 'uit (of niet in paper)') : '–'],
     ['Execution Agent', 'meet bij elke order hoeveel de prijs afweek van de koers vlak ervoor', ex ? `gemiddeld ${sign(ex.avgSlipPct)} over ${ex.orders} orders <span class="muted">(slechtst ${esc(ex.worst.pair)} ${sign(ex.worst.slipPct)})</span>` : 'nog geen orders'],
