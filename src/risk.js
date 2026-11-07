@@ -11,8 +11,9 @@ export function checkEntry(store, config, mode, exchange, liveBalance, extra = {
     return 'Bitvavo-keys ontbreken, vul ze in via het dashboard';
   }
 
-  const open = Object.keys(s.positions).length;
-  if (open >= risk.maxOpenTrades) return `Maximum van ${risk.maxOpenTrades} open trades bereikt`;
+  // Posities van de verkenner (alleen paper) hebben een eigen plek naast de gewone trades.
+  const open = Object.values(s.positions).filter((p) => !p?.explore).length;
+  if (!extra.explore && open >= risk.maxOpenTrades) return `Maximum van ${risk.maxOpenTrades} open trades bereikt`;
 
   const realized = store.realizedTodayEur();
   const openPnl = extra.openPnlEur ?? 0;

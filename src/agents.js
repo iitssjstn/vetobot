@@ -51,7 +51,7 @@ export const RISK = {
 export function lossStreak(trades) {
   let n = 0;
   for (const t of trades) {
-    if (!t.agent) continue;
+    if (!t.agent || t.agent.explore) continue;
     if (t.pnlEur < 0) n++;
     else break;
   }
@@ -65,7 +65,7 @@ export function assessRisk({ pair, trades = [], choice = null, execLog = [], now
   const notes = [];
   const streak = lossStreak(trades);
   if (streak >= rules.lossStreak) {
-    const last = trades.find((t) => t.agent);
+    const last = trades.find((t) => t.agent && !t.agent.explore);
     const left = rules.pauseHours * 3600000 - (now - Date.parse(last?.closedAt ?? 0));
     if (left > 0) {
       return { block: `${streak} verliezen op rij: ik koop ${Math.ceil(left / 3600000)} uur niets om af te koelen`, stakeFactor: 0, notes };
@@ -105,4 +105,13 @@ export function execSummary(log = []) {
   const avg = s.reduce((a, x) => a + x.slipPct, 0) / s.length;
   const worst = s.reduce((a, x) => (x.slipPct > a.slipPct ? x : a), s[0]);
   return { orders: s.length, avgSlipPct: +avg.toFixed(3), worst: { pair: worst.pair, side: worst.side, slipPct: +worst.slipPct.toFixed(3) } };
+}
+
+// ---------- Verkenner (alleen paper) ----------
+// Koopt elke keer dat de AI-trader zelf níet koopt (onder zijn drempel, een coin die hij niet koos,
+// een marktfase waarin de Strategy Agent niet handelt), zodat hij leert hoe kansen aflopen die hij
+// anders afwijst. Op verzoek van de eigenaar zonder limieten: alleen het paper-saldo en één positie
+// per coin remmen hem. Nooit live.
+export function exploreWanted({ mode, enabled }) {
+  return mode === 'paper' && Boolean(enabled);
 }

@@ -725,6 +725,19 @@ class LiveAdmission(unittest.TestCase):
         self.assertEqual(sum(w['trades'] for w in wk), 30)
 
 
+class Explorer(unittest.TestCase):
+    def test_explorer_trades_learn_but_do_not_count_for_live(self):
+        os.environ.setdefault('DATA_DIR', tempfile.mkdtemp())
+        import server as s
+        s.write_json('agent_trades.json', [])
+        s.write_json('agents.json', {'version': s.AGENTS_VERSION, 'recipes': {}, 'live': {}, 'round': 0})
+        base = {'timeframe': '15m', 'recipe': 'R', 'pct': 1.0, 'mode': 'paper', 'features': {'rsi14': 40}, 'entryTs': 1}
+        s.add_agent_trades([{**base, 'explore': True}, {**base, 'pct': 2.0}])
+        self.assertEqual([t['pct'] for t in s.paper_rows('R')], [2.0], 'verkenner telt niet voor live')
+        self.assertEqual(s.load_agents()['live']['R']['n'], 1, 'en niet als resultaat in de praktijk')
+        self.assertEqual(len(s.agent_extra('15m')), 2, 'maar leert wel mee')
+
+
 class HonestTesting(unittest.TestCase):
     def test_split_has_buffer_between_parts(self):
         import agent

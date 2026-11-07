@@ -52,6 +52,8 @@ export const config = {
     agentMode: num('AGENT_MODE', 0),
     // 1 = de AI-controleur (taalmodel) keurt ook aankopen van de AI-trader; 0 = de AI-trader beslist alleen.
     agentVeto: num('AGENT_VETO', 1),
+    // 1 = de verkenner doet in paper ook trades die de AI-trader zelf niet zou doen, om van te leren.
+    agentExplore: num('AGENT_EXPLORE', 1),
   },
 
   // Harde limieten. De AI kan hier nooit aan komen.

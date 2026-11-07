@@ -66,10 +66,12 @@ export class Store {
   }
 
   // Gerealiseerde winst/verlies van vandaag (lokale tijd van de container, zet TZ).
+  // Gerealiseerd resultaat vandaag, voor de daglimiet. Trades van de verkenner (alleen paper, om van
+  // te leren) tellen niet mee: die mogen de gewone handel niet stilleggen.
   realizedTodayEur() {
     const today = new Date().toDateString();
     return this.state.trades
-      .filter((t) => t.closedAt && new Date(t.closedAt).toDateString() === today)
+      .filter((t) => t.closedAt && !t.agent?.explore && new Date(t.closedAt).toDateString() === today)
       .reduce((sum, t) => sum + t.pnlEur, 0);
   }
 }

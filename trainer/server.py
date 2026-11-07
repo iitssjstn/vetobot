@@ -805,7 +805,7 @@ def add_agent_trades(items):
                           'mode': str(t.get('mode') or ''), 'pair': str(t.get('pair') or ''), 'at': datetime.now().isoformat(timespec='seconds'),
                           'entryTs': _int_or_none(t.get('entryTs')), 'openedAt': str(t.get('openedAt') or ''), 'closedAt': str(t.get('closedAt') or ''),
                           'marketRegime': t.get('marketRegime') if t.get('marketRegime') in agent_search.REGIMES else None,
-                          'costPct': _float_or_none(t.get('costPct'))})
+                          'costPct': _float_or_none(t.get('costPct')), 'explore': bool(t.get('explore'))})
         except (KeyError, TypeError, ValueError):
             continue
     if not clean:
@@ -814,7 +814,8 @@ def add_agent_trades(items):
         rows = (read_json('agent_trades.json', []) + clean)[-5000:]
         write_json('agent_trades.json', rows)
     data = load_agents()
-    for t in clean:
+    # Trades van de verkenner leren mee, maar tellen niet als resultaat in de praktijk.
+    for t in (t for t in clean if not t['explore']):
         lv = data['live'].setdefault(t.get('recipe') or t['timeframe'], {'n': 0, 'sum': 0.0, 'wins': 0})
         lv['n'] += 1
         lv['sum'] += t['pct']
@@ -937,7 +938,8 @@ def agent_round():
 
 def paper_rows(key=None):
     """Paper-trades van de AI-trader (oud -> nieuw), eventueel alleen van één recept."""
-    return [t for t in read_json('agent_trades.json', []) if t.get('mode') == 'paper' and (key is None or t.get('recipe') == key)]
+    return [t for t in read_json('agent_trades.json', []) if t.get('mode') == 'paper' and not t.get('explore')
+            and (key is None or t.get('recipe') == key)]
 
 
 def live_check(key, entry, assumed_cost=None):
