@@ -131,3 +131,24 @@ def weeks(rows, start_iso=None, limit=12):
         out.append({'week': f'{y}-W{w:02d}', 'trades': len(rs), 'avg': sum(pct) / len(pct), 'edge': edge,
                     'beatMarket': edge is not None and edge > 0, 'regimes': sorted({r['marketRegime'] for r in rs if r.get('marketRegime')})})
     return out
+
+
+CAL_BINS = [(-99.0, -0.5), (-0.5, 0.0), (0.0, 0.2), (0.2, 0.5), (0.5, 99.0)]
+
+
+def calibration(rows, last=1000):
+    """Klopt de verwachting van de AI-trader? Per groep verwachte uitkomst (bij het kopen): hoeveel
+    trades, gemiddeld verwacht, gemiddeld echt (na kosten), en hoe vaak winst. Apart voor de gewone
+    trades en de verkenner (die koopt juist ook bij lage verwachtingen)."""
+    rows = [r for r in rows[-last:] if isinstance(r.get('expectedPct'), (int, float))]
+    out = []
+    for lo, hi in CAL_BINS:
+        for who, sel in (('gewoon', lambda r: not r.get('explore')), ('verkenner', lambda r: bool(r.get('explore')))):
+            rs = [r for r in rows if sel(r) and lo <= r['expectedPct'] < hi]
+            if not rs:
+                continue
+            out.append({'from': lo, 'to': hi, 'who': who, 'trades': len(rs),
+                        'expected': sum(r['expectedPct'] for r in rs) / len(rs),
+                        'actual': sum(float(r['pct']) for r in rs) / len(rs),
+                        'winRate': sum(1 for r in rs if float(r['pct']) > 0) / len(rs) * 100})
+    return out

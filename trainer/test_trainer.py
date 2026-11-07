@@ -709,6 +709,16 @@ class LiveAdmission(unittest.TestCase):
             r['pct'] = -4.0
         self.assertFalse(next(c for c in L.check(deep, 'betrouwbaar', 2, 0.5)['checks'] if c['key'] == 'drawdown')['ok'])
 
+    def test_calibration(self):
+        import livecheck as L
+        rows = [{'pct': 0.5, 'expectedPct': 0.3}, {'pct': -0.1, 'expectedPct': 0.25}, {'pct': 0.4, 'expectedPct': -0.2, 'explore': True}, {'pct': 1.0}]
+        cal = {(c['who'], c['from']): c for c in L.calibration(rows)}
+        self.assertEqual(cal[('gewoon', 0.2)]['trades'], 2)
+        self.assertAlmostEqual(cal[('gewoon', 0.2)]['actual'], 0.2)
+        self.assertEqual(cal[('gewoon', 0.2)]['winRate'], 50)
+        self.assertAlmostEqual(cal[('verkenner', -0.5)]['actual'], 0.4, msg='verkenner apart')
+        self.assertEqual(sum(c['trades'] for c in cal.values()), 3, 'zonder verwachting telt niet')
+
     def test_market_move_and_weeks(self):
         import livecheck as L
         h = 3600_000

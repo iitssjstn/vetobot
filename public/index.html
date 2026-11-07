@@ -1952,6 +1952,16 @@ function agentLiveHtml(a, bot, sign, nl) {
     ${list || '<p class="muted">De AI-trader gebruikt nog geen recept.</p>'}
     ${recs.some((r) => r.ready || r.approved) ? `<div class="row-actions"><input id="ag-live-pass" type="password" placeholder="Je wachtwoord" autocomplete="current-password" style="max-width:240px"><span class="msg" id="ag-live-msg"></span></div>` : ''}
     ${live ? '' : '<div class="help">Je staat nu in paper: live toestaan heeft pas effect als je naar live overstapt.</div>'}
+    <div class="sub-h" style="margin:16px 0 6px">${icon('target')}Klopt zijn verwachting?</div>
+    <p class="muted" style="margin:0 0 8px;font-size:13.5px">Per groep verwachtingen bij het kopen: wat er echt van terechtkwam (na kosten). Liggen <b>verwacht</b> en <b>echt</b> dicht bij elkaar, dan kun je zijn voorspellingen vertrouwen. Doet de verkenner het bij lage verwachtingen beter dan verwacht, dan is de AI-trader te voorzichtig; slechter, dan terecht.</p>
+    <div class="scroll">${(a.calibration ?? []).length ? table(a.calibration, [
+      ['Verwachting', (c) => c.from <= -99 ? `onder ${nl(c.to, 1)}%` : c.to >= 99 ? `boven +${nl(c.from, 1)}%` : `${nl(c.from, 1)}% tot ${nl(c.to, 1)}%`],
+      ['Wie', (c) => c.who === 'verkenner' ? '<span class="badge soft">verkenner</span>' : 'AI-trader'],
+      ['Trades', (c) => `<span class="num">${c.trades}</span>`, 'r'],
+      ['Verwacht', (c) => `<span class="num">${sign(c.expected)}</span>`, 'r'],
+      ['Echt', (c) => `<span class="num ${c.actual > 0 ? 'up' : 'down'}">${sign(c.actual)}</span>`, 'r'],
+      ['Met winst', (c) => `<span class="num">${Math.round(c.winRate)}%</span>`, 'r'],
+    ]) : '<p class="muted" style="margin:0">Nog geen gesloten trades met een verwachting.</p>'}</div>
     <div class="sub-h" style="margin:16px 0 6px">${icon('list')}Lange paper-test per week</div>
     <p class="muted" style="margin:0 0 8px;font-size:13.5px">Sinds ${pt?.since ? esc(time(pt.since)) : '–'}. Goed genoeg om live te overwegen: alle eisen hierboven gehaald, en in minstens 4 van de laatste 6 weken beter dan de markt (nu ${beat} van ${Math.min(6, wk.length)}).</p>
     <div class="scroll">${weeks}</div>`;

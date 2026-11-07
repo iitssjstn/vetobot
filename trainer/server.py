@@ -805,7 +805,8 @@ def add_agent_trades(items):
                           'mode': str(t.get('mode') or ''), 'pair': str(t.get('pair') or ''), 'at': datetime.now().isoformat(timespec='seconds'),
                           'entryTs': _int_or_none(t.get('entryTs')), 'openedAt': str(t.get('openedAt') or ''), 'closedAt': str(t.get('closedAt') or ''),
                           'marketRegime': t.get('marketRegime') if t.get('marketRegime') in agent_search.REGIMES else None,
-                          'costPct': _float_or_none(t.get('costPct')), 'explore': bool(t.get('explore'))})
+                          'costPct': _float_or_none(t.get('costPct')), 'explore': bool(t.get('explore')),
+                          'expectedPct': _float_or_none(t.get('expectedPct'))})
         except (KeyError, TypeError, ValueError):
             continue
     if not clean:
@@ -1112,6 +1113,8 @@ def agent_info():
             'liveRules': {'minTrades': livecheck.MIN_TRADES, 'minDays': livecheck.MIN_DAYS, 'minAvg': livecheck.MIN_AVG, 'maxDd': livecheck.MAX_DD},
             # De lange paper-test: per week, sinds de nieuwe manier van meten.
             'paperTest': {'since': data.get('since'), 'weeks': livecheck.weeks(paper_rows(), data.get('since'))},
+            # Klopt zijn verwachting? Per groep verwachtingen wat er echt van terechtkwam.
+            'calibration': livecheck.calibration(read_json('agent_trades.json', [])),
             'costs': (lambda c: {'perCoin': c[1], 'default': round(c[2], 4), 'configured': cfg['costPct']})(cost_table(cfg))}
 
 

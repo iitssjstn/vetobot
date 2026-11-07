@@ -1825,7 +1825,7 @@ export class Bot {
         this.onFeedback?.({ kind: 'agentTrade', pair, timeframe: pos.agent.timeframe, recipe: pos.agent.recipe ?? null, pct, version: pos.agent.version,
           features: pos.ml?.features ?? null, mode: this.broker.mode, entryTs: pos.ml?.ts ?? Date.parse(pos.openedAt),
           openedAt: pos.openedAt, closedAt: new Date().toISOString(), marketRegime: pos.agent.marketRegime ?? null, costPct: tradeCost,
-          explore: Boolean(pos.agent.explore) });
+          explore: Boolean(pos.agent.explore), expectedPct: pos.agent.expectedPct ?? null });
       } catch { /* extraatje */ }
       this.think(`Trade ${pair} afgesloten met ${pct >= 0 ? '+' : ''}${pct.toFixed(2).replace('.', ',')}% (verwacht bij aankoop: ` +
         `${pos.agent.expectedPct >= 0 ? '+' : ''}${String(pos.agent.expectedPct).replace('.', ',')}%). ${pct > 0 ? 'Een beloning' : 'Een straf'}; ` +
