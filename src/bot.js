@@ -316,11 +316,13 @@ export class Bot {
       return { pair: p.pair, entryPrice: p.entryPrice, price, changePct: price ? ((price - p.entryPrice) / p.entryPrice) * 100 : null };
     });
     const count = (o) => decisions.filter((d) => d.outcome === o).length;
+    const agent = this.strategy.agentMode && !this.following ? this.getAgent?.() : null;
     const data = {
       mode: this.mode,
       periode: 'afgelopen 24 uur',
       saldo: this.mode === 'live' ? this.liveBalance : { paperEur: s.balanceEur, startEur: s.startBalanceEur },
-      trades: trades.map((t) => ({ pair: t.pair, pnlEur: +t.pnlEur.toFixed(2), pnlPct: +t.pnlPct.toFixed(2), exit: t.exitReason })),
+      trades: trades.map((t) => ({ pair: t.pair, pnlEur: +t.pnlEur.toFixed(2), pnlPct: +t.pnlPct.toFixed(2), exit: t.exitReason,
+        ...(t.agent ? { recept: t.agent.recipe, marktfase: t.agent.marketRegime } : {}) })),
       resultaatEur: +pnl.toFixed(2),
       openPosities: positions.map((p) => ({ ...p, changePct: p.changePct == null ? null : +p.changePct.toFixed(2) })),
       signalen: { totaal: decisions.length, goedgekeurd: count('approved'), afgewezenDoorAi: count('vetoed'), geblokkeerd: count('blocked') },
@@ -330,17 +332,23 @@ export class Bot {
         return { pair: p, price: ps.price ?? null, trend: ps.trend ?? null, rsi: ps.rsi != null ? +ps.rsi.toFixed(1) : null,
           change24Candles: ps.change24 != null ? +ps.change24.toFixed(2) : null };
       }),
-      instellingen: { ...this.risk, ...this.strategy, timeframe: this.timeframe, checkIntervalMin: this.checkIntervalMinutes },
+      instellingen: agent
+        ? { inzetEur: this.risk.stakeEur, maxOpenTrades: this.risk.maxOpenTrades, daglimietEur: this.risk.maxDailyLossEur, aiControleur: Number(this.strategy.agentVeto ?? 1) === 1 }
+        : { ...this.risk, ...this.strategy, timeframe: this.timeframe, checkIntervalMin: this.checkIntervalMinutes },
+      aiTrader: agent ? this.#summaryAgent(agent, since) : null,
     };
 
     let analysis = null;
     let aiError = null;
     let suggestions = [];
     let rationale = null;
+    let model = null;
     try {
       const res = await writeSummaryChain(this.aiChain(), data);
       analysis = res?.analysis ?? null;
-      suggestions = cleanSuggestions(res?.suggestions, currentValues(this));
+      model = res?.model ?? null;
+      // Met de AI-trader aan nooit voorstellen: die test zijn eigen instellingen.
+      suggestions = agent ? [] : cleanSuggestions(res?.suggestions, currentValues(this));
       rationale = suggestions.length ? res?.rationale ?? null : null;
     } catch (err) {
       aiError = err.message;
@@ -356,6 +364,8 @@ export class Bot {
       signals: data.signalen,
       openPositions: positions,
       analysis,
+      model,
+      aiTrader: Boolean(agent),
       aiError,
       suggestions,
       rationale,
@@ -384,16 +394,36 @@ export class Bot {
     }
     if (suggestions.length) {
       fields.push({
-        name: 'Voorstel van de AI',
+        name: 'Voorstel van de AI (niet getest)',
         value: suggestions.map((x) => `${x.label}: ${x.from} → **${x.to}**`).join('\n') +
-          (rationale ? `\n_${rationale}_` : '') + '\nOvernemen kan op het dashboard.',
+          (rationale ? `\n_${rationale}_` : '') + '\nDit is een idee van de AI, niet getest op koersen. Overnemen kan op het dashboard.',
         inline: false,
       });
     }
+    if (model) fields.push({ name: 'Geschreven door', value: model, inline: false });
     const message = analysis ?? (aiError ? `Geen AI-analyse: ${aiError}` : 'Geen AI ingesteld, dus alleen de cijfers.');
     this.#event('info', null, `Dagoverzicht gemaakt${analysis ? ' met AI-analyse' : ''}`);
     await this.notifier?.send('dailySummary', { title: `Dagoverzicht · ${eur(pnl)}`, message, level: pnl >= 0 ? 'ok' : 'warn', fields });
     return summary;
+  }
+
+  // Wat de AI-trader en zijn team de afgelopen 24 uur deden, voor het dagoverzicht.
+  #summaryAgent(agent, since) {
+    const s = this.store.state;
+    const team = this.agentTeam();
+    const dayDecisions = s.decisions.filter((d) => new Date(d.at).getTime() >= since);
+    const regimes = Object.fromEntries(Object.entries(agent.regimes ?? {}).map(([k, p]) => [k,
+      { recept: p.key ?? 'niet handelen', waarom: p.why, voordeelBovenMarktPct: p.edge != null ? +p.edge.toFixed(3) : null, trades: p.trades ?? 0 }]));
+    const marktNu = {};
+    for (const r of Object.values(team.market)) if (r) marktNu[r] = (marktNu[r] ?? 0) + 1;
+    return {
+      stage: agent.stage, recept: agent.recipeKey ?? null, candleTijd: agent.timeframe, coins: agent.coins ?? [],
+      live: agent.live ?? null, receptPerMarktfase: regimes, coinsPerMarktfaseNu: marktNu,
+      tegengehoudenDoorRiskAgent: Object.values(this.agentReason ?? {}).filter((r) => /^Risk Agent/.test(r ?? '')).length,
+      verliezenOpRij: team.risk.lossStreak,
+      uitvoering: team.execution,
+      aankopenAiTrader: dayDecisions.filter((d) => d.indicators?.agent && d.outcome === 'approved').length,
+    };
   }
 
   // Neemt (een deel van) het voorstel uit het laatste dagoverzicht over.

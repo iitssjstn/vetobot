@@ -1423,7 +1423,7 @@ function render() {
 
   const sum = s.lastSummary;
   if (!sumBox()) {
-  $('dash-summary-meta').textContent = sum ? `${time(sum.at)} · ${sum.mode === 'live' ? 'live' : 'paper'}` : `Elke dag om ${s.notify?.summaryTime ?? '08:00'}`;
+  $('dash-summary-meta').textContent = sum ? `${time(sum.at)} · ${sum.mode === 'live' ? 'live' : 'paper'}${sum.model ? ` · geschreven door ${sum.model}` : ''}` : `Elke dag om ${s.notify?.summaryTime ?? '08:00'}`;
   if (isOn('dashboard')) $('dash-summary').innerHTML = !sum
     ? `<div class="muted">Nog geen overzicht. Het eerste komt om ${esc(s.notify?.summaryTime ?? '08:00')}, of verstuur er nu een bij Instellingen → Meldingen.</div>`
     : `<div class="grid tiles" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:14px">` +
@@ -1455,7 +1455,7 @@ function suggestionsHtml(sum, live) {
   }).join('');
   const open = sum.suggestions.some(x => !(sum.appliedKeys ?? []).includes(x.key));
   return `<div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
-    <div class="sub-h" style="margin:0 0 6px">${icon('cpu')}Voorstel van de AI</div>
+    <div class="sub-h" style="margin:0 0 6px">${icon('cpu')}Voorstel van de AI <span class="badge soft">niet getest</span></div>
     ${sum.rationale ? `<div class="help" style="margin:0 0 10px">${esc(sum.rationale)}</div>` : ''}
     <div class="scroll" style="border:1px solid var(--line);border-radius:10px;max-width:560px">
       <table class="evtable"><thead><tr><th style="width:40px"></th><th>Instelling</th><th class="r">Nu</th><th class="r">Voorstel</th></tr></thead><tbody>${rows}</tbody></table>
@@ -1464,7 +1464,7 @@ function suggestionsHtml(sum, live) {
       ${live ? '<input id="sug-pass" type="password" placeholder="Je wachtwoord (live)" autocomplete="current-password" style="max-width:240px">' : ''}
       <button class="btn primary" type="button" id="sug-apply">Geselecteerde overnemen</button>
       <span class="msg" id="sug-msg"></span></div>
-      <div class="help">Er verandert niets tot je op de knop klikt. Bedragen stelt de AI nooit voor.</div>`
+      <div class="help">Er verandert niets tot je op de knop klikt. Dit is een idee van de AI op basis van de cijfers van 24 uur, <b>niet getest</b> op koersen. Bedragen stelt de AI nooit voor. Met de AI-trader aan doet de AI geen voorstellen: die test zijn eigen instellingen.</div>`
       : `<div class="help up">Overgenomen op ${time(applied)}.</div>`}
   </div>`;
 }

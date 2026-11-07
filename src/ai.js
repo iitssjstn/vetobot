@@ -419,6 +419,23 @@ async function askOpenAICompatible(cfg, prompt, { system = SYSTEM_PROMPT, json =
   }
 }
 
+// Met de AI-trader aan: alleen analyseren, geen instellingen voorstellen. De AI-trader test zijn
+// eigen manier van handelen (recepten) op de leerserver; een ongetest voorstel van de AI zou dat
+// doorkruisen, en de klassieke strategie-instellingen gebruikt hij niet eens.
+const SUMMARY_PROMPT_AGENT = `Je schrijft het dagelijkse overzicht van een crypto trading bot voor de eigenaar.
+De bot handelt met de AI-trader: een lerend model op een eigen leerserver dat zelf beslist wanneer hij koopt en
+verkoopt. De klassieke instellingen (EMA's, RSI, stop-loss, take-profit, candle-tijd) gebruikt hij NIET; noem ze niet.
+Schrijf in het Nederlands, zakelijk en concreet, maximaal 150 woorden, zonder opsommingstekens of kopjes.
+Behandel: hoe de trades van de AI-trader de afgelopen 24 uur afliepen (tegenover zijn verwachting), in welke
+marktfases hij handelde en welk recept hij per fase gebruikt, wat de Risk Agent tegenhield, hoe de orders werden
+uitgevoerd (afwijking), en hoe ver hij is richting live (zie "aiTrader.live" en "aiTrader.stage").
+Verzin geen cijfers die niet in de data staan. Geef geen garanties en voorspel geen koersen.
+Doe GEEN voorstel voor instellingen: de AI-trader test zijn eigen instellingen; laat "voorstel" leeg ({}).
+Wil je toch iets onder de aandacht brengen (bijv. veel verlies in een marktfase), zet het dan in de analyse.
+
+Antwoord uitsluitend met JSON in deze vorm:
+{"analyse": "de tekst van maximaal 150 woorden", "voorstel": {}, "toelichting": ""}`;
+
 const SUMMARY_PROMPT = `Je schrijft het dagelijkse overzicht van een crypto trading bot voor de eigenaar.
 Schrijf in het Nederlands, zakelijk en concreet, maximaal 120 woorden, zonder opsommingstekens of kopjes.
 Behandel: hoe het de afgelopen 24 uur ging, wat opvalt in de markt voor de gevolgde coins, en of de
@@ -426,6 +443,8 @@ huidige instellingen passen bij wat je ziet (bijv. veel stop-losses, geen enkel 
 Verzin geen cijfers die niet in de data staan. Geef geen garanties en voorspel geen koersen.
 
 Doe daarnaast, alleen als de data daar echt aanleiding toe geeft, een voorstel voor andere instellingen.
+Een voorstel is NIET getest: baseer het alleen op wat in de data te zien is (bijv. "8 van de 10 trades eindigden op
+de stop-loss") en noem dat bewijs in de toelichting. Zonder zulk bewijs: geen voorstel. Liever niets dan een gok.
 Je mag ALLEEN deze velden voorstellen: emaFast, emaSlow, rsiPeriod, rsiMaxEntry, trendEma (0 = uit), adxMin (0 = uit),
 volumeMult (0 = uit), btcFilter (0 of 1), stopLossPct, takeProfitPct, trailingStopPct (0 = uit), atrStopMult (0 = uit), cooldownMinutes,
 timeframe (een van 1m, 5m, 15m, 30m, 1h, 2h, 4h, 1d) en checkIntervalMinutes. Stel nooit bedragen voor.
@@ -439,7 +458,7 @@ Antwoord uitsluitend met JSON in deze vorm:
 export async function writeSummary(cfg, data) {
   if (cfg.provider === 'none' || !cfg.apiKey) return null;
   const prompt = `Data van de bot (JSON):\n${JSON.stringify(data, null, 1)}`;
-  const opts = { system: SUMMARY_PROMPT, json: true, temperature: 0.4 };
+  const opts = { system: data?.aiTrader ? SUMMARY_PROMPT_AGENT : SUMMARY_PROMPT, json: true, temperature: 0.4 };
   const text = cfg.provider === 'gemini' ? await askGemini(cfg, prompt, opts) : await askOpenAICompatible(cfg, prompt, opts);
   return parseSummary(text);
 }

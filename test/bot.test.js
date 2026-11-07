@@ -1106,3 +1106,45 @@ test('AI-trader-team: Strategy Agent per marktfase, Risk Agent inzet, Execution 
   assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
   assert.match(bot.pairStatus['BTC/EUR'].reason, /Risk Agent: 3 verliezen op rij/);
 });
+
+test('dagoverzicht met de AI-trader: geen ongeteste voorstellen, AI-trader in de data, model zichtbaar', async () => {
+  let prompt = '';
+  let system = '';
+  const srv = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      const msgs = JSON.parse(body).messages;
+      prompt = msgs.at(-1).content;
+      system = msgs[0].content;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ analyse: 'Rustige dag.', voorstel: { stopLossPct: 4, emaFast: 5 }, toelichting: 'gok' }) } }] }));
+    });
+  });
+  await new Promise((r) => srv.listen(0, r));
+  try {
+    const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
+    const { bot } = setup({});
+    bot.notifier = { send: async () => true, heartbeat: async () => null };
+    bot.settings.setAi({ provider: 'openai', model: 'samenvatter', baseUrl: `http://127.0.0.1:${srv.address().port}/v1`, failMode: 'reject' });
+    bot.secrets = { get: (n) => (n === 'aiApiKey' ? 'k' : '') };
+    // Zonder AI-trader: voorstel mag, maar het model staat erbij.
+    let sum = await bot.dailySummary();
+    assert.equal(sum.suggestions.length, 2);
+    assert.match(sum.model, /samenvatter/);
+    assert.match(system, /Een voorstel is NIET getest/);
+    // Met de AI-trader: geen voorstellen, wel zijn gegevens.
+    await bot.setStrategy({ agentMode: 1 });
+    bot.getAgent = () => ({ ...fx.agent, stage: 'getest', recipeKey: '15m|1|4|200|5', regimes: { dalend: { key: null, why: 'pauze', edge: -0.2, trades: 30 } } });
+    sum = await bot.dailySummary();
+    assert.equal(sum.suggestions.length, 0, 'de AI-trader test zijn eigen instellingen');
+    assert.equal(sum.aiTrader, true);
+    assert.match(system, /Doe GEEN voorstel voor instellingen/);
+    const data = JSON.parse(prompt.slice(prompt.indexOf('{')));
+    assert.equal(data.aiTrader.recept, '15m|1|4|200|5');
+    assert.equal(data.aiTrader.receptPerMarktfase.dalend.recept, 'niet handelen');
+    assert.equal(data.instellingen.emaFast, undefined, 'geen klassieke instellingen die hij niet gebruikt');
+  } finally {
+    srv.close();
+  }
+});
