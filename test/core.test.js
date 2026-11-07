@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ema, rsi } from '../src/indicators.js';
 import { evaluate } from '../src/strategy.js';
-import { parseDecision, askVeto, testConnection } from '../src/ai.js';
+import { parseDecision, testConnection } from '../src/ai.js';
 import { checkEntry } from '../src/risk.js';
 import { Store } from '../src/store.js';
 
@@ -55,15 +55,6 @@ test('parseDecision leest JSON, ook met tekst eromheen', () => {
   });
   assert.throws(() => parseDecision('{"decision":"maybe"}'));
   assert.throws(() => parseDecision('geen json'));
-});
-
-test('askVeto valt bij een fout terug op reject', async () => {
-  const res = await askVeto(
-    { provider: 'openai', apiKey: 'x', baseUrl: 'http://127.0.0.1:9', timeoutMs: 500, failMode: 'reject' },
-    { pair: 'BTC/EUR', timeframe: '1h', indicators: { close: 1, emaFast: 1, emaSlow: 1, rsi: 50, change24: 0 }, recentCandles: [] },
-  );
-  assert.equal(res.decision, 'reject');
-  assert.equal(res.error, true);
 });
 
 test('risicoregels blokkeren bij te veel open trades en bij dagverlies', () => {

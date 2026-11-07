@@ -193,6 +193,18 @@ Een lerende agent (reinforcement learning, *fitted Q-iteration*) die zelf uitzoe
 - **Vangnet:** alleen een noodstop (standaard −10%, instelbaar) en een maximale duur (±2 dagen). De orderboek-check en je AI als controleur blijven gelden.
 - Aanzetten: Instellingen → Strategie → **AI-trader → Aan**. Op de pagina Trainer staat het blok **AI-trader** (resultaat per candle-tijd, welke in gebruik is, resultaat in de praktijk). Staat de AI-trader aan, dan staat de strategie-zoeker stil (de AI-trader vervangt hem).
 
+#### Het team van de AI-trader
+
+De AI-trader werkt als een team van vijf onderdelen (geen losse AI's, maar stukken van het programma):
+
+- **Learning Agent** (leerserver): leert kopen en verkopen uit de koersgeschiedenis en uit de echte trades van de bot.
+- **Market Agent**: bepaalt per coin de marktfase (*stijgend*, *zijwaarts* of *dalend*) op 1h-candles, wat de candle-tijd van het recept ook is. De leerserver en de bot rekenen precies hetzelfde.
+- **Strategy Agent**: de leerserver meet per recept het resultaat per marktfase (in de eindtests) en kiest per fase het recept dat daar het meest beter deed dan de markt (minstens 20 trades in die fase, status betrouwbaar of veelbelovend). Verloor het hoofdrecept in een fase van de markt en doet geen ander het daar beter, dan handelt de bot in die fase niet. Zonder bewijs per fase: het hoofdrecept. De bot kiest per coin het recept voor de huidige fase en verkoopt met hetzelfde recept dat kocht.
+- **Risk Agent**: na 3 verliezen op rij van de AI-trader 6 uur geen nieuwe aankopen; halve inzet (nooit onder € 5) als er voor de marktfase nog weinig bewijs is; geen aankoop in een coin waar de laatste 3 orders gemiddeld meer dan 0,5% slechter uitvielen dan verwacht. Daarnaast gelden de daglimiet, het maximum aantal trades, de noodstop, de orderboek-check en de AI-controleur.
+- **Execution Agent**: meet bij elke order hoeveel de prijs afweek van de koers vlak ervoor, en waarschuwt boven 0,3%.
+
+Op de pagina Trainer staat het blok **Het team van de AI-trader** met wat elk onderdeel nu ziet, en in de lijst met recepten de kolom **Per marktfase** (voordeel boven de markt per fase).
+
 ## Eigen model (trainer op een VPS)
 
 Naast de AI kan vetobot een **eigen voorspelmodel** gebruiken. Dat wordt getraind door een aparte container, **vetobot-trainer**, die je op een sterkere server (bijv. een VPS) draait. De bot zelf blijft op je eigen server.

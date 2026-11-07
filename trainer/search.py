@@ -14,7 +14,7 @@ import random
 import time
 
 from features import FEATURES, WARMUP, context, features_at, label_at, series
-from train import TF_MS, _impute, evaluate, export_model, regime_of, REGIMES
+from train import _impute, evaluate, export_model, regime_of, REGIMES
 
 TARGETS = [0.8, 1.2, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0]
 STOPS = [0.8, 1.2, 1.6, 2.0, 2.5, 3.5, 5.0]

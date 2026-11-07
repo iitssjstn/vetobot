@@ -20,7 +20,6 @@ Hoe hij leert (reinforcement learning, "fitted Q-iteration"):
 Modellen: HistGradientBoostingRegressor (snel, werkt zonder GPU), geëxporteerd als dezelfde
 JSON-bomen die de bot in JavaScript uitrekent.
 """
-import math
 import random
 import time
 
@@ -28,16 +27,10 @@ import numpy as np
 
 import market as market_agent
 from features import FEATURES, WARMUP, context, features_at, series
-from train import TF_MS
 
 POS_FEATURES = ['posPnlPct', 'posCandles', 'posMaxPct', 'posDrawPct']
 TF_MIN = {'1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120, '4h': 240}
 DEFAULT_TIMEFRAMES = ['15m', '30m', '1h', '5m']
-
-
-def max_hold_candles(tf):
-    """Hoe lang hij een positie maximaal mag houden: ongeveer 2 dagen, tussen 24 en 240 candles."""
-    return int(min(240, max(24, 2 * 1440 // TF_MIN.get(tf, 15))))
 
 
 def _fit(X, y, w=None, seed=7, depth=4, leaf=200, iters=120):
@@ -345,7 +338,7 @@ def recipe_text(r):
             f"{r['look']} stappen vooruitkijken")
 
 
-def train_agent(cfg, recipe, fetch, pairs, log=print, think=None, progress=None, extra=None, seed=1):
+def train_agent(cfg, recipe, fetch, pairs, log=print, progress=None, extra=None, seed=1):
     """Train een AI-trader volgens een recept (candle-tijd, maximale duur, modelgrootte, hoe ver
     vooruitkijken). Kiest zelf de koopdrempel én de coins (op de validatie), en test daarna eerlijk.
     Geeft (agent_json_of_None, rapport)."""
@@ -353,9 +346,7 @@ def train_agent(cfg, recipe, fetch, pairs, log=print, think=None, progress=None,
         recipe = {**RECIPE_DEFAULT, 'timeframe': recipe}
     recipe = {**RECIPE_DEFAULT, **recipe}
     tf = recipe['timeframe']
-    say = think or (lambda *a, **k: None)
     step = progress or (lambda *a: None)
-    import thoughts as T
     started = time.time()
     rnd = random.Random(seed)
     cost = float(cfg['costPct'])

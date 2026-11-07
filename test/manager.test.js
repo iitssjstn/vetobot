@@ -113,7 +113,7 @@ test('volgen: koopt en verkoopt mee met eigen inzet, en houdt zich aan eigen lim
 
 test('volgen: eigen limiet blokkeert, en een gemiste verkoop wordt bij de check alsnog gedaan', async () => {
   const { admin, piet, manager, market } = setup();
-  const a = manager.ensure(admin);
+  manager.ensure(admin);
   const p = manager.ensure(piet);
   p.settings.setFollow(true);
   p.bot.store.state.balanceEur = 5; // te weinig voor de inzet van 25

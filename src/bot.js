@@ -1,7 +1,7 @@
 import { evaluate } from './strategy.js';
 import { ema } from './indicators.js';
 import { computeFeatures, predict, predictRaw, contributions, explain, positionFeatures, FEATURE_INFO, formatFeature, CANDLES_NEEDED, regimeOf, REGIME_LABEL } from './mlmodel.js';
-import { askVetoChain, askTeamChain, askExitChain, testChain, listModels, writeSummaryChain, aiLabel } from './ai.js';
+import { askVetoChain, askTeamChain, askExitChain, testChain, listModels, writeSummaryChain } from './ai.js';
 import { TIMEFRAME_MINUTES, fmtInterval, LIVE_MIN_STAKE_EUR } from './settings.js';
 import { cleanSuggestions, currentValues, applySuggestions } from './suggest.js';
 import { fetchClosedCandles, fetchPrice, hasTradingKeys } from './exchange.js';

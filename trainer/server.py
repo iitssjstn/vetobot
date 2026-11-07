@@ -258,7 +258,6 @@ def compute_teamwork():
     signals = read_json('signals.json', [])
     model = read_json('model.json', None)
     thr = ((model or {}).get('meta', {}).get('metrics', {}).get('best') or {}).get('minProb') or 0.5
-    cache = os.path.join(DATA, 'candles')
     loaded = {}
     done = []
     pending = 0
@@ -804,7 +803,7 @@ def agent_round():
         try:
             def prog(phase, done, total, text):
                 state['agentProgress'] = {**state['agentProgress'], 'done': done, 'total': total, 'text': text}
-            agent, report = agent_mod.train_agent({**cfg, 'agent': cfg['agent']}, recipe, fetch, pairs, log=log, think=think,
+            agent, report = agent_mod.train_agent({**cfg, 'agent': cfg['agent']}, recipe, fetch, pairs, log=log,
                                                   progress=prog, extra=agent_extra(recipe['timeframe']), seed=data.get('round', 0) + 1)
         finally:
             state['agentBusy'] = False

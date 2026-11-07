@@ -2697,7 +2697,7 @@ const HELP = {
   'ai-fail': 'Wat er met een koopsignaal gebeurt als geen enkel AI-model antwoordt (fouten, tegoed op). <b>Afwijzen</b> is het veiligst: geen AI, geen trade. <b>Doorlaten</b> betekent dat alleen je eigen regels beslissen.',
 };
 function initHelp() {
-  for (const [id, text] of Object.entries(HELP)) {
+  for (const id of Object.keys(HELP)) {
     const label = document.querySelector(`label[for="${id}"]`);
     if (!label || label.querySelector('.tip')) continue;
     const btn = document.createElement('button');

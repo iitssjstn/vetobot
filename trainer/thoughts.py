@@ -109,7 +109,7 @@ def search_try(c, why):
 def search_result(c, va):
     best, base = va.get('best'), va['base']
     if not best:
-        return f"Hierbij vind ik geen kansdrempel met genoeg winstgevende trades. Afgevallen."
+        return "Hierbij vind ik geen kansdrempel met genoeg winstgevende trades. Afgevallen."
     better = best['avgReturnPct'] - max(0.0, base['avgReturnPct'])
     s = (f"Beoordeling: bij ≥ {best['minProb'] * 100:.0f}% kans gemiddeld {pct(best['avgReturnPct'])} per trade "
          f"({best['n']} trades), zomaar kopen {pct(base['avgReturnPct'])}.")

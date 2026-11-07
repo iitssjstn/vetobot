@@ -25,9 +25,6 @@ export const NOTIFY_EVENTS = {
 const COLORS = { info: 0x5aa9f0, ok: 0x3ccf8e, warn: 0xf0b24a, error: 0xf26d6d, live: 0xf26d6d };
 const ERROR_THROTTLE_MS = 30 * 60 * 1000;
 
-export const isDiscordWebhook = (url) =>
-  /^https:\/\/(?:(?:canary|ptb)\.)?(?:discord|discordapp)\.com\/api\/webhooks\/\d+\/[\w-]+\/?$/.test(String(url ?? ''));
-
 export class Notifier {
   constructor({ secrets, settings, log = console, fetchImpl = fetch }) {
     this.secrets = secrets;
