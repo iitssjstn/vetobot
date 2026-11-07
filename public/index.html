@@ -1281,7 +1281,12 @@ function render() {
   $('mode-badge').textContent = live ? 'LIVE' : 'PAPER';
   $('mode-badge').className = `badge ${s.mode}`;
   $('view-app').classList.toggle('is-live', live);
-  $('meta').textContent = (s.follow?.active ? `Volgt ${s.follow.leader} · ` : '') + `${s.pairs.length} coins · check elke ${fmtIv(s.checkIntervalMinutes)} · ${s.timeframe}-candles · AI: ${s.ai.provider === 'none' ? 'uit' : s.ai.provider}${s.ai.model ? ` (${s.ai.model})` : ''}`;
+  const agentOn = Number(s.strategy?.agentMode ?? 0) === 1 && s.agent;
+  const ctl = s.ai.provider === 'none' ? 'uit' : `${s.ai.provider}${s.ai.model ? ` (${s.ai.model})` : ''}`;
+  $('meta').textContent = (s.follow?.active ? `Volgt ${s.follow.leader} · ` : '') + (agentOn
+    // Met de AI-trader aan: zijn eigen candle-tijd en coins tellen, niet die van de bot.
+    ? `AI-trader: ${s.agent.timeframe}-candles · ${s.agent.coins?.length ?? '?'} coins (zelf gekozen) · check elke ${fmtIv(s.checkIntervalMinutes)} · AI-controleur: ${Number(s.strategy?.agentVeto ?? 1) === 0 ? 'uit' : ctl}`
+    : `${s.pairs.length} coins · check elke ${fmtIv(s.checkIntervalMinutes)} · ${s.timeframe}-candles · AI: ${ctl}`);
   $('side-mode').innerHTML = `Modus: <b class="${live ? 'down' : ''}">${live ? 'Live' : 'Paper'}</b>`;
   me = s.user ?? me;
   $('side-user').textContent = me?.username ?? '';
