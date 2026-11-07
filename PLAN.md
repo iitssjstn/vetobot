@@ -86,6 +86,27 @@ Status per stap: ☐ open · ◐ bezig · ☑ klaar.
 - Goed genoeg om live te overwegen: alle eisen van stap 4 gehaald, en in ten minste 4 van de 6 weken beter dan de markt.
 - Niet goed genoeg: geen nieuwe functies erbij, eerst uitzoeken waarom (welke fase, welke coins, kosten of voorspelling).
 
+## ☐ 6. Overleg van de AI-trader terug te lezen (pagina AI-chat)
+
+Gevraagd door de eigenaar: "is het mogelijk om dit ook voor de AI trader te doen die wij zelf maken?" Hij wil dit zoals de gesprekken van het AI-team bij de AI-veto. Bij voorkeur vóór stap 5 bouwen, zodat de lange paper-test terug te lezen is.
+
+**Nu.** De pagina AI-chat toont alleen gesprekken van het AI-team. Elk gesprek is een `transcript` (rijen met rol, naam, tekst, besluit) bij een beslissing in `state.decisions` (`/api/aichat`). Het team van de AI-trader (Market, Strategy, Risk, Execution Agent) beslist wel, maar schrijft geen gesprek weg.
+
+**Wat we bouwen.**
+- Bij elke aankoop van de AI-trader een verslag in dezelfde vorm, met de echte getallen per onderdeel:
+  - Market Agent: fase en waarom;
+  - Strategy Agent: gekozen recept en het bewijs per fase;
+  - AI-trader: verwachting, drempel en de belangrijkste redenen;
+  - Risk Agent: akkoord of niet, en welke inzet;
+  - AI-controleur: oordeel van de AI of het hele AI-team-gesprek;
+  - Execution Agent: prijs en afwijking.
+- Bij elke verkoop: waarom, met welk recept, en het resultaat tegenover de verwachting.
+- Ook als een onderdeel een aankoop tegenhoudt. Alleen als de AI-trader echt wilde kopen (boven zijn drempel), niet bij elke candle, anders wordt het te veel.
+- Geen taalmodellen in dit team: het verslag is gratis, direct en laat precies zien waarop de bot besliste. De eigen AI blijft als controleur in het gesprek.
+- Pagina AI-chat: filter "AI-team / AI-trader", zelfde opmaak.
+
+**Klaar als.** Een test bewijst dat een aankoop, een verkoop en een tegengehouden aankoop elk een volledig verslag geven, met alle onderdelen in de juiste volgorde. Het verslag is te zien op AI-chat.
+
 ---
 
 Afspraak: er wordt alleen gebouwd als de eigenaar het zegt. Elke stap is een eigen commit met tests, en na elke push meldt Claude de build met de update-commando's.

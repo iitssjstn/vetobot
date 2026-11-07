@@ -68,7 +68,7 @@ Tests bij `4516df4`: `npm test` 150/150 geslaagd; `cd trainer && python3 -m unit
 
 ## Specific next steps
 
-0. **Plan richting live staat in `PLAN.md`** (5 stappen: validatie en eindtest scheiden, drawdown op een echte portefeuille, werkelijke kosten in het leren, strengere live-toelating, daarna lange paper-test). Vastgelegd op verzoek van de eigenaar: "Kunnen we dit als plan neerzetten". Nog niets van gebouwd; per stap wachten op zijn akkoord.
+0. **Plan richting live staat in `PLAN.md`** (5 stappen: validatie en eindtest scheiden, drawdown op een echte portefeuille, werkelijke kosten in het leren, strengere live-toelating, daarna lange paper-test; plus stap 6: het overleg van de AI-trader terug te lezen op de pagina AI-chat, bij voorkeur vóór stap 5). Vastgelegd op verzoek van de eigenaar: "Kunnen we dit als plan neerzetten". Nog niets van gebouwd; per stap wachten op zijn akkoord.
 1. Niets bouwen tot de eigenaar het vraagt; hij test nu alles in paper.
 2. Wat de eigenaar in paper moet zien:
    - eerst koopt de AI-trader met het hoofdrecept en de halve inzet ("weinig bewijs");
