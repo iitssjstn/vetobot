@@ -535,6 +535,13 @@
     </section>
 
     <section data-section="trainer" hidden>
+      <div class="row-actions trtabs" role="tablist" style="margin:0 0 14px">
+        <button class="btn primary" type="button" data-trtab="overzicht">Overzicht</button>
+        <button class="btn" type="button" data-trtab="recepten">Recepten</button>
+        <button class="btn" type="button" data-trtab="live">Live &amp; test</button>
+        <button class="btn" type="button" data-trtab="overig">Overig</button>
+      </div>
+      <div data-trpane="overzicht">
       <div class="panel">
         <div class="panel-h"><h2><svg class="i"><use href="#i-cpu"/></svg>Wat doet de trainer?</h2><span class="hint" id="tr-badge"></span></div>
         <div class="panel-b" id="tr-now"></div>
@@ -542,10 +549,21 @@
       <div class="panel gap" id="tr-agent-panel" hidden>
         <div class="panel-h"><h2><svg class="i"><use href="#i-pulse"/></svg>AI-trader</h2><span class="hint" id="ag-hint"></span></div>
         <div class="panel-b" id="ag-body"></div>
+      </div>
+      <div class="panel gap" id="tr-think-panel" hidden>
+        <div class="panel-h"><h2><svg class="i"><use href="#i-chat"/></svg>Wat denkt het model?</h2><span class="hint">nieuwste onderaan</span></div>
+        <div class="think" id="think-list"></div>
+      </div>
+      </div>
+      <div data-trpane="recepten" hidden>
+      <div class="panel" data-agentpanel hidden>
+        <div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Recepten</h2><span class="hint">elke ronde probeert hij er een; gekozen op de validatie, gecontroleerd met de eindtest</span></div>
         <div class="scroll" id="ag-table"></div>
         <div class="scroll" id="ag-costs"></div>
-        <div class="panel-b" id="ag-live" style="border-top:1px solid var(--line)"></div>
-        <form class="panel-b" id="ag-form" style="border-top:1px solid var(--line)">
+      </div>
+      <div class="panel gap" data-agentpanel hidden>
+        <div class="panel-h"><h2><svg class="i"><use href="#i-gear"/></svg>Instellingen AI-trader</h2></div>
+        <form class="panel-b" id="ag-form">
           <div class="fields">
             <div><label for="ag-on">Leren</label><select id="ag-on"><option value="1">Aan: doorlopend leren</option><option value="0">Uit</option></select></div>
             <div><label for="ag-pool">Coins</label><select id="ag-pool"><option value="top">Zelf kiezen: mijn coins + de 20 grootste</option><option value="eigen">Alleen mijn coins</option></select></div>
@@ -556,10 +574,14 @@
           <div class="row-actions"><button class="btn primary" type="submit">Opslaan</button><span class="msg" id="ag-msg"></span></div>
         </form>
       </div>
-      <div class="panel gap" id="tr-think-panel" hidden>
-        <div class="panel-h"><h2><svg class="i"><use href="#i-chat"/></svg>Wat denkt het model?</h2><span class="hint">nieuwste onderaan</span></div>
-        <div class="think" id="think-list"></div>
       </div>
+      <div data-trpane="live" hidden>
+      <div class="panel" data-agentpanel hidden>
+        <div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Live & paper-test</h2></div>
+        <div class="panel-b" id="ag-live"></div>
+      </div>
+      </div>
+      <div data-trpane="overig" hidden>
       <div class="panel gap" id="tr-team-panel" hidden>
         <div class="panel-h"><h2><svg class="i"><use href="#i-pulse"/></svg>Samenwerking AI + model</h2><span class="hint" id="tw-hint"></span></div>
         <div class="panel-b" id="tw-body"></div>
@@ -627,6 +649,7 @@
         <pre class="tr-log" id="tr-log"></pre>
       </div>
       </details>
+      </div>
     </section>
 
     <section data-section="aichat" hidden>
@@ -1174,7 +1197,11 @@ function go(section, anchor) {
   if (section === 'trainer') loadTrainer();
   if (section === 'aichat' && Date.now() - (chatsLoadedAt ?? 0) > 1000) loadChats();
   else if (section === 'aichat') renderChats();
-  if (anchor) setTimeout(() => $(anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+  if (anchor) {
+    const pane = $(anchor)?.closest('[data-trpane]');
+    if (pane) showTrTab(pane.dataset.trpane);
+    setTimeout(() => $(anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+  }
   else window.scrollTo({ top: 0 });
   history.replaceState(null, '', `#${section}`);
 }
@@ -1986,9 +2013,18 @@ document.addEventListener('click', async (e) => {
     msg(err.message, 'err');
   }
 });
+// Trainer in tabbladen; de laatst gekozen tab onthouden (per browser).
+function showTrTab(name) {
+  document.querySelectorAll('[data-trpane]').forEach((el) => { el.hidden = el.dataset.trpane !== name; });
+  document.querySelectorAll('[data-trtab]').forEach((b) => { b.classList.toggle('primary', b.dataset.trtab === name); b.setAttribute('aria-selected', String(b.dataset.trtab === name)); });
+  try { localStorage.setItem('trtab', name); } catch { /* geen opslag: geen probleem */ }
+}
+document.addEventListener('click', (e) => { const b = e.target.closest('[data-trtab]'); if (b) showTrTab(b.dataset.trtab); });
+try { const t = localStorage.getItem('trtab'); if (t && document.querySelector(`[data-trpane="${t}"]`)) showTrTab(t); } catch { /* geen opslag */ }
 function renderAgent(t, nl) {
   const a = t?.agent;
   $('tr-agent-panel').hidden = !a;
+  document.querySelectorAll('[data-agentpanel]').forEach((el) => { el.hidden = !a; });
   if (!a) return;
   const sign = (v) => v == null ? '–' : `${v > 0 ? '+' : ''}${nl(v, 2)}%`;
   const pub = a.published;
