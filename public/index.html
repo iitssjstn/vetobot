@@ -2121,6 +2121,7 @@ function renderAgent(t, nl) {
     + (a.busy && a.progress ? `<p style="margin:0 0 8px"><b>Nu aan het leren:</b> ${esc(a.progress.text ?? '')}</p>` : a.enabled && a.nextAt ? `<p style="margin:0 0 8px">Volgende leerronde: <b>${whenAt(a.nextAt)}</b></p>` : '')
     + (cur ? `<div class="alert ${a.stage === 'oefenen' ? '' : a.stage === 'geblokkeerd' ? 'err' : 'ok'}" style="margin:0 0 10px">${icon('target')}<div><b>De bot handelt nu met:</b> ${esc(cur.text)} · <span class="badge ${st?.[0] ?? 'soft'}">${esc(st?.[1] ?? a.stage ?? '')}</span>`
       + `<br>Coins: ${esc((a.coins ?? []).join(', ') || '–')}`
+      + (cur.last?.test?.trades && cur.last?.testDays ? `<br>In zijn eindtest kocht hij ${cur.last.test.trades}× in ${nl(cur.last.testDays, 0)} dagen: gemiddeld <b>${nl(cur.last.test.trades / cur.last.testDays, 1)} trades per dag</b>. Uren zonder eigen trade zijn dus normaal; de verkenner vult die tijd op.` : '')
       + `<br>${lv?.n ? `In de praktijk: ${lv.n} trades, gemiddeld ${sign(lv.sum / lv.n)} (live pas na ${a.liveRules?.minTrades ?? 50} paper-trades over ${a.liveRules?.minDays ?? 21} dagen en de andere eisen hieronder)` : 'Nog geen trades in de praktijk'}`
       + `<br><span class="muted">Bot: ${botOn ? (bot ? (bot.allowed ? 'handelt met de AI-trader' : 'AI-trader staat aan, maar handelt nog niet in deze modus (live pas na bewijs)') : 'AI-trader staat aan, nog niet opgehaald') : 'AI-trader staat uit bij Instellingen → Strategie'}</span></div></div>`
       : '<p class="muted" style="margin:0 0 10px">Nog geen recept getraind. Na de eerste leerronde verschijnt hier het resultaat.</p>')
@@ -2144,6 +2145,7 @@ function renderAgent(t, nl) {
     ['Terugval portefeuille', (r) => r.score.drawdown != null ? `<span class="num ${r.score.drawdown > 25 ? 'down' : ''}">${sign(-r.score.drawdown)}</span>` : '–', 'r'],
     ['Winst / terugval', (r) => r.score.ratio != null ? `<span class="num">${nl(r.score.ratio, 2)}</span>` : '–', 'r'],
     ['Laatste ronde', (r) => r.last?.test ? `${sign(r.last.test.avgPct)} <span class="muted">(${r.last.test.trades}) · kopen en vasthouden ${sign(r.last.test.buyHoldPct)}</span>` : '–'],
+    ['Trades per dag (test)', (r) => r.last?.test?.trades && r.last?.testDays ? `<span class="num">${nl(r.last.test.trades / r.last.testDays, 1)}</span>` : '–', 'r'],
     ['Coins', (r) => `<span class="num">${r.last?.coins?.length ?? '–'}</span>`, 'r'],
     ['Status', (r) => `<span class="badge ${RC_STATUS[r.status] ?? 'soft'}">${esc(r.status)}</span>`],
   ], '', 'pulse') : '';
