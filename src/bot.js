@@ -1358,8 +1358,16 @@ export class Bot {
     const pf = positionFeatures(position.entryPrice, x.close, position.highest, held);
     const q = predictRaw(agent.exit, { ...x.f, ...pf });
     const nl = (v, d = 2) => `${v >= 0 ? '+' : ''}${v.toFixed(d).replace('.', ',')}`;
-    if (q >= 0) {
-      (this.agentHold ??= {})[pair] = `AI-trader houdt vast: verwacht nog ${nl(q)}% (nu ${nl(pf.posPnlPct)}%)`;
+    // Geduld uit het recept (zelf uitgezocht op de leerserver): minstens zoveel candles vasthouden,
+    // en pas verkopen als de verwachting van langer vasthouden onder -marge % zakt. De noodstop werkt altijd.
+    const minHold = Math.max(1, Number(agent.minHoldCandles) || 1);
+    const margin = Math.max(0, Number(agent.exitMarginPct) || 0);
+    if (held < minHold) {
+      (this.agentHold ??= {})[pair] = `AI-trader houdt vast: minstens ${minHold} candles (nu ${held}), verwacht nog ${nl(q)}%`;
+      return false;
+    }
+    if (q >= -margin) {
+      (this.agentHold ??= {})[pair] = `AI-trader houdt vast: verwacht nog ${nl(q)}% (nu ${nl(pf.posPnlPct)}%)${margin ? `, verkoopt pas onder ${nl(-margin)}%` : ''}`;
       return false;
     }
     const why = Bot.explainReg(agent.exit, { ...x.f, ...pf }, 3);

@@ -748,6 +748,33 @@ class Explorer(unittest.TestCase):
         self.assertEqual(len(s.agent_extra('15m')), 2, 'maar leert wel mee')
 
 
+class Patience(unittest.TestCase):
+    def test_recipe_keys_stay_the_same_and_patience_is_searched(self):
+        import agent_search as A
+        r = {'timeframe': '15m', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
+        self.assertEqual(A.key_of(r), '15m|1|4|200|5', 'oude recepten houden hun sleutel')
+        self.assertEqual(A.key_of({**r, 'minHold': 1, 'margin': 0.0}), '15m|1|4|200|5')
+        self.assertEqual(A.key_of({**r, 'minHold': 3, 'margin': 0.05}), '15m|1|4|200|5|h3|m0.05')
+        allowed = {A.key_of(x): x for x in A.all_recipes(['15m'])}
+        keys = [A.key_of(n) for n in A.neighbours(r, allowed)]
+        self.assertIn('15m|1|4|200|5|h3', keys)
+        self.assertIn('15m|1|4|200|5|m0.05', keys)
+
+    def test_patience_in_backtest_and_export(self):
+        import agent
+        pairs = ['A/EUR', 'B/EUR']
+        good = {p: market(9000, i, momentum=0.6) for i, p in enumerate(pairs)}
+        good['BTC/EUR'] = market(9000, 99, momentum=0.3)
+        fetch = lambda p, tf, d: good[p]
+        a1, r1 = agent.train_agent({'costPct': 0.2, 'days': 60, 'agent': {}}, {'timeframe': '15m', 'holdDays': 1}, fetch, pairs)
+        a6, r6 = agent.train_agent({'costPct': 0.2, 'days': 60, 'agent': {}}, {'timeframe': '15m', 'holdDays': 1, 'minHold': 6, 'margin': 0.05}, fetch, pairs)
+        self.assertEqual((a1['minHoldCandles'], a1['exitMarginPct']), (1, 0.0))
+        self.assertEqual((a6['minHoldCandles'], a6['exitMarginPct']), (6, 0.05))
+        self.assertGreater(r6['test']['avgHeld'], r1['test']['avgHeld'], 'met geduld houdt hij langer vast')
+        self.assertGreaterEqual(r6['test']['avgHeld'], 5)
+        self.assertIn('minstens 6 candles vasthouden', agent.recipe_text({**agent.RECIPE_DEFAULT, 'minHold': 6}))
+
+
 class HonestTesting(unittest.TestCase):
     def test_split_has_buffer_between_parts(self):
         import agent

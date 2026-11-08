@@ -18,8 +18,13 @@ SPACE = {
     'depth': [3, 4, 6],
     'leaf': [100, 200, 400],
     'look': [3, 5, 8],
+    # Geduld bij verkopen: minstens zoveel candles vasthouden, en pas verkopen als de verwachting van
+    # langer vasthouden onder -marge % zakt. 1 / 0 is het oude gedrag (zo snel mogelijk verkopen).
+    'minHold': [1, 3, 6],
+    'margin': [0.0, 0.05, 0.15],
 }
-ORDER = ['timeframe', 'holdDays', 'depth', 'leaf', 'look']
+ORDER = ['timeframe', 'holdDays', 'depth', 'leaf', 'look', 'minHold', 'margin']
+DEFAULTS = {'minHold': 1, 'margin': 0.0}
 KEEP_ROUNDS = 6
 RELIABLE_ROUNDS = 2       # zoveel rondes met eindtest voordat een recept "betrouwbaar" kan zijn
 RELIABLE_AVG = 0.1        # gewogen gemiddeld minstens zoveel % per trade in de eindtests
@@ -30,7 +35,12 @@ MIN_DD = 1.0              # ondergrens voor de terugval bij winst/terugval (ande
 
 
 def key_of(r):
-    return '|'.join(f'{r[k]:g}' if isinstance(r[k], float) else str(r[k]) for k in ORDER)
+    """Sleutel van een recept. Geduld-instellingen alleen als ze afwijken van het oude gedrag, zodat
+    recepten van vóór het geduld dezelfde sleutel (en resultaten) houden."""
+    fmt = lambda v: f'{v:g}' if isinstance(v, float) else str(v)
+    base = '|'.join(fmt(r[k]) for k in ORDER if k not in DEFAULTS)
+    extra = ''.join(f"|{'h' if k == 'minHold' else 'm'}{fmt(r.get(k, d))}" for k, d in DEFAULTS.items() if r.get(k, d) != d)
+    return base + extra
 
 
 def all_recipes(timeframes):
@@ -43,6 +53,7 @@ def all_recipes(timeframes):
 
 def neighbours(r, allowed):
     out = []
+    r = {**DEFAULTS, **r}
     for k in ORDER:
         vals = SPACE[k]
         if r.get(k) not in vals:

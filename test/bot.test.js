@@ -1011,6 +1011,8 @@ test('AI-trader: koopt en verkoopt zelf, uitkomst naar de trainer; live pas na b
   assert.match(bot.pairStatus['BTC/EUR'].reason, /AI-trader houdt vast/);
   // Nu verwacht hij niets meer van vasthouden: zelf verkopen
   bot.getAgent = () => mkAgent('getest', true);
+  // Minstens één candle vastgehouden (zoals in de backtest), daarna mag hij zelf verkopen.
+  bot.store.state.positions['BTC/EUR'].openedAt = new Date(Date.now() - 2 * 3600000).toISOString();
   ex.prices = [...ex.prices, 101];
   await bot.tick();
   assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
@@ -1272,4 +1274,32 @@ test('Directe bijsturing in de bot: slechte ervaringen verlagen de verwachting m
   assert.ok(bot.learnCorr.trades > 0);
   const adj = bot.agentTeam().learning;
   assert.ok(adj.coins.length || adj.bins.some((b) => b.adj < 0), 'bijsturing omlaag zichtbaar');
+});
+
+test('AI-trader: geduld uit het recept (minimaal vasthouden en verkoopmarge)', async () => {
+  const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
+  const { bot, ex } = setup({});
+  await bot.setRisk({ cooldownMinutes: 0 });
+  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0, agentExplore: 0 });
+  const base = { ...fx.agent, stage: 'getest', recipeKey: 'R', threshold: 0.2, entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 } };
+  bot.getAgent = () => base;
+  ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+  await bot.tick();
+  const pos = bot.store.state.positions['BTC/EUR'];
+  assert.ok(pos);
+  const tfMs = bot.ex.parseTimeframe(base.timeframe) * 1000;
+  pos.openedAt = new Date(Date.now() - 2 * tfMs).toISOString();
+  // Verkoopmodel zegt: verkopen. Met een minimale duur van 6 candles houdt hij toch vast.
+  bot.getAgent = () => ({ ...base, minHoldCandles: 6, exitMarginPct: 0, exit: { ...fx.agent.exit, init: fx.agent.exit.init - 50 } });
+  ex.prices = [...ex.prices, 100.1];
+  await bot.tick();
+  assert.ok(bot.store.state.positions['BTC/EUR'], 'binnen de minimale duur niet verkopen');
+  assert.match(bot.pairStatus['BTC/EUR'].reason, /minstens 6 candles/);
+  // Met een (extreem) grote verkoopmarge zakt de verwachting er nooit onder: vasthouden.
+  bot.getAgent = () => ({ ...base, minHoldCandles: 1, exitMarginPct: 100, exit: { ...fx.agent.exit, init: fx.agent.exit.init - 50 } });
+  ex.prices = [...ex.prices, 100.2];
+  delete bot.store.state.positions['BTC/EUR'].agent.lastTs;
+  await bot.tick();
+  assert.ok(bot.store.state.positions['BTC/EUR'], 'verwachting boven -marge: vasthouden');
+  assert.match(bot.pairStatus['BTC/EUR'].reason, /verkoopt pas onder/);
 });

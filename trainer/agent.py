@@ -139,13 +139,13 @@ def _step_for(markets, part_len, step, per_row, cap):
     return step if est <= cap else int(math.ceil(step * est / cap))
 
 
-def learn_exit(markets, H, rnd, say, iters=5, per_entry=6, step=3, fit_kw=None):
+def learn_exit(markets, H, rnd, say, iters=5, per_entry=6, step=3, fit_kw=None, pol=(1, 0.0)):
     """Stap 1: de waarde van vasthouden leren (fitted Q-iteration).
     Elk voorbeeld: positie geopend op candle i, nu h candles later.
     Per coin als numpy-blok opgebouwd en met een plafond, zodat het geheugen niet meegroeit met
     het aantal dagen en coins."""
     step = _step_for(markets, lambda mk: mk.split[0][1] - H - 2 - mk.split[0][0], step, min(per_entry, H - 1), MAX_EXIT_ROWS)
-    S, S2, R, last = [], [], [], []
+    S, S2, R, last, held = [], [], [], [], []
     for mk in markets:
         lo, hi = mk.split[0]
         ts, es, hs_, rm, rm2 = [], [], [], [], []
@@ -175,9 +175,10 @@ def learn_exit(markets, H, rnd, say, iters=5, per_entry=6, step=3, fit_kw=None):
         S2.append(np.hstack([mk.X[t + 1], _pos_block(e, p2, r2, h + 1)]))
         R.append((p2 / p - 1) * 100 * (p / e))  # verandering als % van de inleg
         last.append(h + 1 >= H - 1)
+        held.append(h + 1)
     if not S:
         return None, None
-    S, S2, R, last = np.vstack(S), np.vstack(S2), np.concatenate(R), np.concatenate(last)
+    S, S2, R, last, held = np.vstack(S), np.vstack(S2), np.concatenate(R), np.concatenate(last), np.concatenate(held)
     if len(S) < 2000:
         return None, None
     med = _medians(S)
@@ -185,14 +186,17 @@ def learn_exit(markets, H, rnd, say, iters=5, per_entry=6, step=3, fit_kw=None):
     q2 = np.zeros(len(S))
     model = None
     for k in range(iters):
-        y = R + np.where(last, 0.0, np.maximum(q2, 0.0))
+        # Waarde van de volgende stap volgens het geduld uit het recept: binnen de minimale duur moet
+        # hij vasthouden (q2); daarna houdt hij vast zolang q2 >= -marge, anders verkoopt hij (0).
+        nxt = np.where(held < pol[0], q2, np.where(q2 >= -pol[1], q2, 0.0))
+        y = R + np.where(last, 0.0, nxt)
         model = _fit(S, y, seed=7 + k, **(fit_kw or {}))
         q2 = model.predict(S2)
         say(k)
     return model, med
 
 
-def simulate_exits(mk, idx, exit_model, exit_med, H, safety_stop):
+def simulate_exits(mk, idx, exit_model, exit_med, H, safety_stop, pol=(1, 0.0)):
     """Speel aankopen op candles idx na met het geleerde verkoopgedrag. Geeft per aankoop
     (rendement % zonder kosten, aantal candles, reden)."""
     out = [None] * len(idx)
@@ -221,7 +225,9 @@ def simulate_exits(mk, idx, exit_model, exit_med, H, safety_stop):
         nxt = []
         for a, qv in zip(keep, q):
             t = idx[a] + h
-            if qv < 0 and h > 0:
+            # Geduld (uit het recept): minstens pol[0] candles vasthouden, en pas verkopen als de
+            # verwachting van langer vasthouden onder -pol[1] % zakt. De noodstop werkt altijd.
+            if h >= max(1, pol[0]) and qv < -pol[1]:
                 out[a] = ((mk.close[t] / entry[a] - 1) * 100, h, 'zelf verkocht')
             else:
                 nxt.append(a)
@@ -233,7 +239,7 @@ def simulate_exits(mk, idx, exit_model, exit_med, H, safety_stop):
     return out
 
 
-def learn_entry(markets, exit_model, exit_med, H, cost, safety_stop, step=2, extra=None, fit_kw=None):
+def learn_entry(markets, exit_model, exit_med, H, cost, safety_stop, step=2, extra=None, fit_kw=None, pol=(1, 0.0)):
     """Stap 2: de waarde van "nu kopen" leren: nagespeeld met het eigen verkoopgedrag, na kosten."""
     X, y, w = [], [], []
     step = _step_for(markets, lambda mk: mk.split[0][1] - H - 2 - mk.split[0][0], step, 1, MAX_ENTRY_ROWS)
@@ -242,7 +248,7 @@ def learn_entry(markets, exit_model, exit_med, H, cost, safety_stop, step=2, ext
         idx = [i for i in range(lo, hi - H - 2, step) if mk.valid[i]]
         if not idx:
             continue
-        res = simulate_exits(mk, idx, exit_model, exit_med, H, safety_stop)
+        res = simulate_exits(mk, idx, exit_model, exit_med, H, safety_stop, pol)
         for i, r in zip(idx, res):
             X.append(mk.X[i])
             y.append(r[0] - getattr(mk, 'cost', cost))
@@ -258,7 +264,7 @@ def learn_entry(markets, exit_model, exit_med, H, cost, safety_stop, step=2, ext
     return _fit(_impute(X, med), np.array(y), np.array(w), **(fit_kw or {})), med
 
 
-def _part_outcomes(mk, part, entry_model, entry_med, exit_model, exit_med, H, safety_stop):
+def _part_outcomes(mk, part, entry_model, entry_med, exit_model, exit_med, H, safety_stop, pol=(1, 0.0)):
     """Voor één coin en één periode: verwachte waarde per candle en de uitkomst als hij daar
     zou kopen (in één keer uitgerekend, zodat drempels snel te vergelijken zijn)."""
     lo, hi = mk.split[part]
@@ -267,7 +273,7 @@ def _part_outcomes(mk, part, entry_model, entry_med, exit_model, exit_med, H, sa
         return {}, lo, hi
     q = entry_model.predict(_impute(mk.X[cand], entry_med))
     idx = [i for i, v in zip(cand, q) if v > 0]
-    res = simulate_exits(mk, idx, exit_model, exit_med, H, safety_stop) if idx else []
+    res = simulate_exits(mk, idx, exit_model, exit_med, H, safety_stop, pol) if idx else []
     qmap = dict(zip(cand, q))
     return {i: (qmap[i], r) for i, r in zip(idx, res)}, lo, hi
 
@@ -382,7 +388,7 @@ def _by_regime(trades):
     return out
 
 
-def backtest(markets, part, entry_model, entry_med, exit_model, exit_med, H, cost, safety_stop, thresholds, cache=None, bench=None, regimes=None, slots=2):
+def backtest(markets, part, entry_model, entry_med, exit_model, exit_med, H, cost, safety_stop, thresholds, cache=None, bench=None, regimes=None, slots=2, pol=(1, 0.0)):
     """Handelen zoals in het echt op een deel van de tijd (1 = validatie, 2 = eindtest):
     één positie per coin, kopen als de verwachte waarde > drempel, verkopen met het geleerde
     gedrag. Geeft per drempel het resultaat, ook vergeleken met de markt (bench: de coins waarmee
@@ -397,7 +403,7 @@ def backtest(markets, part, entry_model, entry_med, exit_model, exit_med, H, cos
         for mk in markets:
             key = (mk.pair, part)
             if key not in cache:
-                cache[key] = _part_outcomes(mk, part, entry_model, entry_med, exit_model, exit_med, H, safety_stop)
+                cache[key] = _part_outcomes(mk, part, entry_model, entry_med, exit_model, exit_med, H, safety_stop, pol)
             oc, lo, hi = cache[key]
             if hi - lo < 10:
                 continue
@@ -440,7 +446,7 @@ def backtest(markets, part, entry_model, entry_med, exit_model, exit_med, H, cos
     return out
 
 
-RECIPE_DEFAULT = {'timeframe': '15m', 'holdDays': 2, 'depth': 4, 'leaf': 200, 'look': 5}
+RECIPE_DEFAULT = {'timeframe': '15m', 'holdDays': 2, 'depth': 4, 'leaf': 200, 'look': 5, 'minHold': 1, 'margin': 0.0}
 MIN_TEST_AVG = 0.1     # gemiddeld minstens zoveel % per trade in de eindtest
 MIN_TEST_TRADES = 30   # en minstens zoveel trades, anders kan het toeval zijn
 
@@ -449,8 +455,13 @@ def recipe_text(r):
     """Een recept in gewone taal."""
     import thoughts as T
     depth = {3: 'eenvoudig', 4: 'gemiddeld', 6: 'uitgebreid'}.get(r['depth'], str(r['depth']))
-    return (f"{r['timeframe']}-candles, hooguit {T.hold(int(r['holdDays'] * 1440))} vasthouden, {depth} model, "
-            f"{r['look']} stappen vooruitkijken")
+    txt = (f"{r['timeframe']}-candles, hooguit {T.hold(int(r['holdDays'] * 1440))} vasthouden, {depth} model, "
+           f"{r['look']} stappen vooruitkijken")
+    if r.get('minHold', 1) != 1:
+        txt += f", minstens {r['minHold']} candles vasthouden"
+    if r.get('margin', 0) != 0:
+        txt += f", verkopen pas onder -{r['margin']:g}%".replace('.', ',')
+    return txt
 
 
 def train_agent(cfg, recipe, fetch, pairs, log=print, progress=None, extra=None, seed=1):
@@ -467,6 +478,8 @@ def train_agent(cfg, recipe, fetch, pairs, log=print, progress=None, extra=None,
     cost = float(cfg['costPct'])
     safety = float((cfg.get('agent') or {}).get('safetyStopPct') or 10)
     slots = int((cfg.get('agent') or {}).get('maxOpen') or 2)
+    # Geduld bij verkopen: minimaal vasthouden (candles) en verkoopmarge (%), zoekt hij zelf uit.
+    pol = (int(recipe.get('minHold', 1)), float(recipe.get('margin', 0.0)))
     H = int(min(400, max(12, recipe['holdDays'] * 1440 // TF_MIN.get(tf, 15))))
     fit_kw = {'depth': recipe['depth'], 'leaf': recipe['leaf']}
     step('agent', 0, 5, f'AI-trader {tf}: koersen klaarzetten')
@@ -493,7 +506,7 @@ def train_agent(cfg, recipe, fetch, pairs, log=print, progress=None, extra=None,
         return None, {**base, 'reason': 'Te weinig koersen voor dit recept'}
     step('agent', 1, 5, f'AI-trader {tf}: leren wanneer verkopen')
     exit_model, exit_med = learn_exit(markets, H, rnd, lambda k: step('agent', 1, 5, f"AI-trader {tf}: verkopen leren, stap {k + 1}/{recipe['look']}"),
-                                      iters=recipe['look'], fit_kw=fit_kw)
+                                      iters=recipe['look'], fit_kw=fit_kw, pol=pol)
     if exit_model is None:
         return None, {**base, 'reason': 'Te weinig voorbeelden om verkopen te leren'}
     step('agent', 2, 5, f'AI-trader {tf}: leren wanneer kopen')
@@ -501,7 +514,7 @@ def train_agent(cfg, recipe, fetch, pairs, log=print, progress=None, extra=None,
     # (die altijd de nieuwste periode is) in het leren.
     val_start = min(int(mk.c[mk.split[1][0]][0]) for mk in markets)
     extra = [(row, ret) for row, ret, *ts in (extra or []) if ts and ts[0] and ts[0] < val_start]
-    entry_model, entry_med = learn_entry(markets, exit_model, exit_med, H, cost, safety, extra=extra, fit_kw=fit_kw)
+    entry_model, entry_med = learn_entry(markets, exit_model, exit_med, H, cost, safety, extra=extra, fit_kw=fit_kw, pol=pol)
     if entry_model is None:
         return None, {**base, 'reason': 'Te weinig voorbeelden om kopen te leren'}
     step('agent', 3, 5, f'AI-trader {tf}: koopdrempel en coins kiezen')
@@ -511,7 +524,7 @@ def train_agent(cfg, recipe, fetch, pairs, log=print, progress=None, extra=None,
     regimes = market_agent.build(fetch, [m.pair for m in markets], int(cfg['days']), log=log)
     best = None
     vals = backtest(markets, 1, entry_model, entry_med, exit_model, exit_med, H, cost, safety, (0.0, 0.1, 0.2, 0.3, 0.5, 0.8, 1.2),
-                    bench=markets, regimes=regimes, slots=slots)
+                    bench=markets, regimes=regimes, slots=slots, pol=pol)
     for thr, v in vals.items():
         if v['trades'] >= max(10, len(markets) * 2) and (best is None or v['totalPct'] > best[1]['totalPct']):
             best = (thr, v)
@@ -525,7 +538,7 @@ def train_agent(cfg, recipe, fetch, pairs, log=print, progress=None, extra=None,
         coins = [m.pair for m in markets]
     chosen = [m for m in markets if m.pair in coins]
     step('agent', 4, 5, f'AI-trader {tf}: eindtest')
-    test = backtest(chosen, 2, entry_model, entry_med, exit_model, exit_med, H, cost, safety, (thr,), bench=markets, regimes=regimes, slots=slots)[thr]
+    test = backtest(chosen, 2, entry_model, entry_med, exit_model, exit_med, H, cost, safety, (thr,), bench=markets, regimes=regimes, slots=slots, pol=pol)[thr]
     days_test = sum((mk.split[2][1] - mk.split[2][0]) for mk in chosen) / len(chosen) * TF_MIN.get(tf, 15) / 1440
     # Alleen goed als hij ook beter deed dan meedobberen met de markt tijdens zijn trades.
     ok = bool(val['totalPct'] > 0 and test['trades'] >= MIN_TEST_TRADES and (test['avgPct'] or 0) >= MIN_TEST_AVG
@@ -541,6 +554,7 @@ def train_agent(cfg, recipe, fetch, pairs, log=print, progress=None, extra=None,
         pass
     agent = {
         'version': 2, 'kind': 'agent', 'timeframe': tf, 'threshold': thr, 'maxHoldCandles': H, 'safetyStopPct': safety,
+        'minHoldCandles': pol[0], 'exitMarginPct': pol[1],
         'costPct': round(sum(m.cost for m in chosen) / len(chosen), 4), 'costs': {m.pair: round(m.cost, 4) for m in chosen}, 'coins': coins, 'recipe': recipe, 'entry': export_reg(entry_model, FEATURES, entry_med),
         'exit': export_reg(exit_model, FEATURES + POS_FEATURES, exit_med),
         'meta': {'trainedAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'report': report},
