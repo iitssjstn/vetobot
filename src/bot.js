@@ -8,7 +8,7 @@ import { fetchClosedCandles, fetchPrice, hasTradingKeys } from './exchange.js';
 import { checkEntry } from './risk.js';
 import { Bandit } from './bandit.js';
 import { analyzeBook, bookProblem } from './orderbook.js';
-import { MARKET_TF, RISK, LEARN, onlineCorrection, correctedExpectation, exploreWanted, exploreScore, agentParts, agentForRecipe, allAgentCoins, chooseForRegime, assessRisk, riskStake, slippagePct, execSummary, lossStreak } from './agents.js';
+import { MARKET_TF, RISK, LEARN, rewardSummary, onlineCorrection, correctedExpectation, exploreWanted, exploreScore, agentParts, agentForRecipe, allAgentCoins, chooseForRegime, assessRisk, riskStake, slippagePct, execSummary, lossStreak } from './agents.js';
 import path from 'node:path';
 
 // Bedragen en koersen in Nederlandse notatie voor meldingen (€ 81,31 / € 0,3455 / −€ 0,36).
@@ -1828,6 +1828,7 @@ export class Bot {
       choice: this.agentChoice ?? {},
       risk: { lossStreak: streak, rules: RISK },
       execution: execSummary(this.store.state.execLog ?? []),
+      rewards: rewardSummary(trades),
       learning: (() => {
         const c = this.learnCorr ?? onlineCorrection(trades);
         const coins = Object.entries(c.coins).filter(([, x]) => Math.abs(x.adj) >= 0.01).sort((a, b) => Math.abs(b[1].adj) - Math.abs(a[1].adj)).slice(0, 5)

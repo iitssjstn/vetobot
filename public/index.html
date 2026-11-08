@@ -538,6 +538,7 @@
       <div class="row-actions trtabs" role="tablist" style="margin:0 0 14px">
         <button class="btn primary" type="button" data-trtab="overzicht">Overzicht</button>
         <button class="btn" type="button" data-trtab="recepten">Recepten</button>
+        <button class="btn" type="button" data-trtab="beloningen">Beloningen</button>
         <button class="btn" type="button" data-trtab="live">Live &amp; test</button>
         <button class="btn" type="button" data-trtab="overig">Overig</button>
       </div>
@@ -573,6 +574,12 @@
           </div>
           <div class="row-actions"><button class="btn primary" type="submit">Opslaan</button><span class="msg" id="ag-msg"></span></div>
         </form>
+      </div>
+      </div>
+      <div data-trpane="beloningen" hidden>
+      <div class="panel" data-agentpanel hidden>
+        <div class="panel-h"><h2><svg class="i"><use href="#i-pulse"/></svg>Wordt hij beter?</h2><span class="hint" id="rw-hint"></span></div>
+        <div class="panel-b" id="rw-body"></div>
       </div>
       </div>
       <div data-trpane="live" hidden>
@@ -2013,6 +2020,73 @@ document.addEventListener('click', async (e) => {
     msg(err.message, 'err');
   }
 });
+// ---------- Beloningen: wordt de AI-trader beter? ----------
+// Elke trade is een beloning (▲, winst na kosten) of een straf (▼, verlies). Positie boven/onder de
+// nullijn en de vorm dragen de betekenis, de kleur helpt (groen/rood is voor kleurenblinden lastig).
+let rwWho = 'alle';
+let rwLast = null;
+function rewardsRender(rw, trend, sign, nl) {
+  rwLast = [rw, trend, sign, nl];
+  const el = $('rw-body');
+  if (!el) return;
+  if (!rw?.points?.length) { el.innerHTML = '<p class="muted" style="margin:0">Nog geen afgesloten trades van de AI-trader of de verkenner.</p>'; $('rw-hint').textContent = ''; return; }
+  const pts = rw.points.filter((p) => rwWho === 'alle' || p.who === rwWho);
+  $('rw-hint').textContent = `${rw.points.length} trades`;
+  const tabs = [['alle', 'Alles'], ['ai', 'AI-trader'], ['verkenner', 'Verkenner']].map(([k, l]) =>
+    `<button class="btn sm${rwWho === k ? ' primary' : ''}" type="button" data-rw="${k}">${l}</button>`).join(' ');
+  const tr = rw.trend;
+  const verdict = { beter: ['up', 'hij wordt beter'], slechter: ['down', 'hij wordt slechter'], gelijk: ['', 'ongeveer gelijk'], 'te weinig': ['', 'nog te weinig trades om te zeggen'] }[tr.verdict];
+  const concl = `<p style="margin:0 0 10px"><b>Conclusie: <span class="${verdict[0]}">${verdict[1]}</span>.</b> Laatste 14 dagen: ${tr.recent.n} trades, gemiddeld ${tr.recent.avgPct == null ? '–' : sign(tr.recent.avgPct)}`
+    + ` · de 14 dagen daarvoor: ${tr.before.n} trades, gemiddeld ${tr.before.avgPct == null ? '–' : sign(tr.before.avgPct)}.`
+    + (tr.recent.expectError != null && tr.before.expectError != null ? ` Zijn verwachting zit er nu gemiddeld ${nl(tr.recent.expectError, 2)}%-punt naast (was ${nl(tr.before.expectError, 2)}): ${tr.recent.expectError < tr.before.expectError ? 'hij voorspelt beter' : 'nog niet beter'}.` : '') + '</p>';
+  const legend = `<div class="muted" style="font-size:12.5px;margin:6px 0 4px;display:flex;gap:14px;flex-wrap:wrap">
+    <span><span class="up">▲</span> beloning (winst)</span><span><span class="down">▼</span> straf (verlies)</span>
+    <span><span style="color:var(--accent)">━</span> gemiddelde van de laatste 20</span>${rwWho === 'alle' ? '<span>△ ▽ open = verkenner</span>' : ''}</div>`;
+  const weeks = table(rw.weeks, [
+    ['Week', (w) => esc(w.week)], ['Trades', (w) => `<span class="num">${w.trades}</span>`, 'r'],
+    ['Beloningen', (w) => `<span class="num up">${w.rewards}</span>`, 'r'], ['Straffen', (w) => `<span class="num down">${w.penalties}</span>`, 'r'],
+    ['Gemiddeld', (w) => `<span class="num ${w.avgPct > 0 ? 'up' : 'down'}">${sign(w.avgPct)}</span>`, 'r'],
+    ['AI-trader', (w) => w.aiAvgPct == null ? '<span class="muted">–</span>' : `<span class="num">${sign(w.aiAvgPct)}</span>`, 'r'],
+    ['t.o.v. vorige week', (w) => w.vsPrev == null ? '–' : `<span class="num ${w.vsPrev > 0 ? 'up' : 'down'}">${w.vsPrev > 0 ? 'beter' : 'slechter'} (${sign(w.vsPrev)})</span>`, 'r'],
+    ['Verwachting ernaast', (w) => w.expectError == null ? '–' : `<span class="num">${nl(w.expectError, 2)}</span>`, 'r'],
+  ]);
+  const rt = (trend ?? []).length ? table(trend, [
+    ['Dag', (d) => esc(d.day)], ['Leerrondes', (d) => `<span class="num">${d.rounds}</span>`, 'r'],
+    ['Beste recept (validatie)', (d) => d.bestAvg == null ? '–' : `<span class="num ${d.bestAvg > 0 ? 'up' : 'down'}">${sign(d.bestAvg)}</span> per trade`, 'r'],
+    ['Beste voordeel boven de markt', (d) => d.bestEdge == null ? '–' : `<span class="num ${d.bestEdge > 0 ? 'up' : 'down'}">${sign(d.bestEdge)}</span>`, 'r'],
+  ]) : '<p class="muted" style="margin:0">Nog geen leerrondes.</p>';
+  el.innerHTML = concl + `<div class="row-actions" style="margin:0 0 4px">${tabs}</div>` + legend + rewardChart(pts, sign)
+    + `<div class="sub-h" style="margin:16px 0 6px">${icon('list')}Per week</div><div class="scroll">${weeks}</div>`
+    + `<div class="sub-h" style="margin:16px 0 6px">${icon('target')}Vindt de leerserver betere recepten?</div><p class="muted" style="margin:0 0 8px;font-size:13.5px">Per dag het beste resultaat op de validatie van de recepten die hij die dag trainde. Gaat dit omhoog, dan vindt hij betere manieren van handelen.</p><div class="scroll">${rt}</div>`;
+}
+document.addEventListener('click', (e) => { const b = e.target.closest('[data-rw]'); if (b) { rwWho = b.dataset.rw; if (rwLast) rewardsRender(...rwLast); } });
+function rewardChart(pts, sign) {
+  if (!pts.length) return '<p class="muted">Geen trades in deze selectie.</p>';
+  const W = 1000, H = 280, L = 52, R = 14, T = 14, B = 30;
+  const t0 = pts[0].at, t1 = pts.at(-1).at, span = Math.max(1, t1 - t0);
+  const abs = pts.map((p) => Math.abs(p.pct)).sort((a, b) => a - b);
+  const lim = Math.max(0.5, Math.ceil((abs[Math.floor(abs.length * 0.98)] ?? 0.5) * 2) / 2);
+  const x = (t) => L + ((t - t0) / span) * (W - L - R);
+  const y = (v) => T + ((lim - Math.max(-lim, Math.min(lim, v))) / (2 * lim)) * (H - T - B);
+  const fmtD = (t) => new Date(t).toLocaleDateString('nl-NL', { day: 'numeric', month: 'short' });
+  const grid = [lim, lim / 2, 0, -lim / 2, -lim].map((v) => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)" stroke-width="${v === 0 ? 1.5 : 1}"${v === 0 ? '' : ' stroke-dasharray="3 4"'}/>`
+    + `<text x="${L - 8}" y="${y(v) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${v > 0 ? '+' : ''}${String(v).replace('.', ',')}%</text>`).join('');
+  const xl = [t0, t0 + span / 2, t1].map((t, i) => `<text x="${x(t)}" y="${H - 8}" text-anchor="${['start', 'middle', 'end'][i]}" font-size="11" fill="var(--muted)">${fmtD(t)}</text>`).join('');
+  const marks = pts.map((p) => {
+    const cx = x(p.at), cy = y(p.pct), up = p.pct > 0, s = 6;
+    const d = up ? `M${cx},${cy - s} L${cx + s},${cy + s * 0.7} L${cx - s},${cy + s * 0.7}Z` : `M${cx},${cy + s} L${cx + s},${cy - s * 0.7} L${cx - s},${cy - s * 0.7}Z`;
+    const col = up ? 'var(--up)' : 'var(--down)';
+    const hollow = rwWho === 'alle' && p.who === 'verkenner';
+    const tip = `${new Date(p.at).toLocaleString('nl-NL', { dateStyle: 'short', timeStyle: 'short' })} · ${p.pair} · ${p.who === 'ai' ? 'AI-trader' : 'verkenner'}\n${up ? 'Beloning' : 'Straf'}: ${sign(p.pct)}${p.exp != null ? ` (verwacht ${sign(p.exp)})` : ''}`;
+    return `<g><title>${esc(tip)}</title><circle cx="${cx}" cy="${cy}" r="10" fill="transparent"/>`
+      + `<path d="${d}" fill="${hollow ? 'none' : col}" stroke="${hollow ? col : 'var(--panel)'}" stroke-width="${hollow ? 1.6 : 1.5}"/></g>`;
+  }).join('');
+  const n = 20;
+  const avg = pts.map((p, i) => { const w = pts.slice(Math.max(0, i - n + 1), i + 1); return [p.at, w.reduce((a, q) => a + q.pct, 0) / w.length]; });
+  const line = `<polyline points="${avg.map(([t, v]) => `${x(t).toFixed(1)},${y(v).toFixed(1)}`).join(' ')}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/>`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Beloningen en straffen per trade door de tijd, met het gemiddelde van de laatste 20" style="display:block;max-height:340px">${grid}${xl}${marks}${line}</svg>`;
+}
+
 // Trainer in tabbladen; de laatst gekozen tab onthouden (per browser).
 function showTrTab(name) {
   document.querySelectorAll('[data-trpane]').forEach((el) => { el.hidden = el.dataset.trpane !== name; });
@@ -2050,6 +2124,7 @@ function renderAgent(t, nl) {
       ['Coin', (x) => esc(x.pair)], ['Gemeten', (x) => `<span class="num">${nl(x.measured, 2)}%</span> <span class="muted">(mediaan ${nl(x.median, 2)}%, ${x.n} trades)</span>`],
       ['Gebruikt in het leren', (x) => `<span class="num ${x.used > cs.configured * 1.5 ? 'down' : ''}">${nl(x.used, 2)}%</span>`, 'r']]) : '<p class="muted" style="margin:0">Nog geen gemeten trades.</p>') : '';
   $('ag-live').innerHTML = agentLiveHtml(a, bot, sign, nl);
+  rewardsRender(bot?.team?.rewards, a.roundTrend, sign, nl);
   $('ag-table').innerHTML = rows.length ? table(rows, [
     ['Recept', (r) => `${esc(r.text)}${pub?.key === r.key ? ' <span class="badge ok">bot handelt hiermee</span>' : ''}`],
     ['Rondes', (r) => `<span class="num">${r.score.tested}</span>`, 'r'],

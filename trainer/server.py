@@ -949,6 +949,25 @@ def live_check(key, entry, assumed_cost=None):
                            slots=int(config()['agent'].get('maxOpen') or 2), assumed_cost=assumed_cost)
 
 
+def round_trend(recipes, days=21):
+    """Per dag (nieuwste eerst): aantal leerrondes, de beste gemiddelde winst per trade op de
+    validatie, en het beste voordeel boven de markt."""
+    by = {}
+    for e in recipes.values():
+        for r in e.get('rounds', []):
+            v = r.get('val') or {}
+            if not v.get('trades') or not r.get('ts'):
+                continue
+            d = datetime.fromtimestamp(r['ts']).strftime('%Y-%m-%d')
+            x = by.setdefault(d, {'day': d, 'rounds': 0, 'bestAvg': None, 'bestEdge': None})
+            x['rounds'] += 1
+            if v.get('avgPct') is not None and (x['bestAvg'] is None or v['avgPct'] > x['bestAvg']):
+                x['bestAvg'] = v['avgPct']
+            if v.get('edgePct') is not None and (x['bestEdge'] is None or v['edgePct'] > x['bestEdge']):
+                x['bestEdge'] = v['edgePct']
+    return sorted(by.values(), key=lambda x: x['day'], reverse=True)[:days]
+
+
 def agent_stage(entry, lc):
     """Hoe ver een recept is: oefenen (paper, als dat mag), getest (paper), of bewezen: alle eisen
     voor live gehaald (live handelt hij pas als de eigenaar dat daarna zelf aanzet)."""
@@ -1115,6 +1134,8 @@ def agent_info():
             'paperTest': {'since': data.get('since'), 'weeks': livecheck.weeks(paper_rows(), data.get('since'))},
             # Klopt zijn verwachting? Per groep verwachtingen wat er echt van terechtkwam.
             'calibration': livecheck.calibration(read_json('agent_trades.json', [])),
+            # Vindt de leerserver steeds betere recepten? Per dag de beste score op de validatie.
+            'roundTrend': round_trend(data.get('recipes', {})),
             'costs': (lambda c: {'perCoin': c[1], 'default': round(c[2], 4), 'configured': cfg['costPct']})(cost_table(cfg))}
 
 

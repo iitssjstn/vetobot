@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { exploreScore, EXPLORE, onlineCorrection, correctedExpectation, LEARN, agentForRecipe, allAgentCoins, chooseForRegime, assessRisk, riskStake, slippagePct, execSummary, lossStreak, RISK } from '../src/agents.js';
+import { rewardSummary, exploreScore, EXPLORE, onlineCorrection, correctedExpectation, LEARN, agentForRecipe, allAgentCoins, chooseForRegime, assessRisk, riskStake, slippagePct, execSummary, lossStreak, RISK } from '../src/agents.js';
 
 const main = { recipeKey: 'A', coins: ['BTC/EUR'], regimes: {
   stijgend: { key: 'B', why: 'best', edge: 0.3, trades: 40, agent: { recipeKey: 'B', coins: ['ETH/EUR'] } },
@@ -93,4 +93,22 @@ test('Slimme verkenner: kiest waar hij het meest leert, slaat bewezen slecht ove
   assert.equal(s.p, 0);
   assert.match(s.skip, /steeds slechter uit dan verwacht/);
   assert.equal(exploreScore({ q: 0.15, thr: 0.2, pair: 'D', regime: 'stijgend', corr: bad }).skip, null, 'dicht bij de drempel blijft hij kijken');
+});
+
+test('Beloningen door de tijd: punten, weken en conclusie', () => {
+  const now = Date.parse('2026-11-08T12:00:00Z');
+  const day = 86400000;
+  const t = (daysAgo, pct, explore = false) => ({ pair: 'BTC/EUR', pnlPct: pct, closedAt: new Date(now - daysAgo * day).toISOString(), agent: { expectedPct: 0.1, ...(explore ? { explore: true } : {}) } });
+  const old = [...Array(12)].map((_, i) => t(15 + i, -0.3));
+  const fresh = [...Array(12)].map((_, i) => t(1 + i, i % 2 ? 0.4 : 0.2, i % 3 === 0));
+  const r = rewardSummary([...fresh, ...old, { pair: 'X', pnlPct: 5, closedAt: new Date(now).toISOString() }], now);
+  assert.equal(r.points.length, 24, 'trades zonder AI-trader tellen niet');
+  assert.ok(r.points[0].at < r.points.at(-1).at, 'oud naar nieuw');
+  assert.equal(r.trend.verdict, 'beter');
+  assert.equal(r.trend.recent.n, 12);
+  assert.ok(Math.abs(r.trend.before.avgPct + 0.3) < 1e-9);
+  assert.equal(r.weeks.reduce((a, w) => a + w.trades, 0), 24);
+  assert.equal(r.weeks.reduce((a, w) => a + w.rewards + w.penalties, 0), 24);
+  assert.equal(rewardSummary(fresh, now).trend.verdict, 'te weinig');
+  assert.equal(r.points.filter((p) => p.who === 'verkenner').length, 4);
 });

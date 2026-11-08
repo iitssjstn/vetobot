@@ -195,3 +195,53 @@ export function correctedExpectation(q, pair, corr) {
   const adj = (corr.bins[binOf(q, corr.edges)]?.adj ?? 0) + (corr.coins[pair]?.adj ?? 0);
   return { q: q + adj, adj };
 }
+
+// ---------- Beloningen door de tijd: wordt de AI-trader beter? ----------
+// Elke afgesloten trade is een beloning (winst na kosten) of een straf (verlies). Geeft de punten
+// voor de grafiek, een overzicht per week en een conclusie in gewone taal.
+const isoWeek = (ms) => {
+  const d = new Date(ms);
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const day = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - day);
+  const y0 = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  return `${t.getUTCFullYear()}-W${String(Math.ceil(((t - y0) / 86400000 + 1) / 7)).padStart(2, '0')}`;
+};
+
+export function rewardSummary(trades, now = Date.now(), maxPoints = 600) {
+  const rows = trades.filter((t) => t.agent && Number.isFinite(t.pnlPct) && t.closedAt)
+    .map((t) => ({ at: Date.parse(t.closedAt), pct: t.pnlPct, who: t.agent.explore ? 'verkenner' : 'ai', pair: t.pair,
+      exp: Number.isFinite(t.agent.expectedPct) ? t.agent.expectedPct : null }))
+    .filter((r) => Number.isFinite(r.at)).sort((a, b) => a.at - b.at);
+  const weeks = {};
+  for (const r of rows) {
+    const w = (weeks[isoWeek(r.at)] ??= { week: isoWeek(r.at), n: 0, wins: 0, sum: 0, ai: 0, aiSum: 0, err: 0, nErr: 0 });
+    w.n++;
+    w.wins += r.pct > 0;
+    w.sum += r.pct;
+    if (r.who === 'ai') { w.ai++; w.aiSum += r.pct; }
+    if (r.exp != null) { w.err += Math.abs(r.pct - r.exp); w.nErr++; }
+  }
+  const wk = Object.values(weeks).sort((a, b) => (a.week < b.week ? -1 : 1)).map((w, i, all) => ({
+    week: w.week, trades: w.n, rewards: w.wins, penalties: w.n - w.wins, avgPct: w.sum / w.n,
+    aiAvgPct: w.ai ? w.aiSum / w.ai : null, expectError: w.nErr ? w.err / w.nErr : null,
+    vsPrev: i ? w.sum / w.n - all[i - 1].sum / all[i - 1].n : null,
+  }));
+  // Conclusie: laatste 14 dagen tegenover de 14 dagen daarvoor (gewone trades en verkenner samen).
+  const day = 86400000;
+  const avg = (xs) => (xs.length ? xs.reduce((a, r) => a + r.pct, 0) / xs.length : null);
+  const recent = rows.filter((r) => r.at > now - 14 * day);
+  const before = rows.filter((r) => r.at <= now - 14 * day && r.at > now - 28 * day);
+  const a1 = avg(recent);
+  const a0 = avg(before);
+  const errOf = (xs) => { const e = xs.filter((r) => r.exp != null); return e.length ? e.reduce((a, r) => a + Math.abs(r.pct - r.exp), 0) / e.length : null; };
+  const e1 = errOf(recent);
+  const e0 = errOf(before);
+  let verdict = 'te weinig';
+  if (recent.length >= 10 && before.length >= 10) verdict = a1 - a0 > 0.02 ? 'beter' : a0 - a1 > 0.02 ? 'slechter' : 'gelijk';
+  return {
+    points: rows.slice(-maxPoints).map((r) => ({ at: r.at, pct: +r.pct.toFixed(3), who: r.who, pair: r.pair, exp: r.exp })),
+    weeks: wk.reverse(),
+    trend: { recent: { n: recent.length, avgPct: a1, expectError: e1 }, before: { n: before.length, avgPct: a0, expectError: e0 }, verdict },
+  };
+}

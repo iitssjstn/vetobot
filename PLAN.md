@@ -4,7 +4,7 @@ Doel van de eigenaar: een AI-trader die hij kan vertrouwen voordat hij live gaat
 
 Volgorde: stap 1, 2 en 3 veranderen hoe resultaten gemeten worden. Oude rondes zijn daarna niet meer vergelijkbaar. Na stap 3 beginnen de receptstatistieken daarom opnieuw (oude rondes bewaren als archief, niet meer meetellen).
 
-Status per stap: ☐ open · ◐ bezig · ☑ klaar. Stap 1 t/m 4 en 6 zijn gebouwd (7 november 2026); stap 7 staat open. Bij stap 5 is het weekoverzicht gebouwd; de test zelf (minstens 6 weken paper) moet nog lopen.
+Status per stap: ☐ open · ◐ bezig · ☑ klaar. Stap 1 t/m 4 en 6 zijn gebouwd (7 november 2026); stap 7 is gebouwd op 8 november 2026 (pagina Trainer → Beloningen). Bij stap 5 is het weekoverzicht gebouwd; de test zelf (minstens 6 weken paper) moet nog lopen.
 
 ---
 
@@ -107,7 +107,7 @@ Gevraagd door de eigenaar: "is het mogelijk om dit ook voor de AI trader te doen
 
 **Klaar als.** Een test bewijst dat een aankoop, een verkoop en een tegengehouden aankoop elk een volledig verslag geven, met alle onderdelen in de juiste volgorde. Het verslag is te zien op AI-chat.
 
-## ☐ 7. Beloningen zichtbaar maken: wordt de AI-trader beter?
+## ☑ 7. Beloningen zichtbaar maken: wordt de AI-trader beter?
 
 Gevraagd door de eigenaar: "Is het mogelijk om te zien wanneer de AI trader een beloning krijgt en wanneer niet, om beetje een beeld te krijgen of hij steeds beter gaat lopen".
 
