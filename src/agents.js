@@ -108,12 +108,43 @@ export function execSummary(log = []) {
 }
 
 // ---------- Verkenner (alleen paper) ----------
-// Koopt elke keer dat de AI-trader zelf níet koopt (onder zijn drempel, een coin die hij niet koos,
-// een marktfase waarin de Strategy Agent niet handelt), zodat hij leert hoe kansen aflopen die hij
-// anders afwijst. Op verzoek van de eigenaar zonder limieten: alleen het paper-saldo en één positie
-// per coin remmen hem. Nooit live.
+// Koopt kansen die de AI-trader zelf laat liggen (onder zijn drempel, een coin die hij niet koos,
+// een marktfase waarin de Strategy Agent niet handelt, of tegengehouden), zodat hij leert hoe die
+// aflopen. Geen limiet op het aantal; hij kiest wel slim WAT hij verkent: waar hij het meest kan
+// leren. Nooit live.
 export function exploreWanted({ mode, enabled }) {
   return mode === 'paper' && Boolean(enabled);
+}
+
+export const EXPLORE = {
+  nearScale: 0.3,     // hoe snel de kans afneemt met de afstand tot de koopdrempel (procentpunt)
+  knownTrades: 10,    // bij zoveel trades in een vakje weet hij er al redelijk veel van
+  provenTrades: 30,   // vanaf zoveel trades mag hij iets "bewezen slecht" noemen
+  provenBad: -0.3,    // ... als het daar gemiddeld zoveel procentpunt slechter uitkwam dan verwacht
+  farBelow: 0.3,      // ... en de kans zoveel onder de drempel ligt
+  floor: 0.1,         // ook ver weg nog af en toe kijken (de markt verandert)
+};
+
+// Hoe waardevol is deze twijfelkans om te verkennen? Geeft { p (kans om te kopen), skip (reden of
+// null), parts (uitleg) }. q: bijgestuurde verwachting, thr: koopdrempel, corr: directe bijsturing.
+export function exploreScore({ q, thr, pair, regime, corr, rules = EXPLORE }) {
+  const gap = Math.max(0, thr - q);
+  const coin = corr?.coins?.[pair] ?? { n: 0, adj: 0 };
+  const bin = corr?.bins?.[binOf(q, corr?.edges ?? LEARN.edges)] ?? { n: 0, adj: 0 };
+  const cell = corr?.cells?.[`${pair}|${regime ?? 'onbekend'}`] ?? 0;
+  const reg = corr?.regimes?.[regime ?? 'onbekend'] ?? 0;
+  // Bewezen slecht: veel trades, duidelijk slechter dan verwacht, en ver onder de drempel.
+  if (coin.n >= rules.provenTrades && coin.adj <= rules.provenBad && gap >= rules.farBelow) {
+    return { p: 0, skip: `${pair} kwam in ${coin.n} trades steeds slechter uit dan verwacht`, parts: null };
+  }
+  if (bin.n >= rules.provenTrades && bin.adj <= rules.provenBad && gap >= rules.farBelow && q < 0) {
+    return { p: 0, skip: `bij deze verwachting kwamen ${bin.n} trades steeds slechter uit`, parts: null };
+  }
+  const near = Math.exp(-gap / rules.nearScale);                                  // 1 op de drempel
+  const unknown = 1 / Math.sqrt(1 + Math.min(cell, coin.n, bin.n, reg) / rules.knownTrades); // 1 = nog niets bekend
+  const optimism = Math.min(0.5, Math.max(0, coin.adj + bin.adj)) / 0.5;          // echte uitkomsten beter dan verwacht
+  const p = clamp(rules.floor + 0.5 * near + 0.4 * unknown + 0.3 * optimism, 1);
+  return { p: Math.max(rules.floor, p), skip: null, parts: { near, unknown, optimism, cell, coinN: coin.n } };
 }
 
 // ---------- Directe bijsturing (leert meteen van elke afgesloten trade) ----------
@@ -147,7 +178,15 @@ export function onlineCorrection(trades, rules = LEARN) {
     c.sum += t.pnlPct - t.agent.expectedPct - binAdj[binOf(t.agent.expectedPct, rules.edges)].adj;
   }
   for (const c of Object.values(coins)) c.adj = clamp(c.sum / (c.n + rules.prior), rules.maxAdj);
-  return { trades: rows.length, bins: binAdj, coins, edges: rules.edges };
+  // Hoeveel ervaring per marktfase en per coin in een marktfase (voor de verkenner).
+  const regimes = {};
+  const cells = {};
+  for (const t of rows) {
+    const r = t.agent.marketRegime ?? 'onbekend';
+    regimes[r] = (regimes[r] ?? 0) + 1;
+    cells[`${t.pair}|${r}`] = (cells[`${t.pair}|${r}`] ?? 0) + 1;
+  }
+  return { trades: rows.length, bins: binAdj, coins, regimes, cells, edges: rules.edges };
 }
 
 // Bijgestuurde verwachting: model + groep + coin.

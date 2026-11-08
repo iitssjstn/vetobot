@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { onlineCorrection, correctedExpectation, LEARN, agentForRecipe, allAgentCoins, chooseForRegime, assessRisk, riskStake, slippagePct, execSummary, lossStreak, RISK } from '../src/agents.js';
+import { exploreScore, EXPLORE, onlineCorrection, correctedExpectation, LEARN, agentForRecipe, allAgentCoins, chooseForRegime, assessRisk, riskStake, slippagePct, execSummary, lossStreak, RISK } from '../src/agents.js';
 
 const main = { recipeKey: 'A', coins: ['BTC/EUR'], regimes: {
   stijgend: { key: 'B', why: 'best', edge: 0.3, trades: 40, agent: { recipeKey: 'B', coins: ['ETH/EUR'] } },
@@ -68,4 +68,29 @@ test('Directe bijsturing: leert meteen van afgesloten trades, voorzichtig bij we
   const c2 = onlineCorrection(more);
   assert.ok(correctedExpectation(0.3, 'C', c2).adj < correctedExpectation(0.3, 'A', c2).adj);
   assert.ok(Math.abs(correctedExpectation(5, 'C', onlineCorrection([...Array(500)].map(() => t('C', 5, -50)))).adj) <= LEARN.maxAdj * 2, 'begrensd');
+});
+
+test('Slimme verkenner: kiest waar hij het meest leert, slaat bewezen slecht over', () => {
+  const none = onlineCorrection([]);
+  const near = exploreScore({ q: 0.18, thr: 0.2, pair: 'A', regime: 'stijgend', corr: none });
+  const far = exploreScore({ q: -1.5, thr: 0.2, pair: 'A', regime: 'stijgend', corr: none });
+  assert.ok(near.p > far.p, 'dicht bij de drempel eerder dan ver eronder');
+  assert.ok(far.p >= EXPLORE.floor, 'ver weg nog af en toe');
+  // Veel ervaring in deze coin en fase: minder te leren dan in een onbekende coin.
+  const t = (pair, exp, got) => ({ pair, pnlPct: got, agent: { expectedPct: exp, marketRegime: 'stijgend' } });
+  const known = onlineCorrection([...Array(80)].map(() => t('A', -0.4, -0.4)));
+  assert.ok(exploreScore({ q: -0.4, thr: 0.2, pair: 'A', regime: 'stijgend', corr: known }).p
+    < exploreScore({ q: -0.4, thr: 0.2, pair: 'B', regime: 'stijgend', corr: known }).p);
+  // Beter uitgekomen dan verwacht: extra interessant.
+  const better = onlineCorrection([...Array(40)].map(() => t('C', -0.2, 0.4)));
+  const plain = onlineCorrection([...Array(40)].map(() => t('C', -0.2, -0.2)));
+  assert.ok(exploreScore({ q: -0.2, thr: 0.2, pair: 'C', regime: 'stijgend', corr: better }).parts.optimism > 0);
+  assert.ok(exploreScore({ q: -0.2, thr: 0.2, pair: 'C', regime: 'stijgend', corr: better }).p
+    > exploreScore({ q: -0.2, thr: 0.2, pair: 'C', regime: 'stijgend', corr: plain }).p);
+  // Bewezen slecht: 30+ trades duidelijk slechter dan verwacht en ver onder de drempel.
+  const bad = onlineCorrection([...Array(60)].map(() => t('D', 0, -2)));
+  const s = exploreScore({ q: -1, thr: 0.2, pair: 'D', regime: 'stijgend', corr: bad });
+  assert.equal(s.p, 0);
+  assert.match(s.skip, /steeds slechter uit dan verwacht/);
+  assert.equal(exploreScore({ q: 0.15, thr: 0.2, pair: 'D', regime: 'stijgend', corr: bad }).skip, null, 'dicht bij de drempel blijft hij kijken');
 });

@@ -8,7 +8,7 @@ import { fetchClosedCandles, fetchPrice, hasTradingKeys } from './exchange.js';
 import { checkEntry } from './risk.js';
 import { Bandit } from './bandit.js';
 import { analyzeBook, bookProblem } from './orderbook.js';
-import { MARKET_TF, RISK, LEARN, onlineCorrection, correctedExpectation, exploreWanted, agentParts, agentForRecipe, allAgentCoins, chooseForRegime, assessRisk, riskStake, slippagePct, execSummary, lossStreak } from './agents.js';
+import { MARKET_TF, RISK, LEARN, onlineCorrection, correctedExpectation, exploreWanted, exploreScore, agentParts, agentForRecipe, allAgentCoins, chooseForRegime, assessRisk, riskStake, slippagePct, execSummary, lossStreak } from './agents.js';
 import path from 'node:path';
 
 // Bedragen en koersen in Nederlandse notatie voor meldingen (€ 81,31 / € 0,3455 / −€ 0,36).
@@ -1230,21 +1230,32 @@ export class Bot {
     return exploreWanted({ mode: this.mode, enabled: Number(this.strategy.agentExplore ?? 1) === 1 }) && agent?.stage !== 'geblokkeerd';
   }
 
-  // De verkenner neemt een kans die de AI-trader zelf laat liggen, om ervan te leren.
+  // De verkenner neemt een kans die de AI-trader zelf laat liggen, om ervan te leren. Hij kiest slim:
+  // vooral dicht bij de koopdrempel, waar hij nog weinig weet en waar de echte uitkomsten beter waren
+  // dan verwacht; wat bewezen slecht is slaat hij over. Geeft null als hij deze kans laat liggen.
   #exploreBuy(pair, agent, regime, x, q, talk, why) {
     const tf = agent.timeframe;
     const tfMs = (this.ex.parseTimeframe?.(tf) ?? 900) * 1000;
     const nl = (v, d = 2) => `${v >= 0 ? '+' : ''}${v.toFixed(d).replace('.', ',')}`;
+    const sc = exploreScore({ q, thr: agent.threshold, pair, regime, corr: this.learnCorr });
+    if (sc.skip || (this.exploreRand ?? Math.random)() >= sc.p) {
+      (this.exploreSkips ??= {})[sc.skip ? 'bewezen slecht' : 'weinig te leren'] = ((this.exploreSkips ?? {})[sc.skip ? 'bewezen slecht' : 'weinig te leren'] ?? 0) + 1;
+      return null;
+    }
+    const pc = (v) => `${Math.round(v * 100)}%`;
+    const learnTxt = sc.parts ? ` Leerwaarde ${pc(sc.p)}: ${sc.parts.near > 0.5 ? 'dicht bij de koopdrempel' : 'verder van de drempel'}, ` +
+      `${sc.parts.cell ? `${sc.parts.cell} eerdere trades in deze coin en fase` : 'nog nooit in deze coin en fase'}` +
+      `${sc.parts.optimism > 0 ? ', en echte uitkomsten hier waren beter dan verwacht' : ''}.` : '';
     const because = { drempel: `de AI-trader verwacht ${nl(q)}%, onder zijn drempel van ${nl(agent.threshold)}%`, coin: 'de AI-trader handelt deze coin normaal niet',
       pauze: 'de Strategy Agent handelt in deze marktfase niet', toelating: 'de AI-trader mag hier nu zelf niet kopen', risico: 'de Risk Agent hield de AI-trader tegen' }[why] ?? why;
-    talk.push(Bot.say('explore', 'Verkenner', `Ik koop toch, om te leren: ${because}${x.adjTxt ?? ''}. Kleinste inzet, alleen paper; de uitkomst gaat als leervoorbeeld naar de leerserver.`, 'approve'));
+    talk.push(Bot.say('explore', 'Verkenner', `Ik koop toch, om te leren: ${because}${x.adjTxt ?? ''}.${learnTxt} Kleinste inzet, alleen paper; de uitkomst gaat als leervoorbeeld naar de leerserver.`, 'approve'));
     this.lastFeatures[pair] = { ts: x.ts, timeframe: tf, features: x.f, prob: null, at: Date.now() };
     this.think(`Verkenner: ik koop ${pair} om te leren (${because}). De AI-trader verkoopt hem zelf, elke ${tf}-candle opnieuw.`, pair, 'doing');
     return {
       buy: true, explore: true, why: [], regime: regime ?? regimeOf(x.f), talk,
       reason: `Verkenner (${tf}): ${because}`,
       plan: { timeframe: tf, recipe: agent.recipeKey ?? null, expectedPct: +(x.qModel ?? q).toFixed(3), adjustedPct: +q.toFixed(3), version: agent.meta?.trainedAt ?? null, safetyStopPct: agent.safetyStopPct,
-        maxHoldMinutes: agent.maxHoldCandles * tfMs / 60000, entryClose: x.close, marketRegime: regime, stakeFactor: 1, explore: true },
+        maxHoldMinutes: agent.maxHoldCandles * tfMs / 60000, entryClose: x.close, marketRegime: regime, stakeFactor: 1, explore: true, exploreWhy: why },
     };
   }
 
@@ -1267,15 +1278,20 @@ export class Bot {
     x.adjTxt = adjTxt;
     this.agentReason ??= {};
     const explore = this.#exploring(agent);
-    if (opts.explore) return this.#exploreBuy(pair, agent, regime, x, q, talk, opts.explore);
+    if (opts.explore) {
+      return this.#exploreBuy(pair, agent, regime, x, q, talk, opts.explore)
+        ?? { buy: false, reason: `Strategy Agent: in een ${REGIME_LABEL[regime] ?? regime} handel ik niet (de verkenner liet deze kans ook liggen)` };
+    }
     if (Array.isArray(agent.coins) && agent.coins.length && !agent.coins.includes(pair)) {
-      if (explore) return this.#exploreBuy(pair, agent, regime, x, q, talk, 'coin');
+      const e = explore ? this.#exploreBuy(pair, agent, regime, x, q, talk, 'coin') : null;
+      if (e) return e;
       const reason = 'AI-trader handelt deze coin niet: in zijn test verloor hij hier geld';
       this.agentReason[pair] = reason;
       return { buy: false, reason };
     }
     if (q <= agent.threshold) {
-      if (explore) return this.#exploreBuy(pair, agent, regime, x, q, talk, 'drempel');
+      const e = explore ? this.#exploreBuy(pair, agent, regime, x, q, talk, 'drempel') : null;
+      if (e) return e;
       const reason = `AI-trader (${tf}): verwacht ${nl(q)}% na kosten${adjTxt}, ik koop pas boven ${nl(agent.threshold)}%`;
       this.agentReason[pair] = reason;
       (this.agentNotes ??= []).push({ pair, q, thr: agent.threshold, tf });
@@ -1293,7 +1309,8 @@ export class Bot {
       this.agentReason[pair] = reason;
       this.think(`Ik zie een kans bij ${pair}: ik verwacht ${nl(q)}% na kosten.${whyTxt} Maar ${why}.`, pair, 'info');
       talk.push(Bot.say('gate', 'Toelating', `Niet kopen: ${why}.`, 'reject'));
-      if (explore) return this.#exploreBuy(pair, agent, regime, x, q, talk, 'toelating');
+      const e = explore ? this.#exploreBuy(pair, agent, regime, x, q, talk, 'toelating') : null;
+      if (e) return e;
       this.#agentChat(pair, 'buy', 'blocked', talk);
       return { buy: false, reason };
     }
@@ -1304,7 +1321,8 @@ export class Bot {
       this.agentReason[pair] = reason;
       this.think(`Ik zie een kans bij ${pair} (${nl(q)}% verwacht), maar de Risk Agent houdt me tegen: ${risk.block}.`, pair, 'warn');
       talk.push(Bot.say('risk', 'Risk Agent', `Niet kopen: ${risk.block}.`, 'reject'));
-      if (explore) return this.#exploreBuy(pair, agent, regime, x, q, talk, 'risico');
+      const e = explore ? this.#exploreBuy(pair, agent, regime, x, q, talk, 'risico') : null;
+      if (e) return e;
       this.#agentChat(pair, 'buy', 'blocked', talk);
       return { buy: false, reason };
     }
@@ -1611,7 +1629,7 @@ export class Bot {
     if (indicators?.agent) {
       const g = indicators.agent;
       this.store.state.positions[pair].agent = { timeframe: g.timeframe, version: g.version, expectedPct: g.expectedPct, recipe: g.recipe ?? null,
-        marketRegime: g.marketRegime ?? null, ...(g.explore ? { explore: true } : {}) };
+        marketRegime: g.marketRegime ?? null, ...(g.explore ? { explore: true, exploreWhy: g.exploreWhy ?? null } : {}) };
       if (g.explore) this.store.state.positions[pair].explore = true;
       this.store.state.positions[pair].plan = { key: null, stopLossPct: g.safetyStopPct, takeProfitPct: 0, maxHoldMinutes: g.maxHoldMinutes };
     }
@@ -1811,8 +1829,17 @@ export class Bot {
       explorer: (() => {
         const ex = trades.filter((t) => t.agent?.explore);
         const open = Object.values(this.store.state.positions).filter((p) => p?.explore).length;
+        // Per soort verkennen: hoe liep het af, en vergeleken met wat de AI-trader verwachtte?
+        const byWhy = {};
+        for (const t of ex) {
+          const w = (byWhy[t.agent.exploreWhy ?? 'onbekend'] ??= { n: 0, sum: 0, exp: 0, nExp: 0 });
+          w.n++;
+          w.sum += t.pnlPct ?? 0;
+          if (Number.isFinite(t.agent.expectedPct)) { w.exp += t.pnlPct - t.agent.expectedPct; w.nExp++; }
+        }
+        const kinds = Object.entries(byWhy).map(([why, w]) => ({ why, n: w.n, avgPct: +(w.sum / w.n).toFixed(3), vsExpected: w.nExp ? +(w.exp / w.nExp).toFixed(3) : null }));
         return { on: this.#exploring(this.getAgent?.()), trades: ex.length, open, wins: ex.filter((t) => t.pnlEur > 0).length,
-          avgPct: ex.length ? +(ex.reduce((a, t) => a + (t.pnlPct ?? 0), 0) / ex.length).toFixed(3) : null };
+          avgPct: ex.length ? +(ex.reduce((a, t) => a + (t.pnlPct ?? 0), 0) / ex.length).toFixed(3) : null, kinds, skipped: this.exploreSkips ?? {} };
       })(),
     };
   }
@@ -1852,7 +1879,7 @@ export class Bot {
       exitReason: reason,
       costPct: tradeCost,
       ...(pos.agent ? { agent: { recipe: pos.agent.recipe ?? null, marketRegime: pos.agent.marketRegime ?? null, expectedPct: pos.agent.expectedPct ?? null,
-        ...(pos.agent.explore ? { explore: true } : {}) } } : {}),
+        ...(pos.agent.explore ? { explore: true, exploreWhy: pos.agent.exploreWhy ?? null } : {}) } } : {}),
     });
     const how = fill.limitFallback ? (fill.limit ? ', limietorder deels gevuld, rest market' : ', limietorder niet gevuld, market') : fill.limit ? ', limietorder' : '';
     this.#event(pnlEur >= 0 ? 'info' : 'warn', pair, `Verkocht @ ${fmtPrice(fill.price)}, resultaat ${fmtSigned(pnlEur)} (${reason}${how})`);

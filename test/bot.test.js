@@ -1206,6 +1206,7 @@ test('Verkenner: koopt in paper wat de AI-trader laat liggen, kleinste inzet, ei
   await bot.setRisk({ cooldownMinutes: 0, stakeEur: 20, maxOpenTrades: 1 });
   await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 1, agentExplore: 1 });
   bot.getAgent = () => agent;
+  bot.exploreRand = () => 0; // altijd verkennen als er iets te leren valt (voorspelbaar in de test)
   withAi(bot);
   aiAnswer = 'reject';
   lastAiPrompt = '';
@@ -1232,6 +1233,7 @@ test('Verkenner: koopt in paper wat de AI-trader laat liggen, kleinste inzet, ei
   await b2.bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0, agentExplore: 1 });
   b2.bot.settings.data.mode = 'live';
   b2.bot.getAgent = () => agent;
+  b2.bot.exploreRand = () => 0;
   b2.ex.prices = ex.prices;
   await b2.bot.tick();
   assert.equal(Object.keys(b2.bot.store.state.positions).length, 0);
