@@ -1225,6 +1225,11 @@ test('Verkenner: koopt in paper wat de AI-trader laat liggen, kleinste inzet, ei
   assert.ok(chat.talk.some((m) => m.role === 'explore'));
   assert.equal(bot.agentTeam().explorer.open, 2, 'zonder limiet: ook ETH/EUR (onder de drempel) verkend');
   assert.equal(bot.store.state.positions['ETH/EUR'].explore, true);
+  // Waarom kocht de AI-trader zelf niet? Coin niet gekozen (BTC) en onder de drempel (ETH).
+  const wn = bot.agentTeam().whyNot;
+  assert.equal(wn.counts.coin, 1);
+  assert.equal(wn.counts.drempel, 1);
+  assert.ok(wn.bestBelow && wn.bestBelow.thr === 1e6);
   // Een verliestrade van de verkenner telt niet voor de verliesreeks of de daglimiet.
   const before = bot.store.realizedTodayEur();
   bot.store.state.trades.unshift({ pair: 'BTC/EUR', pnlEur: -50, pnlPct: -5, closedAt: new Date().toISOString(), agent: { recipe: 'R', explore: true } });

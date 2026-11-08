@@ -2055,7 +2055,14 @@ function rewardsRender(rw, trend, sign, nl) {
     ['Beste recept (validatie)', (d) => d.bestAvg == null ? '–' : `<span class="num ${d.bestAvg > 0 ? 'up' : 'down'}">${sign(d.bestAvg)}</span> per trade`, 'r'],
     ['Beste voordeel boven de markt', (d) => d.bestEdge == null ? '–' : `<span class="num ${d.bestEdge > 0 ? 'up' : 'down'}">${sign(d.bestEdge)}</span>`, 'r'],
   ]) : '<p class="muted" style="margin:0">Nog geen leerrondes.</p>';
-  el.innerHTML = concl + `<div class="row-actions" style="margin:0 0 4px">${tabs}</div>` + legend + rewardChart(pts, sign)
+  const wn = state?.agent?.team?.whyNot;
+  const WN = { 'wil kopen': 'wil kopen (signaal)', drempel: 'verwachting onder zijn koopdrempel', coin: 'coin niet gekozen', pauze: 'pauze Strategy Agent (marktfase)',
+    toelating: 'mag niet (recept oefent / live-eisen)', risico: 'Risk Agent', risicoregels: 'risicoregels (max. trades, daglimiet, saldo)', orderboek: 'orderboek-check', 'AI-controleur': 'AI-controleur zei nee',
+    'coin bezet door verkenner': 'coin bezet door de verkenner' };
+  const why = wn?.total ? `<div class="sub-h" style="margin:4px 0 6px">${icon('target')}Waarom koopt de AI-trader (niet)? <span class="muted" style="font-weight:500">laatste 24 uur, per beoordeelde candle</span></div>`
+    + `<div style="font-size:13.5px;line-height:1.7;margin:0 0 12px">${Object.entries(wn.counts).sort((a, b) => b[1] - a[1]).map(([k, n]) => `<span class="badge ${k === 'wil kopen' ? 'ok' : 'soft'}">${esc(WN[k] ?? k)}: ${n}×</span>`).join(' ')}`
+    + (wn.bestBelow ? `<br><span class="muted">Hoogste verwachting onder de drempel: ${sign(wn.bestBelow.q)} (drempel ${sign(wn.bestBelow.thr)}); gemiddeld ${nl(wn.avgGap, 2)}%-punt te laag.</span>` : '') + '</div>' : '';
+  el.innerHTML = concl + why + `<div class="row-actions" style="margin:0 0 4px">${tabs}</div>` + legend + rewardChart(pts, sign)
     + `<div class="sub-h" style="margin:16px 0 6px">${icon('list')}Per week</div><div class="scroll">${weeks}</div>`
     + `<div class="sub-h" style="margin:16px 0 6px">${icon('target')}Vindt de leerserver betere recepten?</div><p class="muted" style="margin:0 0 8px;font-size:13.5px">Per dag het beste resultaat op de validatie van de recepten die hij die dag trainde. Gaat dit omhoog, dan vindt hij betere manieren van handelen.</p><div class="scroll">${rt}</div>`;
 }
@@ -2068,7 +2075,9 @@ function rewardChart(pts, sign) {
   const lim = Math.max(0.5, Math.ceil((abs[Math.floor(abs.length * 0.98)] ?? 0.5) * 2) / 2);
   const x = (t) => L + ((t - t0) / span) * (W - L - R);
   const y = (v) => T + ((lim - Math.max(-lim, Math.min(lim, v))) / (2 * lim)) * (H - T - B);
-  const fmtD = (t) => new Date(t).toLocaleDateString('nl-NL', { day: 'numeric', month: 'short' });
+  const fmtD = (t) => span < 2 * 86400000
+    ? new Date(t).toLocaleString('nl-NL', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+    : new Date(t).toLocaleDateString('nl-NL', { day: 'numeric', month: 'short' });
   const grid = [lim, lim / 2, 0, -lim / 2, -lim].map((v) => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)" stroke-width="${v === 0 ? 1.5 : 1}"${v === 0 ? '' : ' stroke-dasharray="3 4"'}/>`
     + `<text x="${L - 8}" y="${y(v) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${v > 0 ? '+' : ''}${String(v).replace('.', ',')}%</text>`).join('');
   const xl = [t0, t0 + span / 2, t1].map((t, i) => `<text x="${x(t)}" y="${H - 8}" text-anchor="${['start', 'middle', 'end'][i]}" font-size="11" fill="var(--muted)">${fmtD(t)}</text>`).join('');

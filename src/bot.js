@@ -857,6 +857,9 @@ export class Bot {
           indicators: { ...result.indicators, mlProb: null, mlWhy: a.why, agent: a.plan, mlRegime: a.regime } }
         : { ...result, signal: 'none', armSignal: true, reason: a.reason };
     } else if (agent && position) {
+      // Zit de verkenner op deze coin, dan kan de AI-trader hier niet kopen (één positie per coin).
+      this.busyAt ??= {};
+      if (position.explore && Date.now() - (this.busyAt[pair] ?? 0) > 15 * 60000) { this.busyAt[pair] = Date.now(); this.#whyNot('coin bezet door verkenner'); }
       result = { ...result, signal: 'none', armSignal: true, reason: position.agent ? (this.agentHold?.[pair] ?? 'AI-trader houdt vast') : result.reason };
     } else if (allArms.length) {
       const a = await this.#armSignal(pair, allArms);
@@ -943,6 +946,7 @@ export class Bot {
       this.store.addDecision({ pair, signal: 'buy', outcome: 'blocked', reason: blocked, indicators: result.indicators });
       this.#event('warn', pair, `Geblokkeerd door risicoregels: ${blocked}`);
       if (result.agentTalk) this.#agentChat(pair, 'buy', 'blocked', [...result.agentTalk, Bot.say('risk', 'Risicoregels', `Niet kopen: ${blocked}.`, 'reject')]);
+      if (result.indicators?.agent && !exploring) this.#whyNot('risicoregels');
       return;
     }
 
@@ -965,6 +969,7 @@ export class Bot {
       this.store.addDecision({ pair, signal: 'buy', outcome: 'blocked', reason: thin, indicators: result.indicators });
       this.#event('warn', pair, thin);
       if (result.agentTalk) this.#agentChat(pair, 'buy', 'blocked', [...result.agentTalk, Bot.say('risk', 'Orderboek-check', `Niet kopen: ${thin}.`, 'reject')]);
+      if (result.indicators?.agent && !exploring) this.#whyNot('orderboek');
       if (result.indicators?.mlProb != null) this.think(`Ik wilde kopen, maar ${thin.charAt(0).toLowerCase()}${thin.slice(1)}.`, pair, 'warn');
       return;
     }
@@ -1059,6 +1064,7 @@ export class Bot {
       this.#notify('aiVeto', { title: `${pair}: koopsignaal afgewezen`, message: veto.reason, level: 'warn' });
     }
 
+    if (result.indicators?.agent && !exploring && veto.decision !== 'approve') this.#whyNot('AI-controleur');
     let chat = null;
     if (result.agentTalk) {
       const ctl = exploring ? []
@@ -1205,6 +1211,7 @@ export class Bot {
           : `Ik gebruik het hoofdrecept ${choice.agent.recipeKey ?? ''}: voor deze marktfase is nog te weinig bewijs.`,
       !choice.agent ? 'reject' : null),
     ];
+    if (!choice.agent) this.#whyNot('pauze');
     if (!choice.agent && this.#exploring(main)) return this.#agentBuy(pair, main, regime, choice, talk, { explore: 'pauze' });
     if (!choice.agent) {
       const reason = `Strategy Agent: in een ${REGIME_LABEL[regime] ?? regime} handel ik niet, daar deed geen recept het beter dan de markt`;
@@ -1223,6 +1230,26 @@ export class Bot {
       return { buy: false, reason };
     }
     return this.#agentBuy(pair, choice.agent, regime, choice, talk);
+  }
+
+  // Waarom koopt de AI-trader (niet)? Per beoordeelde candle één reden, de laatste 24 uur.
+  #whyNot(kind, q = null, thr = null) {
+    if (!kind) return;
+    const list = (this.agentWhy ??= []);
+    list.push({ at: Date.now(), kind, q, thr });
+    const cut = Date.now() - 24 * 3600000;
+    while (list.length && (list[0].at < cut || list.length > 5000)) list.shift();
+  }
+
+  agentWhySummary() {
+    const cut = Date.now() - 24 * 3600000;
+    const rows = (this.agentWhy ?? []).filter((r) => r.at >= cut);
+    const counts = {};
+    for (const r of rows) counts[r.kind] = (counts[r.kind] ?? 0) + 1;
+    const below = rows.filter((r) => r.kind === 'drempel' && Number.isFinite(r.q));
+    const best = below.reduce((a, r) => (a == null || r.q > a.q ? r : a), null);
+    return { total: rows.length, counts, bestBelow: best ? { q: +best.q.toFixed(3), thr: best.thr } : null,
+      avgGap: below.length ? +(below.reduce((a, r) => a + (r.thr - r.q), 0) / below.length).toFixed(3) : null };
   }
 
   // Verkenner: alleen paper, als hij aan staat, en niet met een te riskant recept.
@@ -1282,6 +1309,7 @@ export class Bot {
       return this.#exploreBuy(pair, agent, regime, x, q, talk, opts.explore)
         ?? { buy: false, reason: `Strategy Agent: in een ${REGIME_LABEL[regime] ?? regime} handel ik niet (de verkenner liet deze kans ook liggen)` };
     }
+    if (!opts.explore) this.#whyNot(Array.isArray(agent.coins) && agent.coins.length && !agent.coins.includes(pair) ? 'coin' : q <= agent.threshold ? 'drempel' : null, q, agent.threshold);
     if (Array.isArray(agent.coins) && agent.coins.length && !agent.coins.includes(pair)) {
       const e = explore ? this.#exploreBuy(pair, agent, regime, x, q, talk, 'coin') : null;
       if (e) return e;
@@ -1305,6 +1333,7 @@ export class Bot {
       const why = blocked ? 'mijn recept is te riskant (te diepe terugval in de test), daar handel ik niet mee'
         : this.mode === 'live' ? (this.agentLiveReady(agent) ? 'live handel ik pas als je dit recept zelf live toestaat (pagina Trainer)' : 'live handel ik pas als ik alle eisen voor live haal')
           : 'oefenen in paper staat uit';
+      this.#whyNot('toelating', q, agent.threshold);
       const reason = `AI-trader (${tf}): ik zie een kans (${nl(q)}% verwacht), maar ${why}`;
       this.agentReason[pair] = reason;
       this.think(`Ik zie een kans bij ${pair}: ik verwacht ${nl(q)}% na kosten.${whyTxt} Maar ${why}.`, pair, 'info');
@@ -1317,6 +1346,7 @@ export class Bot {
     // Risk Agent: is deze trade verantwoord, en met welke inzet?
     const risk = assessRisk({ pair, trades: this.store.state.trades, choice, execLog: this.store.state.execLog ?? [] });
     if (risk.block) {
+      this.#whyNot('risico', q, agent.threshold);
       const reason = `Risk Agent: ${risk.block}`;
       this.agentReason[pair] = reason;
       this.think(`Ik zie een kans bij ${pair} (${nl(q)}% verwacht), maar de Risk Agent houdt me tegen: ${risk.block}.`, pair, 'warn');
@@ -1327,6 +1357,7 @@ export class Bot {
       return { buy: false, reason };
     }
     this.agentReason[pair] = null;
+    this.#whyNot('wil kopen', q, agent.threshold);
     talk.push(Bot.say('risk', 'Risk Agent', `Akkoord. ${risk.notes.length ? `${risk.notes.join('; ')}. ` : 'Volle inzet. '}` +
       `${lossStreak(this.store.state.trades)} verlies(zen) op rij van de AI-trader; geen pauze nodig.`, 'approve'));
     this.lastFeatures[pair] = { ts: x.ts, timeframe: tf, features: x.f, prob: null, at: Date.now() };
@@ -1829,6 +1860,7 @@ export class Bot {
       risk: { lossStreak: streak, rules: RISK },
       execution: execSummary(this.store.state.execLog ?? []),
       rewards: rewardSummary(trades),
+      whyNot: this.agentWhySummary(),
       learning: (() => {
         const c = this.learnCorr ?? onlineCorrection(trades);
         const coins = Object.entries(c.coins).filter(([, x]) => Math.abs(x.adj) >= 0.01).sort((a, b) => Math.abs(b[1].adj) - Math.abs(a[1].adj)).slice(0, 5)
