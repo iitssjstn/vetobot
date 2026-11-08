@@ -4,7 +4,7 @@ Doel van de eigenaar: een AI-trader die hij kan vertrouwen voordat hij live gaat
 
 Volgorde: stap 1, 2 en 3 veranderen hoe resultaten gemeten worden. Oude rondes zijn daarna niet meer vergelijkbaar. Na stap 3 beginnen de receptstatistieken daarom opnieuw (oude rondes bewaren als archief, niet meer meetellen).
 
-Status per stap: ☐ open · ◐ bezig · ☑ klaar. Stap 1 t/m 4 en 6 zijn gebouwd (7 november 2026). Bij stap 5 is het weekoverzicht gebouwd; de test zelf (minstens 6 weken paper) moet nog lopen.
+Status per stap: ☐ open · ◐ bezig · ☑ klaar. Stap 1 t/m 4 en 6 zijn gebouwd (7 november 2026); stap 7 staat open. Bij stap 5 is het weekoverzicht gebouwd; de test zelf (minstens 6 weken paper) moet nog lopen.
 
 ---
 
@@ -106,6 +106,24 @@ Gevraagd door de eigenaar: "is het mogelijk om dit ook voor de AI trader te doen
 - Pagina AI-chat: filter "AI-team / AI-trader", zelfde opmaak.
 
 **Klaar als.** Een test bewijst dat een aankoop, een verkoop en een tegengehouden aankoop elk een volledig verslag geven, met alle onderdelen in de juiste volgorde. Het verslag is te zien op AI-chat.
+
+## ☐ 7. Beloningen zichtbaar maken: wordt de AI-trader beter?
+
+Gevraagd door de eigenaar: "Is het mogelijk om te zien wanneer de AI trader een beloning krijgt en wanneer niet, om beetje een beeld te krijgen of hij steeds beter gaat lopen".
+
+**Nu.** Elke afgesloten trade is een beloning (winst na kosten) of een straf (verlies). Dat gaat naar de leerserver en staat los in "Afgesloten trades" en "Wat denkt het model?". Een overzicht door de tijd ontbreekt: je ziet niet of hij beter wordt.
+
+**Wat we bouwen** (pagina Trainer, blok "Wordt hij beter?"):
+- **Grafiek door de tijd:** per trade een stip (groen = beloning, rood = straf), met een lijn voor het voortschrijdend gemiddelde (laatste 50 trades). AI-trader en verkenner apart te tonen.
+- **Per week:** aantal beloningen en straffen, gemiddelde beloning, en de vergelijking met de week ervoor (beter / slechter).
+- **Leert hij echt?** Drie lijnen die over tijd moeten verbeteren:
+  1. gemiddelde beloning per trade (na kosten);
+  2. beter dan de markt (voordeel boven meedobberen);
+  3. hoe goed zijn verwachting klopt (verschil tussen verwacht en echt wordt kleiner).
+- **Recepten door de tijd:** de score op de validatie van het beste recept per leerronde, zodat je ziet of de leerserver betere recepten vindt.
+- **Korte conclusie in gewone taal**, bijvoorbeeld: "De laatste 2 weken gemiddeld +0,08% per trade, vorige 2 weken −0,05%: hij wordt beter."
+
+**Klaar als.** Tests met een reeks trades geven de juiste weekcijfers en het juiste voortschrijdend gemiddelde, en de conclusie zegt "beter" of "slechter" op de juiste momenten. Op de pagina Trainer staan grafiek, weektabel en conclusie.
 
 ---
 
