@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rewardSummary, exploreScore, EXPLORE, onlineCorrection, correctedExpectation, LEARN, agentForRecipe, allAgentCoins, chooseForRegime, assessRisk, riskStake, slippagePct, execSummary, lossStreak, RISK } from '../src/agents.js';
+import { explorationOutcome, rewardSummary, exploreScore, EXPLORE, onlineCorrection, correctedExpectation, LEARN, agentForRecipe, allAgentCoins, chooseForRegime, assessRisk, riskStake, slippagePct, execSummary, lossStreak, RISK } from '../src/agents.js';
 
 const main = { recipeKey: 'A', coins: ['BTC/EUR'], regimes: {
   stijgend: { key: 'B', why: 'best', edge: 0.3, trades: 40, agent: { recipeKey: 'B', coins: ['ETH/EUR'] } },
@@ -68,6 +68,32 @@ test('Directe bijsturing: leert meteen van afgesloten trades, voorzichtig bij we
   const c2 = onlineCorrection(more);
   assert.ok(correctedExpectation(0.3, 'C', c2).adj < correctedExpectation(0.3, 'A', c2).adj);
   assert.ok(Math.abs(correctedExpectation(5, 'C', onlineCorrection([...Array(500)].map(() => t('C', 5, -50)))).adj) <= LEARN.maxAdj * 2, 'begrensd');
+});
+
+test('Virtuele verkenning: kosten, minimumduur, noodstop en maximale duur', () => {
+  const position = { at: 1000, tfMs: 60000, entryPrice: 100.1, signalPrice: 100,
+    feePct: 0.25, slippagePct: 0.1, safetyStopPct: 10, maxHoldCandles: 10, minHoldCandles: 2, exitMarginPct: 0.1 };
+  assert.equal(explorationOutcome(position, { price: 100, exitValue: -1, now: 61000 }), null);
+  assert.equal(explorationOutcome(position, { price: 100, exitValue: -0.05, now: 121000 }), null);
+  const sold = explorationOutcome(position, { price: 100, exitValue: -1, now: 121000 });
+  assert.equal(sold.reason, 'AI-verkoop');
+  assert.ok(Math.abs(sold.pct - ((99.9 / 100.1 * 0.9975 ** 2 - 1) * 100)) < 1e-9);
+  assert.ok(Math.abs(sold.costPct - 0.7) < 1e-9);
+  assert.equal(explorationOutcome(position, { price: 80, now: 2000 }).reason, 'veiligheidsstop');
+  assert.equal(explorationOutcome(position, { price: 100, now: 601000 }).reason, 'maximale duur');
+  assert.equal(explorationOutcome(position, { price: 0, now: 601000 }), null);
+  assert.equal(explorationOutcome(position, { price: 100, exitValue: -1, now: 1000 }), null);
+});
+
+test('Virtuele leerdata: lagere weging en geen verdringing van uitgevoerde trades', () => {
+  const real = { pair: 'A', pnlPct: 0.5, agent: { expectedPct: 0.2 } };
+  const virtual = { pair: 'A', pnlPct: -1, agent: { expectedPct: 0.2, explore: true, virtual: true } };
+  const direct = onlineCorrection([real]);
+  const simulated = onlineCorrection([{ ...real, agent: { ...real.agent, virtual: true } }]);
+  assert.ok(Math.abs(correctedExpectation(0.2, 'A', simulated).adj) < Math.abs(correctedExpectation(0.2, 'A', direct).adj));
+  const crowded = onlineCorrection([...Array(LEARN.window + 20)].fill(virtual).concat(real));
+  assert.equal(crowded.trades, LEARN.window + 1);
+  assert.equal(crowded.coins.A.n, 1 + LEARN.window * EXPLORE.feedbackWeight);
 });
 
 test('Slimme verkenner: kiest waar hij het meest leert, slaat bewezen slecht over', () => {

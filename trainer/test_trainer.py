@@ -736,16 +736,30 @@ class LiveAdmission(unittest.TestCase):
 
 
 class Explorer(unittest.TestCase):
+    def test_virtual_examples_have_lower_weight(self):
+        import agent
+        from unittest.mock import patch
+        row = [0.0] * len(agent.FEATURES)
+        examples = [(row, 1.0, 0.75)] * 750 + [(row, 1.0)] * 750
+        with patch.object(agent, '_fit') as fit:
+            agent.learn_entry([], None, None, 4, 0.5, 10, extra=examples)
+        weights = fit.call_args.args[2]
+        self.assertTrue(np.all(weights[:750] == 0.75))
+        self.assertTrue(np.all(weights[750:] == 3.0))
+
     def test_explorer_trades_learn_but_do_not_count_for_live(self):
         os.environ.setdefault('DATA_DIR', tempfile.mkdtemp())
         import server as s
         s.write_json('agent_trades.json', [])
         s.write_json('agents.json', {'version': s.AGENTS_VERSION, 'recipes': {}, 'live': {}, 'round': 0})
         base = {'timeframe': '15m', 'recipe': 'R', 'pct': 1.0, 'mode': 'paper', 'features': {'rsi14': 40}, 'entryTs': 1}
-        s.add_agent_trades([{**base, 'explore': True}, {**base, 'pct': 2.0}])
+        s.add_agent_trades([{**base, 'virtual': True, 'closedAt': '2026-01-01T00:00:00Z'}, {**base, 'pct': 2.0}])
         self.assertEqual([t['pct'] for t in s.paper_rows('R')], [2.0], 'verkenner telt niet voor live')
         self.assertEqual(s.load_agents()['live']['R']['n'], 1, 'en niet als resultaat in de praktijk')
         self.assertEqual(len(s.agent_extra('15m')), 2, 'maar leert wel mee')
+        self.assertEqual(s.agent_extra('15m')[0][-1], 0.75)
+        self.assertEqual(s.agent_extra('15m')[1][-1], 3.0)
+        self.assertTrue(s.read_json('agent_trades.json', [])[0]['virtual'])
 
 
 class Patience(unittest.TestCase):
@@ -796,10 +810,13 @@ class HonestTesting(unittest.TestCase):
             row = [0.0] * len(agent.FEATURES)
             early, late = data['A/EUR'][100][0], data['A/EUR'][-10][0]
             agent.train_agent({'costPct': 0.2, 'days': 60, 'agent': {}}, {'timeframe': '15m', 'holdDays': 0.5}, lambda p, tf, d: data[p], pairs,
-                              extra=[(row, 1.0, early), (row, 2.0, late), (row, 3.0, None), (row, 4.0)])
+                          extra=[(row, 1.0, early), (row, 2.0, late), (row, 3.0, None), (row, 4.0),
+                              (row, 5.0, early, late, 0.75), (row, 6.0, early, early + M5, 0.75),
+                              (row, 7.0, early, early - M5, 0.75)])
         finally:
             agent.learn_entry = orig
-        self.assertEqual([r for _, r in seen['extra']], [1.0], 'alleen de trade van vóór de validatie')
+        self.assertEqual([item[1] for item in seen['extra']], [1.0, 6.0], 'volledig vóór de validatie afgesloten')
+        self.assertEqual(seen['extra'][-1][-1], 0.75, 'weging blijft bewaard')
 
     def test_choose_on_validation_not_on_test(self):
         import agent_search as A
@@ -857,6 +874,7 @@ class RealCosts(unittest.TestCase):
         s = self.s
         rows = [{'pair': 'A/EUR', 'costPct': c} for c in (0.5, 0.6, 0.7, 0.8, 0.9, 1.0)] + \
                [{'pair': 'B/EUR', 'costPct': 0.4}] * 2 + [{'pair': 'C/EUR', 'costPct': 0.6}] * 3
+        rows += [{'pair': 'V/EUR', 'costPct': 9.0, 'virtual': True}] * 100
         s.write_json('agent_trades.json', rows)
         per, info, default = s.cost_table({'costPct': 0.5})
         self.assertEqual(set(per), {'A/EUR'}, 'eigen kosten pas na 5 metingen')

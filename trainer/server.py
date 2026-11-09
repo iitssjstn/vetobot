@@ -753,7 +753,7 @@ def cost_table(cfg):
     """Werkelijke kosten per ronde (kopen + verkopen, %) per coin, gemeten door de bot: fees plus
     de afwijking van de koers. Voorzichtig: het 75e percentiel van de laatste 30 trades.
     Geeft (kosten per coin, uitleg per coin, kosten voor coins zonder eigen metingen)."""
-    rows = [t for t in read_json('agent_trades.json', []) if isinstance(t.get('costPct'), (int, float))]
+    rows = [t for t in read_json('agent_trades.json', []) if not t.get('virtual') and isinstance(t.get('costPct'), (int, float))]
     base = float(cfg['costPct'])
     default = _p75([t['costPct'] for t in rows[-200:]]) if len(rows) >= COST_MIN_ALL else base
     per, info = {}, {}
@@ -768,15 +768,19 @@ def cost_table(cfg):
 
 def agent_extra(tf):
     """Echte trades van de AI-trader (paper/live) als extra leervoorbeelden voor "kopen":
-    (kenmerken, resultaat %, tijdstip van kopen in ms of None). train_agent gebruikt alleen trades
-    van vóór de validatie."""
+    (kenmerken, resultaat %, instaptijd, sluitingstijd, gewicht). train_agent gebruikt alleen trades
+    die volledig vóór de validatie zijn afgesloten; virtuele voorbeelden tellen minder zwaar."""
     out = []
     for t in read_json('agent_trades.json', []):
         if t.get('timeframe') != tf or not isinstance(t.get('features'), dict):
             continue
+        try:
+            closed_ts = int(datetime.fromisoformat(str(t.get('closedAt')).replace('Z', '+00:00')).timestamp() * 1000)
+        except (ValueError, TypeError, OverflowError, OSError):
+            closed_ts = None
         f = t['features']
         out.append(([float(f[k]) if isinstance(f.get(k), (int, float)) else float('nan') for k in agent_mod.FEATURES], float(t['pct']),
-                    t.get('entryTs')))
+                    t.get('entryTs'), closed_ts, 0.75 if t.get('virtual') else 3.0))
     return out
 
 
@@ -805,7 +809,8 @@ def add_agent_trades(items):
                           'mode': str(t.get('mode') or ''), 'pair': str(t.get('pair') or ''), 'at': datetime.now().isoformat(timespec='seconds'),
                           'entryTs': _int_or_none(t.get('entryTs')), 'openedAt': str(t.get('openedAt') or ''), 'closedAt': str(t.get('closedAt') or ''),
                           'marketRegime': t.get('marketRegime') if t.get('marketRegime') in agent_search.REGIMES else None,
-                          'costPct': _float_or_none(t.get('costPct')), 'explore': bool(t.get('explore')),
+                          'costPct': _float_or_none(t.get('costPct')), 'explore': bool(t.get('explore') or t.get('virtual')),
+                          'virtual': bool(t.get('virtual')),
                           'expectedPct': _float_or_none(t.get('expectedPct'))})
         except (KeyError, TypeError, ValueError):
             continue

@@ -1200,7 +1200,7 @@ test('dagoverzicht met de AI-trader: geen ongeteste voorstellen, AI-trader in de
   }
 });
 
-test('Verkenner: koopt in paper wat de AI-trader laat liggen, kleinste inzet, eigen plek, nooit live', async () => {
+test('Verkenner: leert virtueel zonder saldo of handelsplek, nooit live', async () => {
   const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
   // Recept handelt alleen ETH/EUR en verwacht weinig: zelf koopt de AI-trader BTC/EUR dus niet.
   const agent = { ...fx.agent, stage: 'getest', recipeKey: 'R', coins: ['ETH/EUR'], threshold: 1e6 };
@@ -1213,18 +1213,22 @@ test('Verkenner: koopt in paper wat de AI-trader laat liggen, kleinste inzet, ei
   aiAnswer = 'reject';
   lastAiPrompt = '';
   // De ene gewone plek is al bezet.
-  bot.store.state.positions['XRP/EUR'] = { pair: 'XRP/EUR', entryPrice: 1, amount: 1, costEur: 20, openedAt: new Date().toISOString(), highest: 1 };
+  bot.store.state.positions['XRP/EUR'] = { pair: 'XRP/EUR', entryPrice: 100, amount: 0.2, costEur: 20, openedAt: new Date().toISOString(), highest: 100,
+    plan: { stopLossPct: 50, takeProfitPct: 50, maxHoldMinutes: 0 } };
   ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+  const balance = bot.store.state.balanceEur;
   await bot.tick();
-  const pos = bot.store.state.positions['BTC/EUR'];
+  const pos = bot.store.state.explorations.find((p) => p.pair === 'BTC/EUR');
   assert.ok(pos, bot.pairStatus['BTC/EUR']?.reason);
-  assert.equal(pos.explore, true);
-  assert.ok(pos.costEur <= 5.5, `kleinste inzet: ${pos.costEur}`);
+  assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
+  assert.equal(bot.store.state.balanceEur, balance);
   assert.equal(lastAiPrompt, '', 'de AI-controleur wordt niet gevraagd');
   const chat = bot.store.state.agentChats.find((c) => c.kind === 'explore');
   assert.ok(chat.talk.some((m) => m.role === 'explore'));
-  assert.equal(bot.agentTeam().explorer.open, 2, 'zonder limiet: ook ETH/EUR (onder de drempel) verkend');
-  assert.equal(bot.store.state.positions['ETH/EUR'].explore, true);
+  assert.equal(bot.agentTeam().explorer.open, 2, 'ook ETH/EUR (onder de drempel) verkend');
+  assert.equal(bot.store.state.positions['ETH/EUR'], undefined);
+  await bot.tick();
+  assert.equal(bot.store.state.explorations.length, 2, 'dezelfde candle niet dubbel verkennen');
   // Waarom kocht de AI-trader zelf niet? Coin niet gekozen (BTC) en onder de drempel (ETH).
   const wn = bot.agentTeam().whyNot;
   assert.equal(wn.counts.coin, 1);
@@ -1234,6 +1238,17 @@ test('Verkenner: koopt in paper wat de AI-trader laat liggen, kleinste inzet, ei
   const before = bot.store.realizedTodayEur();
   bot.store.state.trades.unshift({ pair: 'BTC/EUR', pnlEur: -50, pnlPct: -5, closedAt: new Date().toISOString(), agent: { recipe: 'R', explore: true } });
   assert.equal(bot.store.realizedTodayEur(), before);
+  const feedback = [];
+  bot.onFeedback = (item) => feedback.push(item);
+  for (const position of bot.store.state.explorations) position.at -= (position.maxHoldCandles + 1) * position.tfMs;
+  await bot.watchPositions();
+  assert.equal(bot.store.state.explorations.length, 0);
+  assert.equal(bot.store.state.explorationTrades.length, 2);
+  assert.equal(bot.store.state.trades.length, 1, 'virtuele trades niet in de rekeninghistorie');
+  assert.equal(bot.store.state.balanceEur, balance);
+  assert.equal(feedback.length, 2);
+  assert.ok(feedback.every((item) => item.virtual && item.explore && item.kind === 'agentTrade'));
+  assert.deepEqual(bot.store.state.explorationModels, {}, 'ongebruikte modellen opruimen');
   // Live: nooit.
   const b2 = setup({});
   await b2.bot.setRisk({ cooldownMinutes: 0 });
@@ -1244,6 +1259,32 @@ test('Verkenner: koopt in paper wat de AI-trader laat liggen, kleinste inzet, ei
   b2.ex.prices = ex.prices;
   await b2.bot.tick();
   assert.equal(Object.keys(b2.bot.store.state.positions).length, 0);
+  assert.equal(b2.bot.store.state.explorations?.length ?? 0, 0);
+});
+
+test('Verkenner: begrensd, herstartbaar en blokkeert geen gewone aankoop op dezelfde coin', async () => {
+  const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
+  const agent = { ...fx.agent, stage: 'getest', recipeKey: 'R', coins: ['BTC/EUR'], threshold: 1e6 };
+  const { bot, ex, dir } = setup({});
+  await bot.setRisk({ cooldownMinutes: 0 });
+  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0, agentExplore: 1 });
+  bot.getAgent = () => agent;
+  bot.exploreRand = () => 0;
+  ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+  for (let candle = 0; candle < 5; candle++) {
+    ex.prices.push(100);
+    await bot.tick();
+  }
+  assert.equal(bot.store.state.explorations.length, 3, 'hooguit drie overlappende voorbeelden per coin');
+  const restored = new Store(dir, 'paper', 500);
+  assert.equal(restored.state.explorations.length, 3);
+  assert.ok(Object.keys(restored.state.explorationModels).length > 0);
+  agent.threshold = -1e6;
+  ex.prices.push(100);
+  await bot.tick();
+  assert.ok(bot.store.state.positions['BTC/EUR']);
+  assert.equal(bot.store.state.positions['BTC/EUR'].explore, undefined);
+  assert.equal(bot.store.state.explorations.length, 3);
 });
 
 test('opslaan wacht niet tot een hele check klaar is, alleen tot de coin die nu bekeken wordt', async () => {

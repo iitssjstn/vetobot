@@ -110,13 +110,31 @@ export function execSummary(log = []) {
 // ---------- Verkenner (alleen paper) ----------
 // Koopt kansen die de AI-trader zelf laat liggen (onder zijn drempel, een coin die hij niet koos,
 // een marktfase waarin de Strategy Agent niet handelt, of tegengehouden), zodat hij leert hoe die
-// aflopen. Geen limiet op het aantal; hij kiest wel slim WAT hij verkent: waar hij het meest kan
-// leren. Nooit live.
+// aflopen. Virtueel, begrensd en zonder saldo of orderplek; hij kiest waar hij het meest kan leren.
+// Nooit live.
 export function exploreWanted({ mode, enabled }) {
   return mode === 'paper' && Boolean(enabled);
 }
 
+export function explorationOutcome(position, { price, exitValue = null, now = Date.now() }) {
+  if (!(price > 0) || now <= position.at) return null;
+  const held = (now - position.at) / position.tfMs;
+  const change = (price / position.entryPrice - 1) * 100;
+  const reason = position.safetyStopPct > 0 && change <= -position.safetyStopPct ? 'veiligheidsstop'
+    : held >= position.maxHoldCandles ? 'maximale duur'
+    : held >= position.minHoldCandles && Number.isFinite(exitValue) && exitValue < -position.exitMarginPct ? 'AI-verkoop'
+    : null;
+  if (!reason) return null;
+  const exitPrice = price * (1 - position.slippagePct / 100);
+  const pct = (exitPrice / position.entryPrice * (1 - position.feePct / 100) ** 2 - 1) * 100;
+  const costPct = 2 * position.feePct + position.slippagePct + (position.entryPrice / position.signalPrice - 1) * 100;
+  return { pct, costPct, exitPrice, reason, closedAt: new Date(now).toISOString() };
+}
+
 export const EXPLORE = {
+  maxOpen: 100,
+  maxPerMarket: 3,
+  feedbackWeight: 0.25,
   nearScale: 0.3,     // hoe snel de kans afneemt met de afstand tot de koopdrempel (procentpunt)
   knownTrades: 10,    // bij zoveel trades in een vakje weet hij er al redelijk veel van
   provenTrades: 30,   // vanaf zoveel trades mag hij iets "bewezen slecht" noemen
@@ -163,28 +181,33 @@ const binOf = (q, edges) => edges.filter((e) => q >= e).length;
 const clamp = (v, m) => Math.max(-m, Math.min(m, v));
 
 export function onlineCorrection(trades, rules = LEARN) {
-  const rows = trades.filter((t) => t.agent && Number.isFinite(t.agent.expectedPct) && Number.isFinite(t.pnlPct)).slice(0, rules.window);
+  const eligible = trades.filter((t) => t.agent && Number.isFinite(t.agent.expectedPct) && Number.isFinite(t.pnlPct));
+  const rows = [...eligible.filter((t) => !t.agent.virtual).slice(0, rules.window),
+    ...eligible.filter((t) => t.agent.virtual).slice(0, rules.window)];
   const bins = Array.from({ length: rules.edges.length + 1 }, () => ({ n: 0, sum: 0 }));
   for (const t of rows) {
+    const weight = t.agent.virtual ? EXPLORE.feedbackWeight : 1;
     const b = bins[binOf(t.agent.expectedPct, rules.edges)];
-    b.n++;
-    b.sum += t.pnlPct - t.agent.expectedPct;
+    b.n += weight;
+    b.sum += (t.pnlPct - t.agent.expectedPct) * weight;
   }
   const binAdj = bins.map((b) => ({ n: b.n, adj: clamp(b.sum / (b.n + rules.prior), rules.maxAdj) }));
   const coins = {};
   for (const t of rows) {
+    const weight = t.agent.virtual ? EXPLORE.feedbackWeight : 1;
     const c = (coins[t.pair] ??= { n: 0, sum: 0 });
-    c.n++;
-    c.sum += t.pnlPct - t.agent.expectedPct - binAdj[binOf(t.agent.expectedPct, rules.edges)].adj;
+    c.n += weight;
+    c.sum += (t.pnlPct - t.agent.expectedPct - binAdj[binOf(t.agent.expectedPct, rules.edges)].adj) * weight;
   }
   for (const c of Object.values(coins)) c.adj = clamp(c.sum / (c.n + rules.prior), rules.maxAdj);
   // Hoeveel ervaring per marktfase en per coin in een marktfase (voor de verkenner).
   const regimes = {};
   const cells = {};
   for (const t of rows) {
+    const weight = t.agent.virtual ? EXPLORE.feedbackWeight : 1;
     const r = t.agent.marketRegime ?? 'onbekend';
-    regimes[r] = (regimes[r] ?? 0) + 1;
-    cells[`${t.pair}|${r}`] = (cells[`${t.pair}|${r}`] ?? 0) + 1;
+    regimes[r] = (regimes[r] ?? 0) + weight;
+    cells[`${t.pair}|${r}`] = (cells[`${t.pair}|${r}`] ?? 0) + weight;
   }
   return { trades: rows.length, bins: binAdj, coins, regimes, cells, edges: rules.edges };
 }

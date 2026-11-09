@@ -253,10 +253,10 @@ def learn_entry(markets, exit_model, exit_med, H, cost, safety_stop, step=2, ext
             X.append(mk.X[i])
             y.append(r[0] - getattr(mk, 'cost', cost))
             w.append(1.0)
-    for row, ret in extra or []:  # echte trades van de bot (zwaarder)
+    for row, ret, *weights in extra or []:
         X.append(row)
         y.append(ret)
-        w.append(3.0)
+        w.append(float(weights[0]) if weights else 3.0)
     if len(X) < 1500:
         return None, None
     X = np.array(X, dtype=float)
@@ -513,7 +513,10 @@ def train_agent(cfg, recipe, fetch, pairs, log=print, progress=None, extra=None,
     # Echte trades van de bot alleen als ze vóór de validatie liggen: anders lekt de eindtest
     # (die altijd de nieuwste periode is) in het leren.
     val_start = min(int(mk.c[mk.split[1][0]][0]) for mk in markets)
-    extra = [(row, ret) for row, ret, *ts in (extra or []) if ts and ts[0] and ts[0] < val_start]
+    extra = [(row, ret, timestamps[2]) if len(timestamps) > 2 else (row, ret)
+             for row, ret, *timestamps in (extra or [])
+             if timestamps and timestamps[0] and timestamps[0] < val_start
+             and (len(timestamps) < 2 or (timestamps[1] and timestamps[0] <= timestamps[1] < val_start))]
     entry_model, entry_med = learn_entry(markets, exit_model, exit_med, H, cost, safety, extra=extra, fit_kw=fit_kw, pol=pol)
     if entry_model is None:
         return None, {**base, 'reason': 'Te weinig voorbeelden om kopen te leren'}
