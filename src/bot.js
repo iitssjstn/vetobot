@@ -1214,7 +1214,6 @@ export class Bot {
             : `Ik gebruik het hoofdrecept ${choice.agent.recipeKey ?? ''}: voor deze marktfase is nog te weinig bewijs.`,
       !choice.agent ? 'reject' : null),
     ];
-    if (choice.why === 'pauze') this.#whyNot('pauze');
     if (!choice.agent && this.#exploring(main)) return this.#agentBuy(pair, main, regime, choice, talk, { explore: 'pauze' });
     if (!choice.agent) {
       const reason = `Strategy Agent: in een ${REGIME_LABEL[regime] ?? regime} handel ik niet, daar deed geen recept het beter dan de markt`;

@@ -1136,6 +1136,7 @@ test('AI-trader-team: Strategy Agent per marktfase, Risk Agent inzet, Execution 
   assert.ok(p2, b2.pairStatus['BTC/EUR']?.reason);
   assert.ok(Math.abs(p2.costEur - b2.stakeInfo().effective / 2) < 0.6, 'halve inzet bij Strategy Agent-pauze');
   assert.match(b2.store.state.agentChats[0].talk.find((m) => m.role === 'strategy').text, /halve inzet/);
+  assert.equal(b2.agentWhySummary().counts.pauze, undefined, 'een fallback is geen koopblokkade');
   // Ander recept het best in deze fase: dat recept koopt, met volle inzet.
   const other = { ...base, recipeKey: 'B', threshold: base.threshold };
   const b3 = await run({ ...base, regimes: all({ key: 'B', why: 'best', edge: 0.3, trades: 40, agent: other }) });
