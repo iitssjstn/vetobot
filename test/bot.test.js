@@ -1129,11 +1129,13 @@ test('AI-trader-team: Strategy Agent per marktfase, Risk Agent inzet, Execution 
   assert.deepEqual(chat.talk.map((m) => m.role), ['market', 'strategy', 'aitrader', 'risk', 'controleur', 'execution']);
   assert.match(chat.talk.find((m) => m.role === 'risk').text, /halve inzet/);
   assert.match(chat.talk.at(-1).text, /^Gekocht: € /);
-  // In deze fase niet handelen: niets kopen.
+  // In een gepauzeerde fase valt hij terug op het hoofdrecept met halve inzet.
   const all = (p) => ({ stijgend: p, zijwaarts: p, dalend: p });
   const b2 = await run({ ...base, regimes: all({ key: null, why: 'pauze', edge: -0.3, trades: 40 }) });
-  assert.equal(b2.store.state.positions['BTC/EUR'], undefined);
-  assert.match(b2.pairStatus['BTC/EUR'].reason, /Strategy Agent: in een .* handel ik niet/);
+  const p2 = b2.store.state.positions['BTC/EUR'];
+  assert.ok(p2, b2.pairStatus['BTC/EUR']?.reason);
+  assert.ok(Math.abs(p2.costEur - b2.stakeInfo().effective / 2) < 0.6, 'halve inzet bij Strategy Agent-pauze');
+  assert.match(b2.store.state.agentChats[0].talk.find((m) => m.role === 'strategy').text, /halve inzet/);
   // Ander recept het best in deze fase: dat recept koopt, met volle inzet.
   const other = { ...base, recipeKey: 'B', threshold: base.threshold };
   const b3 = await run({ ...base, regimes: all({ key: 'B', why: 'best', edge: 0.3, trades: 40, agent: other }) });

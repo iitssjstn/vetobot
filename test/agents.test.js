@@ -12,7 +12,8 @@ test('Strategy Agent: recept per marktfase, of niet handelen', () => {
   assert.equal(chooseForRegime(main, 'stijgend').agent.recipeKey, 'B');
   assert.equal(chooseForRegime(main, 'stijgend').why, 'best');
   assert.equal(chooseForRegime(main, 'zijwaarts').agent, main);
-  assert.equal(chooseForRegime(main, 'dalend').agent, null);
+  assert.equal(chooseForRegime(main, 'dalend').agent, main, 'bij een pauze valt hij voorzichtig terug op het hoofdrecept');
+  assert.equal(chooseForRegime(main, 'dalend').why, 'pauze');
   assert.equal(chooseForRegime(main, null).agent, main, 'fase onbekend: hoofdrecept');
   assert.equal(chooseForRegime({ recipeKey: 'A' }, 'dalend').agent.recipeKey, 'A', 'zonder plan: hoofdrecept');
   // Plan wijst naar een ander recept zonder model: terug naar het hoofdrecept, voorzichtig.

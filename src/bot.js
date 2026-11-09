@@ -1209,10 +1209,12 @@ export class Bot {
         ? `In een ${REGIME_LABEL[regime] ?? regime} handel ik niet: daar deed het hoofdrecept het slechter dan de markt (${pc(choice.edge ?? 0)} per trade over ${choice.trades} trades) en geen ander recept beter.`
         : choice.why === 'best'
           ? `In een ${REGIME_LABEL[regime]} gebruik ik recept ${choice.agent.recipeKey}: daar het best, ${pc(choice.edge)} per trade beter dan de markt over ${choice.trades} trades.`
-          : `Ik gebruik het hoofdrecept ${choice.agent.recipeKey ?? ''}: voor deze marktfase is nog te weinig bewijs.`,
+          : choice.why === 'pauze'
+            ? `Geen recept versloeg de markt in deze fase. Ik probeer het hoofdrecept ${choice.agent.recipeKey ?? ''} alleen boven de koopdrempel, met halve inzet.`
+            : `Ik gebruik het hoofdrecept ${choice.agent.recipeKey ?? ''}: voor deze marktfase is nog te weinig bewijs.`,
       !choice.agent ? 'reject' : null),
     ];
-    if (!choice.agent) this.#whyNot('pauze');
+    if (choice.why === 'pauze') this.#whyNot('pauze');
     if (!choice.agent && this.#exploring(main)) return this.#agentBuy(pair, main, regime, choice, talk, { explore: 'pauze' });
     if (!choice.agent) {
       const reason = `Strategy Agent: in een ${REGIME_LABEL[regime] ?? regime} handel ik niet, daar deed geen recept het beter dan de markt`;

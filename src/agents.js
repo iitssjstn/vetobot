@@ -32,7 +32,7 @@ export function allAgentCoins(main) {
 export function chooseForRegime(main, regime) {
   const p = regime ? main?.regimes?.[regime] : null;
   if (!p) return { agent: main, why: regime ? 'geen plan' : 'fase onbekend', edge: null, trades: 0 };
-  if (!p.key) return { agent: null, why: 'pauze', edge: p.edge ?? null, trades: p.trades ?? 0 };
+  if (!p.key) return { agent: main, why: 'pauze', edge: p.edge ?? null, trades: p.trades ?? 0 };
   const agent = p.key === main.recipeKey ? main : p.agent ?? null;
   return { agent: agent ?? main, why: agent ? p.why : 'weinig bewijs', edge: p.edge ?? null, trades: p.trades ?? 0 };
 }
