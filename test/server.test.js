@@ -196,3 +196,34 @@ test('dashboard en API gecomprimeerd; pagina met ETag zodat hij niet steeds opni
     close();
   }
 });
+
+test('api/state wacht niet op de live-prijsopvraag', async () => {
+  const { users, manager, client, close } = await setup();
+  let finishRefresh;
+  try {
+    const admin = client();
+    await admin.post('/api/auth/setup', { username: 'justin', password: PW, code: users.setupCode });
+    const bot = manager.ensure(users.admin).bot;
+    bot.store.state.positions['BTC/EUR'] = { pair: 'BTC/EUR', entryPrice: 100, amount: 0.25, costEur: 25 };
+
+    let markStarted;
+    const refreshStarted = new Promise((resolve) => { markStarted = resolve; });
+    manager.shared.ex.fetchTickers = () => {
+      markStarted();
+      return new Promise((resolve) => { finishRefresh = resolve; });
+    };
+
+    const response = admin.get('/api/state');
+    await refreshStarted;
+    const result = await Promise.race([
+      response.then(() => 'response'),
+      new Promise((resolve) => setTimeout(() => resolve('timeout'), 500)),
+    ]);
+    assert.equal(result, 'response');
+    finishRefresh({ 'BTC/EUR': { last: 100 } });
+    assert.equal((await response).status, 200);
+  } finally {
+    finishRefresh?.({ 'BTC/EUR': { last: 100 } });
+    close();
+  }
+});

@@ -220,7 +220,7 @@ export function createApp({ users, manager, log = console }) {
     const { bot, settings, secrets, notifier } = req.ctx;
     const isAdmin = req.user.role === 'admin';
     const openPairs = Object.keys(bot.store.state.positions);
-    if (openPairs.length) await bot.refreshPrices(openPairs).catch(() => {});
+    if (openPairs.length) bot.refreshPrices(openPairs).catch(() => {});
     const open = bot.openPositionsValue();
     const store = bot.store;
     const s = store.state;

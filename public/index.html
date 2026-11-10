@@ -1797,8 +1797,8 @@ async function loadTrainer() {
   clearTimeout(trTimer);
   try { trData = await api('api/admin/trainer/status'); renderTrainer(); }
   catch (err) { $('tr-now').innerHTML = `<div class="msg err">${esc(err.message)}</div>`; }
-  // Tijdens een training elke 3 sec bijwerken, anders elke 20 sec.
-  if (isOn('trainer')) trTimer = setTimeout(loadTrainer, trData?.trainer?.running ? 3000 : 20000);
+  // Tijdens een training elke 8 sec bijwerken, anders elke 20 sec.
+  if (isOn('trainer')) trTimer = setTimeout(loadTrainer, trData?.trainer?.running ? 8000 : 20000);
 }
 function renderTrainer() {
   const d = trData; if (!d) return;
