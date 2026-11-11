@@ -7,11 +7,15 @@ Agent recepten per fase eerlijk vergelijken. Dezelfde berekening zit in de bot
 """
 import bisect
 
-from features import WARMUP, features_at, series
+import numpy as np
+
+import featcache
+from features import FEATURES, WARMUP
 from train import REGIMES, regime_of
 
 REF_TF = '1h'
 REF_MS = 3600 * 1000
+_HTF, _ATR = FEATURES.index('htfTrendPct'), FEATURES.index('atrPct')
 
 
 class RegimeLookup:
@@ -21,15 +25,16 @@ class RegimeLookup:
         self.ts = {}
         self.reg = {}
 
-    def add(self, pair, candles):
-        s = series(candles)
+    def add(self, pair, candles, cache_dir=None):
+        X = featcache.matrix(pair, REF_TF, candles, None, cache_dir, tag='noctx')
         ts, reg = [], []
         for i in range(WARMUP, len(candles)):
-            f = features_at(candles, s, i, None)
-            if f is None:
+            row = X[i]
+            if np.isnan(row[0]):
                 continue
+            t, a = row[_HTF], row[_ATR]
             ts.append(int(candles[i][0]))
-            reg.append(regime_of(f))
+            reg.append(regime_of({'htfTrendPct': None if np.isnan(t) else float(t), 'atrPct': None if np.isnan(a) else float(a)}))
         if ts:
             self.ts[pair], self.reg[pair] = ts, reg
 
@@ -42,11 +47,11 @@ class RegimeLookup:
         return self.reg[pair][j] if j >= 0 else None
 
 
-def build(fetch, pairs, days, log=print):
+def build(fetch, pairs, days, log=print, cache_dir=None):
     look = RegimeLookup()
     for pair in pairs:
         try:
-            look.add(pair, fetch(pair, REF_TF, days))
+            look.add(pair, fetch(pair, REF_TF, days), cache_dir)
         except Exception as e:
             log(f'Market Agent: {pair} 1h ophalen mislukt: {e}')
     return look

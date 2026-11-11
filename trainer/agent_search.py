@@ -105,10 +105,19 @@ def score(entry):
     - test: dezelfde cijfers voor de eindtest (alleen voor de controle)."""
     rounds = entry.get('rounds', [])
     v, t = _agg(rounds, 'val'), _agg(rounds, 'test')
+    # Werkte het in meerdere periodes (walk-forward)? Aandeel periodes met winst, over alle rondes
+    # die periodes hebben. Een recept dat maar in een deel van de periodes werkt, zakt in de rangorde.
+    fr = [x for x in rounds if x.get('folds')]
+    fn = sum(len(x['folds']) for x in fr)
+    fp = sum(x.get('foldsPositive') or 0 for x in fr)
+    cons = fp / fn if fn else None
+    if cons is not None and v['ratio'] is not None and v['ratio'] > 0:
+        v = {**v, 'ratio': v['ratio'] * cons}
     dds = [x for x in (v['drawdown'], t['drawdown']) if x is not None]
     return {'avg': v['avg'], 'edge': v['edge'], 'ratio': v['ratio'], 'trades': v['trades'], 'rounds': len(rounds),
             'tested': t['rounds'], 'positive': t['positive'], 'drawdown': max(dds) if dds else None, 'safe': v['ratio'],
-            'test': {'avg': t['avg'], 'edge': t['edge'], 'trades': t['trades'], 'drawdown': t['drawdown']}}
+            'test': {'avg': t['avg'], 'edge': t['edge'], 'trades': t['trades'], 'drawdown': t['drawdown']},
+            'periods': {'n': fn, 'positive': fp, 'share': cons}}
 
 
 def status(entry):
@@ -249,7 +258,7 @@ def add_round(recipes, recipe, report):
             'test': {x: report['test'].get(x) for x in PART_FIELDS} if report.get('test') else None,
             'val': {x: report['validation'].get(x) for x in PART_FIELDS} if report.get('validation') else None,
             'coins': report.get('coins'), 'threshold': report.get('threshold'), 'testDays': report.get('testDays'),
-            'periods': report.get('periods')}
+            'periods': report.get('periods'), 'folds': report.get('folds'), 'foldsPositive': report.get('foldsPositive')}
     e['rounds'] = (e['rounds'] + [slim])[-KEEP_ROUNDS:]
     # Eén keer te diep gezakt is genoeg: dat blijft onthouden, ook als die ronde uit de lijst valt.
     if any((slim[p] or {}).get('maxDrawdownPct') is not None and slim[p]['maxDrawdownPct'] > DANGER_DRAWDOWN for p in ('val', 'test')):

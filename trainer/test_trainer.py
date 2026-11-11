@@ -489,6 +489,8 @@ class AgentTrader(unittest.TestCase):
         bad['BTC/EUR'] = market(9000, 98, momentum=0.0)
         _, r2 = agent.train_agent({'costPct': 0.2, 'days': 60, 'agent': {}}, '15m', lambda p, tf, d: bad[p], pairs)
         self.assertFalse(r2['ok'], 'op een willekeurige markt geen valse winst')
+        if r2.get('validation') and r2['validation']['totalPct'] <= 0:
+            self.assertIsNone(r2['folds'], 'geen extra periodes voor een recept dat toch al afvalt')
 
     def test_round_publishes_and_live_proof(self):
         os.environ.setdefault('DATA_DIR', tempfile.mkdtemp())
@@ -787,6 +789,74 @@ class Patience(unittest.TestCase):
         self.assertGreater(r6['test']['avgHeld'], r1['test']['avgHeld'], 'met geduld houdt hij langer vast')
         self.assertGreaterEqual(r6['test']['avgHeld'], 5)
         self.assertIn('minstens 6 candles vasthouden', agent.recipe_text({**agent.RECIPE_DEFAULT, 'minHold': 6}))
+
+
+class FasterAndWalkForward(unittest.TestCase):
+    def test_feature_cache_only_computes_new_candles(self):
+        import featcache
+        from features import context
+        d = tempfile.mkdtemp()
+        c = market(3200, 5, momentum=0.4)
+        btc = context(market(3200, 6))
+        first = featcache.matrix('A/EUR', '5m', c[:3000], btc, d)
+        calls = []
+        orig = featcache._compute
+        featcache._compute = lambda cc, ctx, lo: (calls.append((len(cc), lo)), orig(cc, ctx, lo))[1]
+        try:
+            again = featcache.matrix('A/EUR', '5m', c[:3000], btc, d)
+            more = featcache.matrix('A/EUR', '5m', c, btc, d)
+            moved = featcache.matrix('A/EUR', '5m', c[100:], btc, d)
+        finally:
+            featcache._compute = orig
+        self.assertEqual(calls, [(2200, 2000)], 'niets bij dezelfde candles, alleen de 200 nieuwe bij meer candles')
+        np.testing.assert_array_equal(first, again)
+        fresh = orig(c, btc, 0)
+        np.testing.assert_allclose(more[400:], fresh[400:], rtol=2e-6, atol=1e-6, equal_nan=True)
+        self.assertTrue(np.isnan(moved[:featcache.WARMUP]).all(), 'eerste candles van het venster tellen nooit mee')
+        np.testing.assert_array_equal(moved[featcache.WARMUP:], more[100 + featcache.WARMUP:])
+        np.testing.assert_array_equal(featcache.matrix('A/EUR', '5m', c, btc, None), fresh, 'zonder opslag: precies de oude berekening')
+
+    def test_walk_forward_periods(self):
+        import agent
+        pairs = ['A/EUR', 'B/EUR', 'C/EUR']
+        good = {p: market(12000, i, momentum=0.6) for i, p in enumerate(pairs)}
+        good['BTC/EUR'] = market(12000, 99, momentum=0.3)
+        seen = []
+        orig = agent.learn_entry
+        def spy(markets, *a, extra=None, **k):
+            seen.append((markets[0].split[1][0], [r for _, r, *_ in (extra or [])]))
+            return orig(markets, *a, extra=extra, **k)
+        agent.learn_entry = spy
+        try:
+            row = [0.0] * len(agent.FEATURES)
+            ts = lambda i: good['A/EUR'][i][0]
+            a, r = agent.train_agent({'costPct': 0.2, 'days': 60, 'agent': {}}, {'timeframe': '15m', 'holdDays': 0.5}, lambda p, tf, d: good[p], pairs,
+                                     extra=[(row, 1.0, ts(1000), ts(1010)), (row, 2.0, ts(6000), ts(6010))])
+        finally:
+            agent.learn_entry = orig
+        self.assertEqual(len(r['folds']), 3, 'twee eerdere periodes plus de gewone validatie')
+        self.assertEqual(r['folds'][-1]['trades'], r['validation']['trades'])
+        self.assertTrue(r['folds'][0]['period'][1] < r['folds'][1]['period'][0] < r['folds'][2]['period'][0] < r['periods']['eindtest'][0])
+        self.assertEqual(r['foldsPositive'], 3)
+        self.assertTrue(r['ok'])
+        # Elke periode leert alleen van echte trades van vóór zijn eigen testperiode.
+        by = {start: extra for start, extra in seen}
+        starts = sorted(by)
+        self.assertEqual([by[s] for s in starts], [[1.0], [1.0, 2.0], [1.0, 2.0]])
+        self.assertLess(ts(1010), ts(starts[0]))
+        self.assertTrue(ts(starts[0]) < ts(6000) < ts(starts[1]))
+
+    def test_inconsistent_recipe_ranks_lower(self):
+        import agent_search as A
+        part = {'trades': 60, 'avgPct': 0.3, 'totalPct': 18, 'edgePct': 0.2, 'maxDrawdownPct': 3}
+        fold = lambda total: {'period': ['a', 'b'], 'trades': 20, 'avgPct': total / 20, 'totalPct': total}
+        recipes = {}
+        ra = {'timeframe': '1h', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
+        rb = {'timeframe': '30m', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
+        A.add_round(recipes, ra, {'ok': True, 'validation': part, 'test': part, 'folds': [fold(5), fold(4), fold(6)], 'foldsPositive': 3})
+        A.add_round(recipes, rb, {'ok': False, 'validation': {**part, 'avgPct': 0.4, 'edgePct': 0.3}, 'test': part, 'folds': [fold(-5), fold(-4), fold(9)], 'foldsPositive': 1})
+        self.assertEqual(A.leaderboard(recipes)[0]['recipe'], ra, 'werkt in alle periodes: boven het recept dat maar in één periode werkte')
+        self.assertEqual(A.score(recipes[A.key_of(rb)])['periods'], {'n': 3, 'positive': 1, 'share': 1 / 3})
 
 
 class HonestTesting(unittest.TestCase):

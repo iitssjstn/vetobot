@@ -26,8 +26,9 @@ import time
 
 import numpy as np
 
+import featcache
 import market as market_agent
-from features import FEATURES, WARMUP, context, features_at, series
+from features import FEATURES, WARMUP, context
 
 POS_FEATURES = ['posPnlPct', 'posCandles', 'posMaxPct', 'posDrawPct']
 TF_MIN = {'1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120, '4h': 240}
@@ -98,15 +99,11 @@ def pos_state(entry, price, hmax, h):
 class Market:
     """Kenmerken van één coin, vooraf uitgerekend (rij per candle; NaN als onbekend)."""
 
-    def __init__(self, pair, candles, ctx):
+    def __init__(self, pair, candles, ctx, tf=None, cache_dir=None):
         self.pair = pair
         self.c = candles
-        s = series(candles)
-        self.X = np.full((len(candles), len(FEATURES)), np.nan)
-        for i in range(WARMUP, len(candles)):
-            f = features_at(candles, s, i, ctx)
-            if f is not None:
-                self.X[i] = [np.nan if f[k] is None else f[k] for k in FEATURES]
+        # Met opslag (alleen als de BTC-kenmerken er zijn) hoeft alleen het nieuwe stuk uitgerekend.
+        self.X = featcache.matrix(pair, tf, candles, ctx, cache_dir if ctx is not None and tf else None)
         self.close = np.array([x[4] for x in candles], dtype=float)
         self.high = np.array([x[2] for x in candles], dtype=float)
         self.low = np.array([x[3] for x in candles], dtype=float)
@@ -196,47 +193,60 @@ def learn_exit(markets, H, rnd, say, iters=5, per_entry=6, step=3, fit_kw=None, 
     return model, med
 
 
+_WHY = ('einde data', 'veiligheidsstop', 'zelf verkocht', 'maximale duur')
+
+
 def simulate_exits(mk, idx, exit_model, exit_med, H, safety_stop, pol=(1, 0.0)):
     """Speel aankopen op candles idx na met het geleerde verkoopgedrag. Geeft per aankoop
-    (rendement % zonder kosten, aantal candles, reden)."""
-    out = [None] * len(idx)
-    active = list(range(len(idx)))
-    entry = mk.close[np.array(idx)]
+    (rendement % zonder kosten, aantal candles, reden). Alle aankopen tegelijk per stap (numpy)."""
+    m = len(idx)
+    if not m:
+        return []
+    idx = np.asarray(idx, dtype=np.int64)
+    n = len(mk.c)
+    entry = mk.close[idx]
     runmax = entry.copy()
+    ret = np.zeros(m)
+    held = np.zeros(m, dtype=np.int64)
+    why = np.full(m, -1, dtype=np.int64)
+    active = np.arange(m)
+    min_hold = max(1, pol[0])
     h = 0
-    while active and h < H:
-        rows, keep = [], []
-        for a in active:
-            t = idx[a] + h
-            if t >= len(mk.c) - 1:
-                out[a] = ((mk.close[min(t, len(mk.c) - 1)] / entry[a] - 1) * 100, h, 'einde data')
-                continue
-            if h > 0:
-                runmax[a] = max(runmax[a], mk.high[t])
-                # Veiligheidsstop binnen de candle
-                if (mk.low[t] / entry[a] - 1) * 100 <= -safety_stop:
-                    out[a] = (-safety_stop, h, 'veiligheidsstop')
-                    continue
-            rows.append(list(mk.X[t]) + pos_state(entry[a], mk.close[t], runmax[a], h))
-            keep.append(a)
-        if not keep:
+    while len(active) and h < H:
+        t = idx[active] + h
+        end = t >= n - 1
+        if end.any():
+            a = active[end]
+            ret[a] = (mk.close[np.minimum(t[end], n - 1)] / entry[a] - 1) * 100
+            held[a], why[a] = h, 0
+            active, t = active[~end], t[~end]
+        if h > 0 and len(active):
+            runmax[active] = np.maximum(runmax[active], mk.high[t])
+            # Veiligheidsstop binnen de candle
+            stop = (mk.low[t] / entry[active] - 1) * 100 <= -safety_stop
+            if stop.any():
+                a = active[stop]
+                ret[a], held[a], why[a] = -safety_stop, h, 1
+                active, t = active[~stop], t[~stop]
+        if not len(active):
             break
-        q = exit_model.predict(_impute(np.array(rows, dtype=float), exit_med))
-        nxt = []
-        for a, qv in zip(keep, q):
-            t = idx[a] + h
-            # Geduld (uit het recept): minstens pol[0] candles vasthouden, en pas verkopen als de
-            # verwachting van langer vasthouden onder -pol[1] % zakt. De noodstop werkt altijd.
-            if h >= max(1, pol[0]) and qv < -pol[1]:
-                out[a] = ((mk.close[t] / entry[a] - 1) * 100, h, 'zelf verkocht')
-            else:
-                nxt.append(a)
-        active = nxt
+        rows = np.hstack([mk.X[t], _pos_block(entry[active], mk.close[t], runmax[active], np.full(len(active), h))])
+        q = exit_model.predict(_impute(rows, exit_med))
+        # Geduld (uit het recept): minstens pol[0] candles vasthouden, en pas verkopen als de
+        # verwachting van langer vasthouden onder -pol[1] % zakt. De noodstop werkt altijd.
+        if h >= min_hold:
+            sell = q < -pol[1]
+            if sell.any():
+                a = active[sell]
+                ret[a] = (mk.close[t[sell]] / entry[a] - 1) * 100
+                held[a], why[a] = h, 2
+                active = active[~sell]
         h += 1
-    for a in active:
-        t = min(idx[a] + H, len(mk.c) - 1)
-        out[a] = ((mk.close[t] / entry[a] - 1) * 100, H, 'maximale duur')
-    return out
+    if len(active):
+        t = np.minimum(idx[active] + H, n - 1)
+        ret[active] = (mk.close[t] / entry[active] - 1) * 100
+        held[active], why[active] = H, 3
+    return [(float(r), int(d), _WHY[w]) for r, d, w in zip(ret, held, why)]
 
 
 def learn_entry(markets, exit_model, exit_med, H, cost, safety_stop, step=2, extra=None, fit_kw=None, pol=(1, 0.0)):
@@ -464,6 +474,40 @@ def recipe_text(r):
     return txt
 
 
+THRESHOLDS = (0.0, 0.1, 0.2, 0.3, 0.5, 0.8, 1.2)
+# Eerdere periodes: leren tot fractie a van de geschiedenis, testen op a..b (met buffer). De gewone
+# validatie (0,70..0,85) is de laatste periode; de eindtest (0,85..1) blijft de controle.
+FOLDS = ((0.40, 0.55), (0.55, 0.70))
+
+
+def _before(extra, ts):
+    """Echte trades die helemaal vóór tijdstip ts liggen (anders lekt de testperiode in het leren)."""
+    return [(row, ret, t[2]) if len(t) > 2 else (row, ret) for row, ret, *t in extra
+            if t and t[0] and t[0] < ts and (len(t) < 2 or (t[1] and t[0] <= t[1] < ts))]
+
+
+def _fold(markets, a, b, H, rnd, recipe, fit_kw, pol, cost, safety, extra, regimes, slots):
+    """Eén eerdere periode: leer op [begin, a], test op [a + buffer, b]. Geeft het resultaat per
+    koopdrempel, of None als er te weinig data is."""
+    saved = [mk.split for mk in markets]
+    try:
+        for mk in markets:
+            n = len(mk.c)
+            mk.split = ((WARMUP, int(n * a)), (int(n * a) + H, int(n * b)), (int(n * b), int(n * b)))
+        exit_model, exit_med = learn_exit(markets, H, rnd, lambda k: None, iters=recipe['look'], fit_kw=fit_kw, pol=pol)
+        if exit_model is None:
+            return None
+        start = min(int(mk.c[mk.split[1][0]][0]) for mk in markets)
+        entry_model, entry_med = learn_entry(markets, exit_model, exit_med, H, cost, safety, extra=_before(extra, start), fit_kw=fit_kw, pol=pol)
+        if entry_model is None:
+            return None
+        return backtest(markets, 1, entry_model, entry_med, exit_model, exit_med, H, cost, safety, THRESHOLDS,
+                        bench=markets, regimes=regimes, slots=slots, pol=pol)
+    finally:
+        for mk, sp in zip(markets, saved):
+            mk.split = sp
+
+
 def train_agent(cfg, recipe, fetch, pairs, log=print, progress=None, extra=None, seed=1):
     """Train een AI-trader volgens een recept (candle-tijd, maximale duur, modelgrootte, hoe ver
     vooruitkijken). Kiest zelf de koopdrempel én de coins (op de validatie), en test daarna eerlijk.
@@ -496,7 +540,7 @@ def train_agent(cfg, recipe, fetch, pairs, log=print, progress=None, extra=None,
             continue
         if len(c) < WARMUP + 6 * H:
             continue
-        mk = Market(pair, c, ctx)
+        mk = Market(pair, c, ctx, tf, cfg.get('featureCache'))
         mk.split = _split(len(c), H)
         # Werkelijke kosten van deze coin (gemeten door de bot), anders de ingestelde kosten.
         mk.cost = float((cfg.get('costs') or {}).get(pair, cost))
@@ -513,10 +557,8 @@ def train_agent(cfg, recipe, fetch, pairs, log=print, progress=None, extra=None,
     # Echte trades van de bot alleen als ze vóór de validatie liggen: anders lekt de eindtest
     # (die altijd de nieuwste periode is) in het leren.
     val_start = min(int(mk.c[mk.split[1][0]][0]) for mk in markets)
-    extra = [(row, ret, timestamps[2]) if len(timestamps) > 2 else (row, ret)
-             for row, ret, *timestamps in (extra or [])
-             if timestamps and timestamps[0] and timestamps[0] < val_start
-             and (len(timestamps) < 2 or (timestamps[1] and timestamps[0] <= timestamps[1] < val_start))]
+    extra_all = extra or []
+    extra = _before(extra_all, val_start)
     entry_model, entry_med = learn_entry(markets, exit_model, exit_med, H, cost, safety, extra=extra, fit_kw=fit_kw, pol=pol)
     if entry_model is None:
         return None, {**base, 'reason': 'Te weinig voorbeelden om kopen te leren'}
@@ -524,18 +566,42 @@ def train_agent(cfg, recipe, fetch, pairs, log=print, progress=None, extra=None,
     # Koopdrempel kiezen op de validatieperiode (niet op de eindtest). Het resultaat op de validatie
     # (alle coins) is ook waarop recepten gekozen en gerangschikt worden; de eindtest is alleen de
     # controle (goed genoeg: ja of nee).
-    regimes = market_agent.build(fetch, [m.pair for m in markets], int(cfg['days']), log=log)
-    best = None
-    vals = backtest(markets, 1, entry_model, entry_med, exit_model, exit_med, H, cost, safety, (0.0, 0.1, 0.2, 0.3, 0.5, 0.8, 1.2),
+    regimes = market_agent.build(fetch, [m.pair for m in markets], int(cfg['days']), log=log, cache_dir=cfg.get('featureCache'))
+    vals = backtest(markets, 1, entry_model, entry_med, exit_model, exit_med, H, cost, safety, THRESHOLDS,
                     bench=markets, regimes=regimes, slots=slots, pol=pol)
+    # Eerdere periodes (walk-forward): hetzelfde recept opnieuw geleerd op een korter stuk verleden en
+    # getest op de periode erna. Werkt een recept in meerdere periodes, dan is het minder vaak toeval.
+    ref = max(markets, key=lambda m: len(m.c))
+    when = lambda i: time.strftime('%Y-%m-%d %H:%M', time.gmtime(ref.c[min(i, len(ref.c) - 1)][0] / 1000))
+    folds = []
+    # Alleen de moeite waard als het recept op de gewone validatie al winst maakt; anders valt het
+    # toch af en sparen we de rekentijd voor het volgende recept.
+    promising = any(v['trades'] >= max(10, len(markets) * 2) and v['totalPct'] > 0 for v in vals.values())
+    for k, (fa, fb) in enumerate(FOLDS if promising and cfg.get('folds', True) else ()):
+        step('agent', 3, 5, f'AI-trader {tf}: eerdere periode {k + 1}/{len(FOLDS)} leren en testen')
+        fv = _fold(markets, fa, fb, H, random.Random(seed * 1000 + k), recipe, fit_kw, pol, cost, safety, extra_all, regimes, slots)
+        if fv:
+            lo, hi = int(len(ref.c) * fa) + H, int(len(ref.c) * fb)
+            folds.append({'period': [when(lo), when(hi - 1)], 'vals': fv})
+    folds.append({'period': [when(ref.split[1][0]), when(ref.split[1][1] - 1)], 'vals': vals})
+    # Koopdrempel: het meeste resultaat over alle periodes samen (genoeg trades in de laatste).
+    best = None
     for thr, v in vals.items():
-        if v['trades'] >= max(10, len(markets) * 2) and (best is None or v['totalPct'] > best[1]['totalPct']):
-            best = (thr, v)
+        total = sum(f['vals'][thr]['totalPct'] for f in folds)
+        if v['trades'] >= max(10, len(markets) * 2) and (best is None or total > best[2]):
+            best = (thr, v, total)
     if best is None:
         return None, {**base, 'reason': 'Op de validatie vond hij geen drempel met genoeg trades'}
-    thr, val = best
-    # Coins kiezen, ook op de validatie: alleen coins waar hij daar winst maakte.
-    bp = val.get('byPair', {})
+    thr, val = best[0], best[1]
+    fold_rows = [{'period': f['period'], **{x: f['vals'][thr].get(x) for x in ('trades', 'avgPct', 'totalPct', 'edgePct', 'maxDrawdownPct')}} for f in folds]
+    fold_pos = sum(1 for f in fold_rows if f['trades'] and f['totalPct'] > 0)
+    # Coins kiezen, ook op de validatie (alle periodes samen): alleen coins waar hij daar winst maakte.
+    bp = {}
+    for f in folds:
+        for p, x in (f['vals'][thr].get('byPair') or {}).items():
+            b = bp.setdefault(p, {'trades': 0, 'totalPct': 0.0})
+            b['trades'] += x['trades']
+            b['totalPct'] += x['totalPct']
     coins = [m.pair for m in markets if bp.get(m.pair, {}).get('trades', 0) >= 2 and bp[m.pair]['totalPct'] > 0]
     if not coins:
         coins = [m.pair for m in markets]
@@ -544,12 +610,12 @@ def train_agent(cfg, recipe, fetch, pairs, log=print, progress=None, extra=None,
     test = backtest(chosen, 2, entry_model, entry_med, exit_model, exit_med, H, cost, safety, (thr,), bench=markets, regimes=regimes, slots=slots, pol=pol)[thr]
     days_test = sum((mk.split[2][1] - mk.split[2][0]) for mk in chosen) / len(chosen) * TF_MIN.get(tf, 15) / 1440
     # Alleen goed als hij ook beter deed dan meedobberen met de markt tijdens zijn trades.
+    # En alleen als het in de meeste periodes werkte (alle op één na), niet in één toevallig goede.
     ok = bool(val['totalPct'] > 0 and test['trades'] >= MIN_TEST_TRADES and (test['avgPct'] or 0) >= MIN_TEST_AVG
-              and (test.get('edgePct') is None or test['edgePct'] > 0))
-    ref = max(markets, key=lambda m: len(m.c))
-    when = lambda i: time.strftime('%Y-%m-%d %H:%M', time.gmtime(ref.c[min(i, len(ref.c) - 1)][0] / 1000))
+              and (test.get('edgePct') is None or test['edgePct'] > 0) and fold_pos >= max(1, len(fold_rows) - 1))
     periods = {name: [when(lo), when(hi - 1)] for name, (lo, hi) in zip(('leren', 'validatie', 'eindtest'), ref.split)}
     report = {**base, 'ok': ok, 'threshold': thr, 'validation': val, 'test': test, 'testDays': round(days_test, 1), 'periods': periods,
+              'folds': fold_rows if len(fold_rows) > 1 else None, 'foldsPositive': fold_pos if len(fold_rows) > 1 else None,
               'pairs': [m.pair for m in markets], 'coins': coins, 'maxHold': H, 'seconds': round(time.time() - started)}
     try:
         report['exitFocus'] = _importance(exit_model, FEATURES + POS_FEATURES, markets, exit_med, H)

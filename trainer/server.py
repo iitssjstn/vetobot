@@ -879,7 +879,8 @@ def agent_round():
             def prog(phase, done, total, text):
                 state['agentProgress'] = {**state['agentProgress'], 'done': done, 'total': total, 'text': text}
             costs, _, cost_default = cost_table(cfg)
-            agent, report = agent_mod.train_agent({**cfg, 'agent': cfg['agent'], 'costPct': cost_default, 'costs': costs}, recipe, fetch, pairs, log=log,
+            agent, report = agent_mod.train_agent({**cfg, 'agent': cfg['agent'], 'costPct': cost_default, 'costs': costs,
+                                                   'featureCache': os.path.join(DATA, 'features')}, recipe, fetch, pairs, log=log,
                                                   progress=prog, extra=agent_extra(recipe['timeframe']), seed=data.get('round', 0) + 1)
         finally:
             state['agentBusy'] = False
@@ -1060,6 +1061,10 @@ def agent_mod_say(r, entry=None):
          f"deed ik {t['trades']} trades, gemiddeld {f(t['avgPct'])} per trade, {'?' if t.get('winRate') is None else format(t['winRate'], '.0f')}% met winst, "
          f"gemiddeld {thoughts.hold(int(held))} vastgehouden. Kopen en vasthouden had {f(t.get('buyHoldPct'))} opgeleverd. "
          f"Mijn grootste terugval was {f(-(t.get('maxDrawdownPct') or 0))}, mijn slechtste trade {f(t.get('worstPct'))}. ")
+    if r.get('folds'):
+        n, pos = len(r['folds']), r.get('foldsPositive') or 0
+        s += (f"Ik heb dit recept in {n} periodes na elkaar getest (steeds geleerd op het verleden ervoor): in {pos} daarvan maakte het winst. "
+              + ('' if pos >= max(1, n - 1) else 'Dat is te wisselend; ik reken dit recept niet goed. '))
     if t.get('edgePct') is not None:
         beat = '' if t.get('beatMarketRate') is None else f" ({t['beatMarketRate']:.0f}% van de trades beter)"
         s += (f"De markt deed tijdens mijn trades gemiddeld {f(t.get('marketPct'))}; ik deed het per trade {f(t['edgePct'])} "

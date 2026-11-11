@@ -558,7 +558,7 @@
       </div>
       <div data-trpane="recepten" hidden>
       <div class="panel" data-agentpanel hidden>
-        <div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Recepten</h2><span class="hint">elke ronde probeert hij er een; gekozen op de validatie, gecontroleerd met de eindtest</span></div>
+        <div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Recepten</h2><span class="hint">elke ronde probeert hij er een; gekozen op de validatie in 3 periodes na elkaar, gecontroleerd met de eindtest</span></div>
         <div class="scroll" id="ag-table"></div>
         <div class="scroll" id="ag-costs"></div>
       </div>
@@ -2139,6 +2139,7 @@ function renderAgent(t, nl) {
     ['Recept', (r) => `${esc(r.text)}${pub?.key === r.key ? ' <span class="badge ok">bot handelt hiermee</span>' : ''}`],
     ['Rondes', (r) => `<span class="num">${r.score.tested}</span>`, 'r'],
     ['Validatie (kiezen)', (r) => r.score.avg != null ? `<span class="${r.score.avg > 0 ? 'up' : 'down'}">${sign(r.score.avg)}</span> per trade <span class="muted">· ${r.score.trades} trades</span>` : `<span class="muted">${esc(r.last?.reason ?? '–')}</span>`],
+    ['Periodes met winst', (r) => r.score.periods?.n ? `<span class="num ${r.score.periods.share >= 0.66 ? 'up' : 'down'}" title="${esc((r.last?.folds ?? []).map((f) => `${f.period?.[0]?.slice(0, 10)} tot ${f.period?.[1]?.slice(0, 10)}: ${f.trades} trades, ${sign(f.avgPct)}`).join('\n'))}">${r.score.periods.positive} van ${r.score.periods.n}</span>` : '<span class="muted">–</span>', 'r'],
     ['Eindtest (controle)', (r) => r.score.test?.avg != null ? `<span class="${r.score.test.avg > 0 ? 'up' : 'down'}">${sign(r.score.test.avg)}</span> <span class="muted">· ${r.score.test.trades} trades${r.score.test.edge != null ? ` · ${sign(r.score.test.edge)} t.o.v. markt` : ''}</span>` : '–'],
     ['Per marktfase', (r) => REGIMES.map(([k, ic]) => { const x = r.byRegime?.[k]; return x?.trades ? `<span title="${k}: ${x.trades} trades" class="${(x.edge ?? 0) > 0 ? 'up' : 'down'}">${ic} ${x.edge != null ? sign(x.edge) : '–'}</span>` : `<span class="muted" title="${k}: nog geen trades">${ic} –</span>`; }).join(' ')],
     ['Beter dan de markt', (r) => r.score.edge != null ? `<span class="${r.score.edge > 0 ? 'up' : 'down'}">${sign(r.score.edge)}</span> per trade` : '<span class="muted">nog niet gemeten</span>'],
