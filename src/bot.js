@@ -956,7 +956,10 @@ export class Bot {
     let book = null;
     try {
       this.#step(`${pair}: orderboek bekijken`);
-      book = analyzeBook(await this.ex.fetchOrderBook?.(pair, 50), this.entryRisk().stakeEur);
+      // Met de inzet die deze trade echt krijgt (de Risk Agent en de verkenner kopen kleiner).
+      const ga = result.indicators?.agent;
+      const planned = ga ? (ga.explore ? Math.min(this.entryRisk().stakeEur, LIVE_MIN_STAKE_EUR) : riskStake(this.entryRisk().stakeEur, ga.stakeFactor ?? 1)) : this.entryRisk().stakeEur;
+      book = analyzeBook(await this.ex.fetchOrderBook?.(pair, 50), planned);
     } catch {
       book = null; // geen boek: niet blokkeren
     }
@@ -1418,9 +1421,9 @@ export class Bot {
       return { buy: false, reason };
     }
     // Risk Agent: is deze trade verantwoord, en met welke inzet?
-    const risk = assessRisk({ pair, trades: this.store.state.trades, choice, execLog: this.store.state.execLog ?? [] });
+    const risk = assessRisk({ pair, trades: this.store.state.trades, choice, execLog: this.store.state.execLog ?? [], mode: this.mode });
     if (risk.block) {
-      this.#whyNot('risico', q, agent.threshold);
+      this.#whyNot(risk.kind ?? 'risico', q, agent.threshold);
       const reason = `Risk Agent: ${risk.block}`;
       this.agentReason[pair] = reason;
       this.think(`Ik zie een kans bij ${pair} (${nl(q)}% verwacht), maar de Risk Agent houdt me tegen: ${risk.block}.`, pair, 'warn');

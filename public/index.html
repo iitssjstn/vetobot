@@ -2057,7 +2057,7 @@ function rewardsRender(rw, trend, sign, nl) {
   ]) : '<p class="muted" style="margin:0">Nog geen leerrondes.</p>';
   const wn = state?.agent?.team?.whyNot;
   const WN = { 'wil kopen': 'wil kopen (signaal)', drempel: 'verwachting onder zijn koopdrempel', coin: 'coin niet gekozen', pauze: 'pauze Strategy Agent (marktfase)',
-    toelating: 'mag niet (recept oefent / live-eisen)', risico: 'Risk Agent', risicoregels: 'risicoregels (max. trades, daglimiet, saldo)', orderboek: 'orderboek-check', 'AI-controleur': 'AI-controleur zei nee',
+    toelating: 'mag niet (recept oefent / live-eisen)', risico: 'Risk Agent', verliesreeks: 'Risk Agent: pauze na verliesreeks', 'dure uitvoering': 'Risk Agent: orders in deze coin te duur', risicoregels: 'risicoregels (max. trades, daglimiet, saldo)', orderboek: 'orderboek-check', 'AI-controleur': 'AI-controleur zei nee',
     'coin bezet door verkenner': 'coin bezet door de verkenner' };
   const why = wn?.total ? `<div class="sub-h" style="margin:4px 0 6px">${icon('target')}Waarom koopt de AI-trader (niet)? <span class="muted" style="font-weight:500">laatste 24 uur, per beoordeelde candle</span></div>`
     + `<div style="font-size:13.5px;line-height:1.7;margin:0 0 12px">${Object.entries(wn.counts).sort((a, b) => b[1] - a[1]).map(([k, n]) => `<span class="badge ${k === 'wil kopen' ? 'ok' : 'soft'}">${esc(WN[k] ?? k)}: ${n}×</span>`).join(' ')}`

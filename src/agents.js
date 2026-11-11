@@ -61,21 +61,28 @@ export function lossStreak(trades) {
 // Is deze aankoop verantwoord? Geeft { block: reden | null, stakeFactor, notes: [] }.
 // trades: gesloten trades (nieuwste eerst), choice: uitkomst van chooseForRegime,
 // execLog: uitgevoerde orders (nieuwste eerst), now: tijd in ms.
-export function assessRisk({ pair, trades = [], choice = null, execLog = [], now = Date.now(), rules = RISK }) {
+// mode: in paper geen pauze na een verliesreeks (hij moet daar juist blijven handelen om te leren en
+// om bewijs voor live op te bouwen), wel de kleinste inzet. Live pauzeert hij.
+export function assessRisk({ pair, trades = [], choice = null, execLog = [], now = Date.now(), rules = RISK, mode = 'live' }) {
   const notes = [];
+  let small = false;
   const streak = lossStreak(trades);
   if (streak >= rules.lossStreak) {
     const last = trades.find((t) => t.agent && !t.agent.explore);
     const left = rules.pauseHours * 3600000 - (now - Date.parse(last?.closedAt ?? 0));
+    if (left > 0 && mode !== 'paper') {
+      return { block: `${streak} verliezen op rij: ik koop ${Math.ceil(left / 3600000)} uur niets om af te koelen`, kind: 'verliesreeks', stakeFactor: 0, notes };
+    }
     if (left > 0) {
-      return { block: `${streak} verliezen op rij: ik koop ${Math.ceil(left / 3600000)} uur niets om af te koelen`, stakeFactor: 0, notes };
+      small = true;
+      notes.push(`kleinste inzet: ${streak} verliezen op rij (live zou ik nu pauzeren)`);
     }
   }
   const fills = execLog.filter((x) => x.pair === pair && Number.isFinite(x.slipPct)).slice(0, rules.slipOrders);
   if (fills.length >= rules.slipOrders) {
     const avg = fills.reduce((a, x) => a + x.slipPct, 0) / fills.length;
     if (avg > rules.maxSlipPct) {
-      return { block: `orders in ${pair} kwamen gemiddeld ${avg.toFixed(2).replace('.', ',')}% slechter uit dan verwacht: te duur om te handelen`, stakeFactor: 0, notes };
+      return { block: `orders in ${pair} kwamen gemiddeld ${avg.toFixed(2).replace('.', ',')}% slechter uit dan verwacht: te duur om te handelen`, kind: 'dure uitvoering', stakeFactor: 0, notes };
     }
   }
   let stakeFactor = 1;
@@ -83,6 +90,7 @@ export function assessRisk({ pair, trades = [], choice = null, execLog = [], now
     stakeFactor = rules.carefulFactor;
     notes.push('halve inzet: nog weinig bewijs voor deze marktfase');
   }
+  if (small) stakeFactor = 0.01; // riskStake maakt hier de kleinste order van
   return { block: null, stakeFactor, notes };
 }
 
@@ -140,7 +148,7 @@ export const EXPLORE = {
   provenTrades: 30,   // vanaf zoveel trades mag hij iets "bewezen slecht" noemen
   provenBad: -0.3,    // ... als het daar gemiddeld zoveel procentpunt slechter uitkwam dan verwacht
   farBelow: 0.3,      // ... en de kans zoveel onder de drempel ligt
-  floor: 0.1,         // ook ver weg nog af en toe kijken (de markt verandert)
+  floor: 0.02,        // ook ver weg nog heel af en toe kijken (de markt verandert)
 };
 
 // Hoe waardevol is deze twijfelkans om te verkennen? Geeft { p (kans om te kopen), skip (reden of
@@ -263,7 +271,8 @@ export function rewardSummary(trades, now = Date.now(), maxPoints = 600) {
   let verdict = 'te weinig';
   if (recent.length >= 10 && before.length >= 10) verdict = a1 - a0 > 0.02 ? 'beter' : a0 - a1 > 0.02 ? 'slechter' : 'gelijk';
   return {
-    points: rows.slice(-maxPoints).map((r) => ({ at: r.at, pct: +r.pct.toFixed(3), who: r.who, pair: r.pair, exp: r.exp })),
+    // Per soort de laatste punten, zodat de vele verkennertrades die van de AI-trader niet wegdrukken.
+    points: [...rows.filter((r) => r.who === 'ai').slice(-maxPoints), ...rows.filter((r) => r.who !== 'ai').slice(-maxPoints)].sort((a, b) => a.at - b.at).map((r) => ({ at: r.at, pct: +r.pct.toFixed(3), who: r.who, pair: r.pair, exp: r.exp })),
     weeks: wk.reverse(),
     trend: { recent: { n: recent.length, avgPct: a1, expectError: e1 }, before: { n: before.length, avgPct: a0, expectError: e0 }, verdict },
   };

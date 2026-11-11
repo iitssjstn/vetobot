@@ -1144,21 +1144,34 @@ test('AI-trader-team: Strategy Agent per marktfase, Risk Agent inzet, Execution 
   assert.ok(p3, b3.pairStatus['BTC/EUR']?.reason);
   assert.equal(p3.agent.recipe, 'B');
   assert.ok(Math.abs(p3.costEur - b3.stakeInfo().effective) < 0.6, 'volle inzet');
-  // Risk Agent: na 3 verliezen op rij geen nieuwe aankoop.
-  const { bot, ex } = setup({});
-  await bot.setRisk({ cooldownMinutes: 0 });
-  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0 });
-  bot.getAgent = () => base;
+  // Risk Agent in paper: na 3 verliezen op rij geen pauze, wel de kleinste inzet (live pauzeert hij).
+  const mk = async () => {
+    const x = setup({});
+    await x.bot.setRisk({ cooldownMinutes: 0 });
+    await x.bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0 });
+    x.bot.getAgent = () => base;
+    x.ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+    return x;
+  };
+  const a = await mk();
   const now = new Date().toISOString();
-  bot.store.state.trades = [1, 2, 3].map(() => ({ pair: 'ETH/EUR', pnlEur: -1, pnlPct: -1, closedAt: now, agent: { recipe: 'A' } }));
-  ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+  a.bot.store.state.trades = [1, 2, 3].map(() => ({ pair: 'ETH/EUR', pnlEur: -1, pnlPct: -1, closedAt: now, agent: { recipe: 'A' } }));
+  await a.bot.tick();
+  const small = a.bot.store.state.positions['BTC/EUR'];
+  assert.ok(small, a.bot.pairStatus['BTC/EUR']?.reason);
+  assert.ok(small.costEur <= 5.5, `kleinste inzet na verliesreeks: ${small.costEur}`);
+  assert.match(a.bot.store.state.agentChats[0].talk.find((m) => m.role === 'risk').text, /3 verliezen op rij \(live zou ik nu pauzeren\)/);
+  // Orders in deze coin vielen steeds te duur uit: dan koopt hij niet, ook niet in paper.
+  const { bot } = await mk();
+  bot.store.state.execLog = [1, 2, 3].map(() => ({ pair: 'BTC/EUR', side: 'buy', slipPct: 0.8 }));
   await bot.tick();
   assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
-  assert.match(bot.pairStatus['BTC/EUR'].reason, /Risk Agent: 3 verliezen op rij/);
+  assert.match(bot.pairStatus['BTC/EUR'].reason, /Risk Agent: orders in BTC\/EUR/);
   const blocked = bot.store.state.agentChats[0];
   assert.equal(blocked.outcome, 'blocked');
   assert.equal(blocked.talk.at(-1).role, 'risk');
   assert.equal(blocked.talk.at(-1).decision, 'reject');
+  assert.equal(bot.agentTeam().whyNot.counts['dure uitvoering'], 1);
 });
 
 test('dagoverzicht met de AI-trader: geen ongeteste voorstellen, AI-trader in de data, model zichtbaar', async () => {

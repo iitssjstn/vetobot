@@ -31,6 +31,9 @@ test('Risk Agent: verliesreeks, slechte uitvoering en inzet', () => {
   assert.equal(lossStreak(trades), 3, 'trades zonder AI-trader tellen niet mee');
   assert.match(assessRisk({ pair: 'BTC/EUR', trades, now }).block, /3 verliezen op rij: ik koop 5 uur niets/);
   assert.equal(assessRisk({ pair: 'BTC/EUR', trades: [loss(7), loss(8), loss(9)], now }).block, null, 'pauze voorbij');
+  const paper = assessRisk({ pair: 'BTC/EUR', trades, now, mode: 'paper', choice: { why: 'best' } });
+  assert.equal(paper.block, null, 'paper: geen pauze');
+  assert.equal(riskStake(20, paper.stakeFactor), 5, 'maar wel de kleinste inzet');
   const execLog = [1, 2, 3].map(() => ({ pair: 'ETH/EUR', slipPct: 0.8 }));
   assert.match(assessRisk({ pair: 'ETH/EUR', execLog, now }).block, /slechter uit dan verwacht/);
   assert.equal(assessRisk({ pair: 'BTC/EUR', execLog, now }).block, null, 'andere coin');
@@ -138,4 +141,9 @@ test('Beloningen door de tijd: punten, weken en conclusie', () => {
   assert.equal(r.weeks.reduce((a, w) => a + w.rewards + w.penalties, 0), 24);
   assert.equal(rewardSummary(fresh, now).trend.verdict, 'te weinig');
   assert.equal(r.points.filter((p) => p.who === 'verkenner').length, 4);
+  // Veel verkennertrades drukken de AI-trader niet uit de grafiek.
+  const many = [...Array(50)].map((_, i) => t(0.01 * i, -0.1, true));
+  const r2 = rewardSummary([...many, t(20, 0.5)], now, 10);
+  assert.equal(r2.points.filter((p) => p.who === 'ai').length, 1);
+  assert.equal(r2.points.filter((p) => p.who === 'verkenner').length, 10);
 });
