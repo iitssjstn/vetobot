@@ -148,7 +148,7 @@ export const EXPLORE = {
   provenTrades: 30,   // vanaf zoveel trades mag hij iets "bewezen slecht" noemen
   provenBad: -0.3,    // ... als het daar gemiddeld zoveel procentpunt slechter uitkwam dan verwacht
   farBelow: 0.3,      // ... en de kans zoveel onder de drempel ligt
-  floor: 0.02,        // ook ver weg nog heel af en toe kijken (de markt verandert)
+  floor: 0.1,         // ook ver weg nog af en toe kijken (de markt verandert)
 };
 
 // Hoe waardevol is deze twijfelkans om te verkennen? Geeft { p (kans om te kopen), skip (reden of
