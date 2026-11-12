@@ -27,6 +27,7 @@ import time
 import numpy as np
 
 import featcache
+import resources
 import market as market_agent
 from features import FEATURES, WARMUP, context
 
@@ -39,7 +40,8 @@ def _fit(X, y, w=None, seed=7, depth=4, leaf=200, iters=120):
     from sklearn.ensemble import HistGradientBoostingRegressor
     m = HistGradientBoostingRegressor(max_iter=iters, max_depth=depth, learning_rate=0.08, min_samples_leaf=leaf,
                                       l2_regularization=1.0, random_state=seed)
-    m.fit(X, y, sample_weight=w)
+    with resources.fit_guard():  # nooit twee trainingen tegelijk; warning-instellingen heel houden
+        m.fit(X, y, sample_weight=w)
     return m
 
 

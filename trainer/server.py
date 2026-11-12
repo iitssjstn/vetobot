@@ -10,6 +10,7 @@
     POST /config      nieuwe instellingen
     POST /train       nu trainen
 """
+import resources  # als eerste: begrenst de threads van numpy/scikit-learn (TRAIN_JOBS)
 import hashlib
 import hmac
 import json
@@ -20,11 +21,6 @@ import secrets
 import threading
 import time
 import traceback
-import warnings
-
-# scikit-learn waarschuwt (onschuldig) bij elk model dat in een eigen thread traint; dat vult de
-# log zonder dat er iets mis is. Alleen déze melding uitzetten, andere waarschuwingen blijven.
-warnings.filterwarnings('ignore', message=r'.*sklearn\.utils\.parallel\.delayed.*')
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -53,7 +49,8 @@ DEFAULTS = {'timeframe': '5m', 'days': 60, 'targetPct': 3.0, 'stopPct': 2.0, 'ho
             # Orderboek en transacties opnemen (elke minuut); useMicro wordt door het experiment gezet.
             'micro': {'enabled': True}, 'useMicro': False,
             # De AI-trader: leert zelf wanneer kopen en verkopen (zie agent.py). Draait doorlopend.
-            'agent': {'enabled': True, 'timeframes': [], 'safetyStopPct': 10, 'pauseMinutes': 1, 'coinPool': 'top', 'maxOpen': 2}}
+            'agent': {'enabled': True, 'timeframes': [], 'safetyStopPct': 10, 'pauseMinutes': 1, 'coinPool': 'top', 'maxOpen': 2,
+                      'hours': None}}
 LIMITS = {'days': (7, 365), 'targetPct': (0.2, 50), 'stopPct': (0.2, 50), 'horizon': (3, 2000),
           'costPct': (0, 5), 'topN': (1, 50), 'maxSamples': (20_000, 2_000_000), 'halfLifeDays': (0, 365)}
 
@@ -208,7 +205,9 @@ def validate_config(body):
                         'pauseMinutes': max(0, min(720, int(a.get('pauseMinutes') or 0))),
                         'coinPool': 'eigen' if a.get('coinPool') == 'eigen' else 'top',
                         # Zoveel trades tegelijk als de bot: daarmee rekent de portefeuille in de backtest.
-                        'maxOpen': max(1, min(20, int(a.get('maxOpen') or 2)))}
+                        'maxOpen': max(1, min(20, int(a.get('maxOpen') or 2))),
+                        # Leeruren: alleen op deze uren leren (leeg = doorlopend). None = AGENT_HOURS uit de omgeving.
+                        'hours': parse_hours(a['hours']) if a.get('hours') not in (None, '') else (None if a.get('hours') is None else [])}
     if isinstance(body.get('micro'), dict):
         cfg['micro'] = {'enabled': bool(body['micro'].get('enabled', cfg['micro']['enabled']))}
     # Zelf andere strategie-instellingen gekozen: dan is het niet meer de strategie van de zoeker.
@@ -1095,11 +1094,115 @@ def agent_mod_say(r, entry=None):
     return s
 
 
+def parse_hours(v):
+    """'0-6,22,23' of [0, 1, 22] -> gesorteerde lijst uren (0..23). Leeg = doorlopend."""
+    if isinstance(v, (list, tuple)):
+        parts = [str(x) for x in v]
+    else:
+        parts = [p for p in str(v or '').replace(' ', '').split(',') if p]
+    out = set()
+    for p in parts:
+        a, _, b = p.partition('-')
+        lo, hi = int(a), int(b) if b else int(a)
+        if not (0 <= lo <= 23 and 0 <= hi <= 23):
+            raise ValueError('Leeruren moeten tussen 0 en 23 liggen')
+        out.update(range(lo, hi + 1) if lo <= hi else list(range(lo, 24)) + list(range(0, hi + 1)))
+    return sorted(out)
+
+
+AGENT_HOURS_ENV = os.environ.get('AGENT_HOURS', '')
+
+
+def agent_hours(cfg):
+    """Op welke uren de AI-trader leert. Leeg = doorlopend."""
+    h = cfg['agent'].get('hours')
+    if h is None:
+        try:
+            return parse_hours(AGENT_HOURS_ENV)
+        except ValueError:
+            return []
+    return h
+
+
+def agent_may_learn(cfg, now=None):
+    hours = agent_hours(cfg)
+    return not hours or (now or datetime.now()).hour in hours
+
+
+def cleanup_files(now=None):
+    """Oude bestanden opruimen (elk uur):
+    - opgeslagen kenmerken van coins/candle-tijden die 14 dagen niet gebruikt zijn;
+    - koersopslag die 30 dagen niet gebruikt is;
+    - modellen van recepten die niet meer bestaan;
+    - achtergebleven .tmp-bestanden van een onderbroken opslag;
+    - en in agents.json van recepten die allang niet meer meedoen alleen de laatste ronde.
+    Geeft het aantal verwijderde bestanden."""
+    now = now or time.time()
+    removed = 0
+    for sub, days in (('features', 14), ('candles', 30)):
+        d = os.path.join(DATA, sub)
+        if not os.path.isdir(d):
+            continue
+        for name in os.listdir(d):
+            p = os.path.join(d, name)
+            try:
+                old = now - os.path.getmtime(p) > days * 86400
+                if old or (name.endswith('.tmp') or '.tmp.' in name) and now - os.path.getmtime(p) > 3600:
+                    os.remove(p)
+                    removed += 1
+            except OSError:
+                pass
+    data = load_agents()
+    keep = {k.replace('|', '_') + '.json' for k in data['recipes']}
+    if data.get('published'):
+        keep.add(data['published']['key'].replace('|', '_') + '.json')
+    d = path('agents')
+    if os.path.isdir(d):
+        for name in os.listdir(d):
+            if name not in keep:
+                try:
+                    os.remove(os.path.join(d, name))
+                    removed += 1
+                except OSError:
+                    pass
+    # Recepten die niet bij de beste 50 horen en al een week niet getest zijn: alleen de laatste
+    # ronde bewaren (de status en "te riskant" blijven), zodat agents.json niet blijft groeien.
+    top = {e['key'] for e in agent_search.leaderboard(data['recipes'], 50)}
+    changed = False
+    for k, e in data['recipes'].items():
+        rounds = e.get('rounds') or []
+        if k not in top and len(rounds) > 1 and now - (rounds[-1].get('ts') or now) > 7 * 86400:
+            e['rounds'] = rounds[-1:]
+            changed = True
+    if changed:
+        write_json('agents.json', data)
+    if removed:
+        log(f'Opgeruimd: {removed} oude bestanden')
+    return removed
+
+
 def agent_worker():
-    """Leert doorlopend: candle-tijd na candle-tijd, steeds met de nieuwste koersen."""
+    """Leert doorlopend (of alleen op de leeruren): candle-tijd na candle-tijd, steeds met de
+    nieuwste koersen. Elk uur ruimt hij oude bestanden op."""
+    last_cleanup = 0.0
     while True:
         cfg = config()
+        if time.time() - last_cleanup > 3600:
+            last_cleanup = time.time()
+            try:
+                cleanup_files()
+            except Exception as e:
+                log(f'Opruimen mislukt: {e}')
         if not cfg['agent']['enabled']:
+            agent_wake.clear()
+            agent_wake.wait(timeout=60)
+            continue
+        if not agent_may_learn(cfg):
+            hours = agent_hours(cfg)
+            nxt = datetime.now().replace(minute=0, second=0, microsecond=0)
+            while nxt.hour not in hours or nxt <= datetime.now():
+                nxt += timedelta(hours=1)
+            state['nextAgentAt'] = nxt.isoformat(timespec='minutes')
             agent_wake.clear()
             agent_wake.wait(timeout=60)
             continue
@@ -1138,6 +1241,7 @@ def agent_info():
             'stage': (pub or {}).get('stage'), 'rounds': data.get('round', 0),
             'regimes': {reg: {k: v for k, v in p.items() if k != 'agent'} | {'text': agent_mod.recipe_text(data['recipes'][p['key']]['recipe']) if p.get('key') in data.get('recipes', {}) else None}
                         for reg, p in ((pub or {}).get('regimes') or {}).items()},
+            'hours': agent_hours(cfg), 'trainJobs': resources.TRAIN_JOBS,
             'liveCheck': (pub or {}).get('liveCheck'),
             'liveRules': {'minTrades': livecheck.MIN_TRADES, 'minDays': livecheck.MIN_DAYS, 'minAvg': livecheck.MIN_AVG, 'maxDd': livecheck.MAX_DD},
             # De lange paper-test: per week, sinds de nieuwe manier van meten.
@@ -1171,6 +1275,21 @@ def cache_info():
     return out
 
 
+_GONE = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
+
+class QuietHTTPServer(ThreadingHTTPServer):
+    """Verbreekt een client de verbinding (time-out, herstart van de bot), dan is dat geen fout:
+    geen traceback in de log. Andere fouten wel."""
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        import sys
+        if isinstance(sys.exc_info()[1], _GONE):
+            return
+        super().handle_error(request, client_address)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = 'vetobot-trainer'
 
@@ -1179,14 +1298,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def send(self, code, body, ctype='application/json', extra=None):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
-        self.send_response(code)
-        self.send_header('Content-Type', ctype)
-        self.send_header('Content-Length', str(len(data)))
-        self.send_header('Cache-Control', 'no-store')
-        for k, v in (extra or {}).items():
-            self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(code)
+            self.send_header('Content-Type', ctype)
+            self.send_header('Content-Length', str(len(data)))
+            self.send_header('Cache-Control', 'no-store')
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(data)
+        except _GONE:
+            self.close_connection = True  # de client (bot/proxy) heeft de verbinding al verbroken
 
     def authed(self):
         got = self.headers.get('Authorization', '')
@@ -1291,6 +1413,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    nice = resources.lower_priority()
+    resources.limit_threads()
+    resources.set_warning_baseline()
     state['history'] = read_json('history.json', [])
     state['thoughts'] = read_json('thoughts.json', [])
     state['cache'] = cache_info()
@@ -1298,13 +1423,16 @@ def main():
     print('=' * 70, flush=True)
     print(' vetobot-trainer', flush=True)
     print(f' Code voor het dashboard (Instellingen -> Eigen model): {t}', flush=True)
-    print(f' Volgende training: {next_run():%Y-%m-%d %H:%M}', flush=True)
+    print(f' Volgende training (voorspelmodel): {next_run():%Y-%m-%d %H:%M}', flush=True)
+    hours = agent_hours(config())
+    print(f" AI-trader leert: {'doorlopend' if not hours else 'op de uren ' + ', '.join(map(str, hours))}"
+          f" · max {resources.TRAIN_JOBS} kernen (TRAIN_JOBS) · voorrang nice {nice}", flush=True)
     print('=' * 70, flush=True)
     threading.Thread(target=scheduler, daemon=True).start()
     threading.Thread(target=search_worker, daemon=True).start()
     threading.Thread(target=micro_worker, daemon=True).start()
     threading.Thread(target=agent_worker, daemon=True).start()
-    ThreadingHTTPServer(('0.0.0.0', PORT), Handler).serve_forever()
+    QuietHTTPServer(('0.0.0.0', PORT), Handler).serve_forever()
 
 
 if __name__ == '__main__':

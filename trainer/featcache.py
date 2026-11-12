@@ -8,6 +8,7 @@ Sluit het niet aan (gat, andere kenmerken, oudere geschiedenis erbij), dan reken
 """
 import hashlib
 import os
+import time
 
 import numpy as np
 
@@ -15,6 +16,8 @@ from features import FEATURES, WARMUP, features_at, series
 
 VERSION = 1
 TAIL = 2000  # aanloop voor het nieuwe stuk (ruim meer dan de langste indicator)
+SAVE_ROWS = 2000        # zoveel nieuwe rijen: meteen opslaan
+SAVE_EVERY_S = 6 * 3600  # anders hooguit eens per 6 uur
 _SIG = hashlib.sha1(('|'.join(FEATURES) + f'|{WARMUP}|{VERSION}').encode()).hexdigest()[:12]
 
 
@@ -62,7 +65,14 @@ def matrix(pair, tf, candles, ctx, cache_dir=None, tag='btc'):
         new_rows = n
     # De eerste WARMUP candles van dit venster tellen nooit mee (net als zonder opslag).
     X[:WARMUP] = np.nan
-    if new_rows:
+    # Wegschrijven alleen als het de moeite is: het bestand is groot (alle candles). Een paar nieuwe
+    # candles rekent hij de volgende ronde gewoon opnieuw uit (kost weinig), en eens per SAVE_EVERY_S
+    # of bij veel nieuwe rijen wordt het bijgewerkt.
+    try:
+        age = time.time() - os.path.getmtime(file)
+    except OSError:
+        age = None
+    if new_rows and (age is None or new_rows >= SAVE_ROWS or age >= SAVE_EVERY_S):
         tmp = file + '.tmp.npz'
         np.savez(tmp, sig=_SIG, ts=ts, X=X.astype(np.float32))
         os.replace(tmp, file)

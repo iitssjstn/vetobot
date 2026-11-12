@@ -88,6 +88,9 @@ def fetch_range(pair, timeframe, start, end):
     return [out[k] for k in sorted(out)]
 
 
+SAVE_EVERY_S = 30 * 60  # koersopslag met nieuwe candles hooguit eens per half uur wegschrijven
+
+
 def fetch_candles(pair, timeframe, days, cache_dir=None, now_ms=None, fetch=fetch_range, log=None):
     """Candles van de afgelopen `days` dagen, oud -> nieuw, alleen gesloten candles.
 
@@ -116,6 +119,7 @@ def fetch_candles(pair, timeframe, days, cache_dir=None, now_ms=None, fetch=fetc
         except (OSError, ValueError):
             meta = {}
     by_ts = {c[0]: c for c in cached}
+    meta_before = dict(meta)
     fetched = 0
     if cached:
         oldest, newest = cached[0][0], cached[-1][0]
@@ -145,7 +149,16 @@ def fetch_candles(pair, timeframe, days, cache_dir=None, now_ms=None, fetch=fetc
         if rows and rows[0][0] > start + step:
             meta['earliest'] = rows[0][0]
     candles = [by_ts[k] for k in sorted(by_ts) if by_ts[k][0] + step <= now]
-    if file:
+    # Alleen wegschrijven als er iets veranderd is, en nieuwe candles hooguit eens per SAVE_EVERY_S:
+    # het hele bestand (tot 400 dagen) opnieuw schrijven bij elke paar nieuwe candles kost per dag
+    # tientallen GB aan schrijfwerk. Niet opgeslagen candles worden de volgende keer gewoon opnieuw
+    # opgehaald (alleen het stukje sinds de laatste opslag).
+    try:
+        age = time.time() - os.path.getmtime(file) if file and cached else None
+    except OSError:
+        age = None
+    grew_back = bool(cached) and candles and candles[0][0] < cached[0][0]
+    if file and (not cached or grew_back or meta != meta_before or (fetched and (age is None or age >= SAVE_EVERY_S))):
         # Bewaren tot maximaal 400 dagen, zodat de cache niet eindeloos groeit.
         keep_from = now - 400 * 86_400_000
         tmp = file + '.tmp'

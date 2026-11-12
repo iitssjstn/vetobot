@@ -4,7 +4,8 @@ RUN pip install --no-cache-dir numpy==2.* scikit-learn==1.* \
  && useradd -r -u 10001 trainer && mkdir -p /data && chown trainer /data
 COPY *.py ./
 USER trainer
-ENV DATA_DIR=/data PORT=8787 TRAIN_HOUR=3 PYTHONUNBUFFERED=1
+ENV DATA_DIR=/data PORT=8787 TRAIN_HOUR=3 PYTHONUNBUFFERED=1 \
+    TRAIN_JOBS=2 TRAIN_NICE=10 AGENT_HOURS=
 EXPOSE 8787
 VOLUME /data
 HEALTHCHECK --interval=60s --timeout=5s CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health', timeout=4)"

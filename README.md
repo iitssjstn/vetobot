@@ -243,12 +243,24 @@ services:
     restart: unless-stopped
     environment:
       - TZ=Europe/Amsterdam
-      - TRAIN_HOUR=3        # elke nacht om 03:00 trainen
+      - TRAIN_HOUR=3        # voorspelmodel (oude methode): elke nacht om 03:00 trainen
+      - TRAIN_JOBS=2        # zoveel processorkernen mag het trainen gebruiken (standaard 2)
+      - TRAIN_NICE=10       # lagere voorrang: andere programma's op de server gaan voor (0-19)
+      - AGENT_HOURS=        # AI-trader alleen op deze uren laten leren, bijv. 0-7 (leeg = doorlopend)
     ports:
       - "8787:8787"        # of achter je reverse proxy met HTTPS (aanbevolen)
     volumes:
       - ./trainer-data:/data
+    cpus: "2.0"            # harde grens voor de container
+    mem_limit: 3g          # 365 dagen 5m-candles met 24 coins: ±2 GB nodig
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 ```
+
+**Resources op een gedeelde server.** Het trainen gebruikt standaard 2 kernen (`TRAIN_JOBS`) met lagere voorrang (`TRAIN_NICE`). De **AI-trader leert doorlopend** (een ronde, korte pauze, de volgende); dat is iets anders dan `TRAIN_HOUR`, dat alleen voor het voorspelmodel van de oude methode geldt. Wil je dat de AI-trader alleen 's nachts leert, zet dan `AGENT_HOURS=0-7`, of vul de **Leeruren** in op de pagina Trainer → Recepten (die instelling gaat voor de omgevingsvariabele). De koersopslag wordt hooguit eens per half uur bijgewerkt en de opgeslagen kenmerken eens per 6 uur; elk uur ruimt hij oude bestanden op.
 
 Start hem met `docker compose up -d` en kijk in de logs (`docker compose logs vetobot-trainer`) voor de **code**. Die code staat ook in `trainer-data/token`. Er staan geen geheimen in de compose of in een .env-bestand.
 

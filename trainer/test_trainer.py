@@ -800,6 +800,8 @@ class FasterAndWalkForward(unittest.TestCase):
         btc = context(market(3200, 6))
         first = featcache.matrix('A/EUR', '5m', c[:3000], btc, d)
         calls = []
+        save_rows = featcache.SAVE_ROWS
+        featcache.SAVE_ROWS = 1  # in deze test elke keer opslaan (het afknijpen heeft een eigen test)
         orig = featcache._compute
         featcache._compute = lambda cc, ctx, lo: (calls.append((len(cc), lo)), orig(cc, ctx, lo))[1]
         try:
@@ -808,6 +810,7 @@ class FasterAndWalkForward(unittest.TestCase):
             moved = featcache.matrix('A/EUR', '5m', c[100:], btc, d)
         finally:
             featcache._compute = orig
+            featcache.SAVE_ROWS = save_rows
         self.assertEqual(calls, [(2200, 2000)], 'niets bij dezelfde candles, alleen de 200 nieuwe bij meer candles')
         np.testing.assert_array_equal(first, again)
         fresh = orig(c, btc, 0)
@@ -857,6 +860,157 @@ class FasterAndWalkForward(unittest.TestCase):
         A.add_round(recipes, rb, {'ok': False, 'validation': {**part, 'avgPct': 0.4, 'edgePct': 0.3}, 'test': part, 'folds': [fold(-5), fold(-4), fold(9)], 'foldsPositive': 1})
         self.assertEqual(A.leaderboard(recipes)[0]['recipe'], ra, 'werkt in alle periodes: boven het recept dat maar in één periode werkte')
         self.assertEqual(A.score(recipes[A.key_of(rb)])['periods'], {'n': 3, 'positive': 1, 'share': 1 / 3})
+
+
+class Resources(unittest.TestCase):
+    """Minder processor, minder schrijfwerk, nette foutafhandeling (gedeelde VPS)."""
+
+    def test_threads_limited_by_default(self):
+        import resources
+        self.assertEqual(resources.TRAIN_JOBS, int(os.environ.get('TRAIN_JOBS') or 2))
+        for v in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS'):
+            self.assertTrue(os.environ.get(v), v)
+
+    def test_sklearn_warning_fixed_not_hidden(self):
+        """De oorzaak: scikit-learn's Parallel (zoals HistGradientBoosting die gebruikt) waarschuwt als
+        warnings.filters leeg is; threads die tegelijk catch_warnings gebruiken kunnen die lijst leeg
+        achterlaten. De oplossing: vóór elke training de goede toestand herstellen (geen filter
+        dat de melding verbergt)."""
+        import warnings
+        import resources
+        from sklearn.utils.parallel import Parallel, delayed
+        job = lambda: Parallel(n_jobs=2, backend='threading')(delayed(abs)(i) for i in range(4))
+        saved = list(warnings.filters)
+        self.assertFalse(any('sklearn' in str(f[1] or '') for f in saved), 'geen filter dat de melding verbergt')
+        resources.set_warning_baseline()
+        try:
+            # Zonder bescherming: precies de melding uit de log.
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter('always')
+                warnings.filters[:] = []
+                job()
+            self.assertTrue([x for x in w if 'sklearn.utils.parallel.delayed' in str(x.message)])
+            # Met bescherming (zoals elke training in agent._fit): hersteld, geen melding.
+            before = resources.repairs['count']
+            with warnings.catch_warnings(record=True) as w:
+                warnings.filters[:] = []
+                with resources.fit_guard():
+                    self.assertTrue(warnings.filters, 'hersteld voordat er getraind wordt')
+                    job()
+            self.assertFalse([x for x in w if 'sklearn.utils.parallel.delayed' in str(x.message)])
+            self.assertEqual(resources.repairs['count'], before + 1)
+        finally:
+            warnings.filters[:] = saved
+
+    def test_quiet_when_client_disconnects(self):
+        import io
+        os.environ.setdefault('DATA_DIR', tempfile.mkdtemp())
+        import server
+        class Gone(io.BytesIO):
+            def write(self, b):
+                raise BrokenPipeError(32, 'Broken pipe')
+        h = server.Handler.__new__(server.Handler)
+        h.wfile, h.request_version, h.requestline, h.command, h.close_connection = Gone(), 'HTTP/1.1', 'GET /status HTTP/1.1', 'GET', False
+        h.send(200, {'ok': True})  # geen fout
+        self.assertTrue(h.close_connection)
+        srv = server.QuietHTTPServer.__new__(server.QuietHTTPServer)
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            try:
+                raise ConnectionResetError(104, 'reset')
+            except ConnectionResetError:
+                srv.handle_error(None, ('172.18.0.7', 1234))
+        self.assertEqual(buf.getvalue(), '', 'geen traceback in de log')
+
+    def test_agent_hours(self):
+        os.environ.setdefault('DATA_DIR', tempfile.mkdtemp())
+        import server
+        from datetime import datetime
+        self.assertEqual(server.parse_hours('0-2, 22'), [0, 1, 2, 22])
+        self.assertEqual(server.parse_hours('23-1'), [0, 1, 23])
+        self.assertEqual(server.parse_hours(''), [])
+        with self.assertRaises(ValueError):
+            server.parse_hours('25')
+        cfg = {'agent': {'hours': [1, 2, 3]}}
+        self.assertTrue(server.agent_may_learn(cfg, datetime(2026, 1, 1, 2, 30)))
+        self.assertFalse(server.agent_may_learn(cfg, datetime(2026, 1, 1, 14, 0)))
+        self.assertTrue(server.agent_may_learn({'agent': {'hours': []}}, datetime(2026, 1, 1, 14, 0)), 'leeg = doorlopend')
+
+    def test_candle_cache_not_rewritten_for_every_new_candle(self):
+        d = tempfile.mkdtemp()
+        step = train.TF_MS['5m']
+        base = 1_700_000_000_000
+        data = [[base + i * step, 1, 1, 1, 1, 1] for i in range(2000)]
+        src = lambda pair, tf, a, b: [c for c in data if a <= c[0] <= b]
+        now = base + 1990 * step
+        train.fetch_candles('A/EUR', '5m', 6, cache_dir=d, now_ms=now, fetch=src)
+        f = os.path.join(d, 'A-EUR_5m.json')
+        t0 = os.path.getmtime(f)
+        os.utime(f, (t0 - 60, t0 - 60))
+        out = train.fetch_candles('A/EUR', '5m', 6, cache_dir=d, now_ms=now + 3 * step, fetch=src)
+        self.assertEqual(os.path.getmtime(f), t0 - 60, 'een paar nieuwe candles: niet het hele bestand opnieuw schrijven')
+        self.assertEqual(out[-1][0], base + 1992 * step, 'maar de nieuwe candles komen wel mee')
+        os.utime(f, (t0 - train.SAVE_EVERY_S - 1, t0 - train.SAVE_EVERY_S - 1))
+        train.fetch_candles('A/EUR', '5m', 6, cache_dir=d, now_ms=now + 4 * step, fetch=src)
+        self.assertGreater(os.path.getmtime(f), t0 - 60, 'na een half uur wel bijwerken')
+        with open(f) as fh:
+            self.assertEqual(json.load(fh)[-1][0], base + 1993 * step)
+
+    def test_feature_cache_saved_only_now_and_then(self):
+        import featcache
+        from features import context
+        d = tempfile.mkdtemp()
+        c = market(2600, 5)
+        btc = context(market(2600, 6))
+        featcache.matrix('A/EUR', '5m', c[:2500], btc, d)
+        f = os.path.join(d, 'A-EUR_5m_btc.npz')
+        old = os.path.getmtime(f) - 60
+        os.utime(f, (old, old))
+        a = featcache.matrix('A/EUR', '5m', c[:2510], btc, d)
+        self.assertEqual(os.path.getmtime(f), old, '10 nieuwe rijen: niet opslaan')
+        b = featcache.matrix('A/EUR', '5m', c[:2510], btc, d)
+        np.testing.assert_array_equal(a, b)
+        os.utime(f, (old - featcache.SAVE_EVERY_S, old - featcache.SAVE_EVERY_S))
+        featcache.matrix('A/EUR', '5m', c, btc, d)
+        self.assertGreater(os.path.getmtime(f), old, 'na 6 uur wel')
+
+    def test_cleanup_old_files(self):
+        os.environ.setdefault('DATA_DIR', tempfile.mkdtemp())
+        import server as s
+        import agent_search as A
+        for sub in ('features', 'candles', 'agents'):
+            os.makedirs(os.path.join(s.DATA, sub), exist_ok=True)
+        now = time.time()
+        def touch(rel, age_days):
+            p = os.path.join(s.DATA, rel)
+            open(p, 'w').close()
+            os.utime(p, (now - age_days * 86400, now - age_days * 86400))
+            return p
+        old_f, new_f = touch('features/X-EUR_5m_btc.npz', 20), touch('features/A-EUR_5m_btc.npz', 1)
+        old_c, tmp = touch('candles/X-EUR_5m.json', 40), touch('candles/A-EUR_5m.json.tmp', 1)
+        r = {'timeframe': '1h', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
+        recipes = {}
+        part = {'trades': 40, 'avgPct': -0.3, 'totalPct': -12, 'edgePct': -0.2, 'maxDrawdownPct': 3}
+        for _ in range(3):
+            A.add_round(recipes, r, {'ok': False, 'validation': part, 'test': part})
+        for x in recipes[A.key_of(r)]['rounds']:
+            x['ts'] = now - 30 * 86400
+        s.write_json('agents.json', {'version': s.AGENTS_VERSION, 'recipes': recipes, 'live': {}, 'round': 3})
+        keep = touch('agents/' + A.key_of(r).replace('|', '_') + '.json', 1)
+        gone = touch('agents/weg_recept.json', 1)
+        A_lb = A.leaderboard
+        A.leaderboard = lambda rec, n=12: []  # dit recept hoort niet bij de beste
+        try:
+            n = s.cleanup_files(now)
+        finally:
+            A.leaderboard = A_lb
+        self.assertGreaterEqual(n, 4)
+        for p in (old_f, old_c, tmp, gone):
+            self.assertFalse(os.path.exists(p), p)
+        for p in (new_f, keep):
+            self.assertTrue(os.path.exists(p), p)
+        self.assertEqual(len(s.load_agents()['recipes'][A.key_of(r)]['rounds']), 1, 'oud recept: alleen de laatste ronde')
 
 
 class HonestTesting(unittest.TestCase):

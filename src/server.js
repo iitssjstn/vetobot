@@ -506,6 +506,8 @@ export function createApp({ users, manager, log = console }) {
     const agent = { enabled: Boolean(b.enabled), timeframes: Array.isArray(b.timeframes) ? b.timeframes.map(String) : [],
       safetyStopPct: Number(b.safetyStopPct) || 10, pauseMinutes: Number.isFinite(Number(b.pauseMinutes)) ? Number(b.pauseMinutes) : 1,
       coinPool: b.coinPool === 'eigen' ? 'eigen' : 'top',
+      // Leeruren van de AI-trader ('0-7', '1,2,3'; leeg = doorlopend). De leerserver controleert.
+      hours: typeof b.hours === 'string' ? b.hours.slice(0, 80) : '',
       // De portefeuille in de backtest rekent met evenveel open trades als de bot.
       maxOpen: Math.max(1, Math.min(20, Number(bot?.risk?.maxOpenTrades) || 2)) };
     const r = await manager.trainerRequest('/config', { method: 'POST', body: { agent } });

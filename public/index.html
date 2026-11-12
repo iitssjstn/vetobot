@@ -570,6 +570,7 @@
             <div><label for="ag-pool">Coins</label><select id="ag-pool"><option value="top">Zelf kiezen: mijn coins + de 20 grootste</option><option value="eigen">Alleen mijn coins</option></select></div>
             <div><label for="ag-stop">Noodstop (%)</label><input id="ag-stop" type="number" min="2" max="30" step="any"></div>
             <div><label for="ag-pause">Pauze tussen rondes (min)</label><input id="ag-pause" type="number" min="0" max="720" step="1"></div>
+            <div><label for="ag-hours">Leeruren (leeg = doorlopend)</label><input id="ag-hours" type="text" placeholder="bijv. 0-7 of 1,2,3" autocomplete="off"></div>
             <div><label>Candle-tijden die hij mag proberen</label><div class="chips" id="ag-tfs" style="margin:0"><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="5m"> 5m</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="15m"> 15m</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="30m"> 30m</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="1h"> 1h</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="2h"> 2h</label><label class="chip" style="padding:4px 10px;cursor:pointer"><input type="checkbox" value="4h"> 4h</label></div></div>
           </div>
           <div class="row-actions"><button class="btn primary" type="submit">Opslaan</button><span class="msg" id="ag-msg"></span></div>
@@ -2154,18 +2155,19 @@ function renderAgent(t, nl) {
     $('ag-on').value = a.enabled ? '1' : '0';
     $('ag-stop').value = a.config?.safetyStopPct ?? 10;
     $('ag-pause').value = a.config?.pauseMinutes ?? 1;
+    $('ag-hours').value = (a.hours ?? []).join(',');
     $('ag-pool').value = a.config?.coinPool === 'eigen' ? 'eigen' : 'top';
     const tfs = a.config?.timeframes?.length ? a.config.timeframes : ['15m', '30m', '1h', '5m'];
     document.querySelectorAll('#ag-tfs input').forEach((el) => { el.checked = tfs.includes(el.value); });
   }
 }
-['ag-on', 'ag-stop', 'ag-pause', 'ag-pool'].forEach((id) => $(id).addEventListener('input', () => { agDirty = true; }));
+['ag-on', 'ag-stop', 'ag-pause', 'ag-pool', 'ag-hours'].forEach((id) => $(id).addEventListener('input', () => { agDirty = true; }));
 $('ag-tfs').addEventListener('change', () => { agDirty = true; });
 $('ag-form').onsubmit = async (e) => {
   e.preventDefault();
   const msg = (t2, c2) => { $('ag-msg').className = `msg ${c2 ?? ''}`; $('ag-msg').textContent = t2; };
   try {
-    await api('api/admin/trainer/agent', { enabled: $('ag-on').value === '1', safetyStopPct: Number($('ag-stop').value), pauseMinutes: Number($('ag-pause').value), coinPool: $('ag-pool').value,
+    await api('api/admin/trainer/agent', { enabled: $('ag-on').value === '1', safetyStopPct: Number($('ag-stop').value), pauseMinutes: Number($('ag-pause').value), hours: $('ag-hours').value.trim(), coinPool: $('ag-pool').value,
       timeframes: [...document.querySelectorAll('#ag-tfs input:checked')].map((el) => el.value) });
     agDirty = false;
     msg('Opgeslagen.', 'ok');
