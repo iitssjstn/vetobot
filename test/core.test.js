@@ -148,3 +148,13 @@ test('ADX- en volumefilter houden zwakke signalen tegen', () => {
   const spike = signalsWith(closes, { ...p, volumeMult: 3 }, (i) => (i >= 80 ? 1000 : 100));
   assert.ok(spike.some((r) => r.signal === 'buy'));
 });
+
+test('fetchPrice: laatste koers, anders midden van bied en laat, anders een fout (nooit NaN)', async () => {
+  const { fetchPrice } = await import('../src/exchange.js');
+  const ex = (t) => ({ fetchTicker: async () => t });
+  assert.equal(await fetchPrice(ex({ last: 2 }), 'A/EUR'), 2);
+  assert.equal(await fetchPrice(ex({ last: null, close: 3 }), 'A/EUR'), 3);
+  assert.equal(await fetchPrice(ex({ last: undefined, bid: 1, ask: 3 }), 'A/EUR'), 2);
+  await assert.rejects(fetchPrice(ex({ last: NaN }), 'A/EUR'), /Geen bruikbare koers voor A\/EUR/);
+  await assert.rejects(fetchPrice(ex({}), 'A/EUR'), /Geen bruikbare koers/);
+});

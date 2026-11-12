@@ -1834,6 +1834,7 @@ export class Bot {
 
   // Regels eerst, daarna eventueel de AI (winst nemen). Geeft true als de positie is gesloten.
   async #manageExit(pair, position, price, risk) {
+    if (!(Number.isFinite(price) && price > 0)) return false; // geen koers: niets beslissen
     const exit = this.#exitReason(position, price, risk) ?? (await this.#aiExit(pair, position, price, risk));
     if (!exit) return false;
     await this.#close(pair, exit);
@@ -1849,8 +1850,11 @@ export class Bot {
   // Geeft de verkoopreden terug, of null.
   async #aiExit(pair, position, price, risk) {
     if (this.following || !(risk.aiExitMinPct > 0)) return null;
+    // Posities van de AI-trader: hij beslist zelf wanneer hij verkoopt (de noodstop en de maximale
+    // duur zijn het vangnet). De AI-winstcheck hoort bij de klassieke strategie.
+    if (position.agent) return null;
     const changePct = ((price - position.entryPrice) / position.entryPrice) * 100;
-    if (changePct < risk.aiExitMinPct) return null;
+    if (!Number.isFinite(changePct) || changePct < risk.aiExitMinPct) return null;
     const chain = this.aiChain();
     if (!chain.some((c) => c.apiKey)) return null;
     const everyMs = (risk.aiExitEveryMin > 0 ? risk.aiExitEveryMin : 3) * 60000;

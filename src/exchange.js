@@ -133,9 +133,16 @@ export async function fetchClosedCandles(ex, pair, timeframe, limit = 200, { inc
   return candles.filter((c) => c[0] + tfMs <= now);
 }
 
+// Laatste koers. Geeft Bitvavo geen bruikbare koers (kleine coins hebben soms geen 'last'), dan het
+// midden van bied en laat; lukt ook dat niet, dan een fout in plaats van een leeg getal (NaN), zodat
+// er nooit met een onbekende koers wordt gerekend of verkocht.
 export async function fetchPrice(ex, pair) {
   const t = await ex.fetchTicker(pair);
-  return t.last ?? t.close;
+  const ok = (v) => Number.isFinite(v) && v > 0;
+  if (ok(t?.last)) return t.last;
+  if (ok(t?.close)) return t.close;
+  if (ok(t?.bid) && ok(t?.ask)) return (t.bid + t.ask) / 2;
+  throw new Error(`Geen bruikbare koers voor ${pair} van Bitvavo`);
 }
 
 // --- Brokers -----------------------------------------------------------------

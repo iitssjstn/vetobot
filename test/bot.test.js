@@ -569,6 +569,32 @@ test('bewaking tussen checks door: take-profit direct, zonder te wachten op de v
   assert.match(bot.store.state.trades[0].exitReason, /Take-profit/);
 });
 
+test('AI-winstcheck: geen verkoop bij een lege koers (NaN) en niet bij posities van de AI-trader', async () => {
+  const { bot, ex } = setup({});
+  await bot.setRisk({ takeProfitPct: 0, stopLossPct: 5, trailingStopPct: 0, aiExitMinPct: 1, aiExitEveryMin: 3 });
+  await openPaperPosition(bot, ex);
+  withAi(bot);
+  aiAnswer = 'sell';
+  aiCalls = 0;
+  const entry = bot.store.state.positions['BTC/EUR'].entryPrice;
+  // Bitvavo geeft geen laatste koers: dan het midden van bied en laat.
+  ex.fetchTicker = async () => ({ last: undefined, bid: entry * 0.99, ask: entry * 0.995 });
+  await bot.watchPositions();
+  assert.equal(aiCalls, 0, 'verlies: de AI wordt niet gevraagd');
+  assert.ok(bot.store.state.positions['BTC/EUR']);
+  // Helemaal geen koers: niets beslissen, niet verkopen.
+  ex.fetchTicker = async () => ({ last: null });
+  await bot.watchPositions();
+  assert.equal(aiCalls, 0);
+  assert.ok(bot.store.state.positions['BTC/EUR'], 'met een onbekende koers wordt niet verkocht');
+  // Positie van de AI-trader: de AI-winstcheck laat hem met rust, ook bij winst.
+  bot.store.state.positions['BTC/EUR'].agent = { timeframe: '15m', recipe: 'R' };
+  ex.fetchTicker = async () => ({ last: entry * 1.05 });
+  await bot.watchPositions();
+  assert.equal(aiCalls, 0);
+  assert.ok(bot.store.state.positions['BTC/EUR'], 'de AI-trader beslist zelf');
+});
+
 test('AI-winstcheck: AI kan de winst eerder nemen dan de take-profit', async () => {
   const { bot, ex } = setup({});
   await bot.setRisk({ takeProfitPct: 0, stopLossPct: 5, trailingStopPct: 0, aiExitMinPct: 1, aiExitEveryMin: 3 });
