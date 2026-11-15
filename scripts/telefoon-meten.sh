@@ -37,10 +37,19 @@ samenvatting() {
 
 if [ "$NATIVE" = "1" ]; then
   stap "EXPERIMENT: rechtstreeks in Termux (zonder Debian-laag)"
-  pkg install -y python python-numpy python-scipy git build-essential
+  pkg install -y python python-numpy python-scipy git build-essential ninja
   if ! python -c "import sklearn" 2>/dev/null; then
+    stap "Bouwhulpmiddelen voor scikit-learn installeren"
+    # numpy en scipy komen uit Termux zelf; de rest via pip. Zonder 'build isolation', anders wil
+    # pip numpy en scipy opnieuw compileren.
+    pip install "meson-python>=0.16" "Cython>=3.0.10" joblib threadpoolctl
     stap "scikit-learn compileren op de telefoon (kan 30-60 minuten duren)"
-    pip install --no-build-isolation "scikit-learn==1.*"
+    pip install --no-build-isolation "scikit-learn==1.*" || {
+      echo
+      echo "Compileren van scikit-learn lukte niet. Maak een screenshot van de laatste regels."
+      echo "De normale manier (bash meten.sh, met Debian) blijft gewoon werken."
+      exit 1
+    }
   fi
   D="$HOME/vetobot-native"
   if [ -d "$D/.git" ]; then git -C "$D" pull --ff-only; else git clone --depth 1 https://github.com/iitssjstn/vetobot.git "$D"; fi
