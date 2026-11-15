@@ -1013,6 +1013,20 @@ class Resources(unittest.TestCase):
         self.assertEqual(len(s.load_agents()['recipes'][A.key_of(r)]['rounds']), 1, 'oud recept: alleen de laatste ronde')
 
 
+class Bench(unittest.TestCase):
+    def test_bench_runs_and_reports(self):
+        import contextlib
+        import io
+        import bench
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            times = bench.main(['--rounds', '2', '--coins', '2', '--candles', '6000'])
+        self.assertEqual(len(times), 2)
+        text = out.getvalue()
+        for part in ('Werklast : 2 coins × 6.000 candles (5m), 2 rondes', 'Ronde 1:', 'Ronde 2:', 'rondes per uur', 'Geheugen (piek)'):
+            self.assertIn(part, text)
+
+
 class HonestTesting(unittest.TestCase):
     def test_split_has_buffer_between_parts(self):
         import agent

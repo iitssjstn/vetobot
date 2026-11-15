@@ -260,6 +260,8 @@ services:
         max-file: "3"
 ```
 
+**Telefoon als leerserver?** Zie [docs/telefoon-trainer.md](docs/telefoon-trainer.md): een stappenplan voor een Android-telefoon (Termux) en het meetprogramma `bench.py`, dat een paar nep-leerrondes draait en zegt hoe snel een apparaat leert (`docker run --rm ghcr.io/iitssjstn/vetobot-trainer:latest python bench.py`).
+
 **Resources op een gedeelde server.** Het trainen gebruikt standaard 2 kernen (`TRAIN_JOBS`) met lagere voorrang (`TRAIN_NICE`). De **AI-trader leert doorlopend** (een ronde, korte pauze, de volgende); dat is iets anders dan `TRAIN_HOUR`, dat alleen voor het voorspelmodel van de oude methode geldt. Wil je dat de AI-trader alleen 's nachts leert, zet dan `AGENT_HOURS=0-7`, of vul de **Leeruren** in op de pagina Trainer → Recepten (die instelling gaat voor de omgevingsvariabele). De koersopslag wordt hooguit eens per half uur bijgewerkt en de opgeslagen kenmerken eens per 6 uur; elk uur ruimt hij oude bestanden op.
 
 Start hem met `docker compose up -d` en kijk in de logs (`docker compose logs vetobot-trainer`) voor de **code**. Die code staat ook in `trainer-data/token`. Er staan geen geheimen in de compose of in een .env-bestand.
