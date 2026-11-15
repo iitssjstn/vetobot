@@ -18,10 +18,16 @@ apt-get -y -o Dpkg::Options::=--force-confnew -o Dpkg::Options::=--force-confdef
 
 stap "Debian-omgeving installeren"
 pkg install -y proot-distro
-if [ ! -d "$PREFIX/var/lib/proot-distro/installed-rootfs/debian" ]; then
-  proot-distro install debian
-else
+# Staat Debian er al (en kunnen we inloggen), dan niet opnieuw installeren. Niet afgaan op een vaste
+# map: die verschilt tussen versies van proot-distro.
+if proot-distro login debian -- /bin/true >/dev/null 2>&1; then
   echo "Debian staat er al."
+else
+  proot-distro install debian || {
+    echo "Installeren lukte niet. Zit je nog in Debian in een ander Termux-venster? Typ daar 'exit',"
+    echo "of typ hier 'pkill proot', en start daarna opnieuw met: bash meten.sh"
+    exit 1
+  }
 fi
 
 # Alles hieronder draait in Debian.
