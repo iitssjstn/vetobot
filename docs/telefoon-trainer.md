@@ -53,11 +53,8 @@ trager dan normaal; meet dan liever als die stil ligt.
    `[Process completed (signal 9)]`, volg dan **Bijlage A** onderaan.
 
 ### 2.4 Termux installeren
-Termux is een Linux-omgeving voor Android. **Niet** de versie uit de Play Store nemen (die is
-verouderd).
-1. Ga in de browser naar **f-droid.org**, download de F-Droid-app en installeer hem (sta
-   "installeren uit onbekende bronnen" toe als daarom gevraagd wordt).
-2. Zoek in F-Droid naar **Termux** en installeer het.
+Termux is een Linux-omgeving voor Android. Installeer **Termux** uit de **Google Play Store**
+(op de Fold4 werkt die versie goed). De versie van F-Droid mag ook.
 
 ### 2.5 Termux mag altijd blijven draaien
 - Instellingen → **Apps** → **Termux** → **Batterij** → **Onbeperkt** (*Unrestricted*).
@@ -66,83 +63,29 @@ verouderd).
 
 ---
 
-## Deel 3: de leerserver-code op de telefoon zetten
-
-Open **Termux** en typ de regels hieronder één voor één (na elke regel op Enter; wachten tot hij
-klaar is). Hoofdletters en spaties precies overnemen.
-
-```bash
-pkg update -y && pkg upgrade -y
-```
-
-```bash
-pkg install -y proot-distro
-```
-
-```bash
-proot-distro install debian
-```
-
-```bash
-termux-wake-lock
-```
-
-`termux-wake-lock` houdt de telefoon wakker zolang Termux draait (je ziet een melding van Termux).
-
-```bash
-proot-distro login debian
-```
-
-Je zit nu in Debian (de regel begint met `root@localhost`). Verder:
-
-```bash
-apt update && apt install -y python3 python3-venv git
-```
-
-```bash
-python3 -m venv /root/vt
-```
-
-```bash
-/root/vt/bin/pip install "numpy==2.*" "scikit-learn==1.*"
-```
-
-```bash
-git clone --depth 1 https://github.com/iitssjstn/vetobot.git /root/vetobot
-```
-
----
-
-## Deel 4: de telefoon meten
+## Deel 3: alles in één keer installeren en meten
 
 Leg de telefoon **opengevouwen**, **zonder hoesje**, op een koele plek (niet in de zon), aan de
-lader. Dan:
+lader. Open **Termux** en typ deze ene regel (precies overnemen, dan Enter):
 
 ```bash
-cd /root/vetobot/trainer
+pkg install -y curl && curl -fsSLo meten.sh https://raw.githubusercontent.com/iitssjstn/vetobot/main/scripts/telefoon-meten.sh && bash meten.sh
 ```
 
-Eerst met 2 kernen, zelfde instelling als de VPS:
+Het script doet alles zelf:
+1. de telefoon wakker houden;
+2. Termux bijwerken en een Debian-omgeving installeren;
+3. Python, numpy en scikit-learn installeren (dit duurt het langst, 5 tot 10 minuten);
+4. de leerserver-code van GitHub halen;
+5. meten met 2, 4 en 8 kernen, elk 5 rondes (samen ongeveer 20 minuten);
+6. een **samenvatting** tonen.
 
-```bash
-TRAIN_JOBS=2 /root/vt/bin/python bench.py --rounds 5
-```
-
-Daarna met 4 en met 8 kernen, om te zien wat de telefoon maximaal kan:
-
-```bash
-TRAIN_JOBS=4 /root/vt/bin/python bench.py --rounds 5
-```
-
-```bash
-TRAIN_JOBS=8 /root/vt/bin/python bench.py --rounds 5
-```
-
-Stuur de uitkomsten door (screenshots). Let vooral op twee regels:
+Houd Termux open op het scherm tot je **Klaar** ziet. Maak dan een screenshot van de
+samenvatting en stuur hem door. Let vooral op:
 - **Gemiddeld per ronde**: lager is sneller.
-- **Laatste t.o.v. eerste ronde**: wordt het meer dan 15% trager, dan wordt de telefoon warm.
+- **Laatste t.o.v. eerste ronde**: meer dan 15% trager betekent dat de telefoon warm wordt.
 
-Klaar met meten? Typ `exit` (je gaat terug naar Termux) en daarna `termux-wake-unlock`.
+Opnieuw meten? Typ alleen `bash meten.sh`. Wat al geïnstalleerd is, wordt overgeslagen.
 
 ---
 
@@ -151,8 +94,8 @@ Klaar met meten? Typ `exit` (je gaat terug naar Termux) en daarna `termux-wake-u
 | Wat je ziet | Wat te doen |
 |---|---|
 | `pip install` duurt heel lang of geeft een compileerfout | Stuur de laatste regels door; dan was er geen kant-en-klare versie voor de telefoon. |
-| Termux sluit of stopt halverwege | Controleer 2.3 en 2.5; open Termux opnieuw en begin bij `termux-wake-lock`. |
-| `Killed` midden in een ronde | Geheugen vol: sluit andere apps, of meet met `--candles 20000`. |
+| Termux sluit of stopt halverwege | Controleer 2.5 (en zo nodig Bijlage A); open Termux opnieuw en typ `bash meten.sh`. |
+| `Killed` midden in een ronde | Geheugen vol: sluit andere apps en typ `bash meten.sh` opnieuw. |
 | De telefoon wordt erg heet | Stoppen met Ctrl+C (in Termux: Ctrl staat boven het toetsenbord). |
 
 ---
