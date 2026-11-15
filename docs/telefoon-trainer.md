@@ -46,11 +46,11 @@ trager dan normaal; meet dan liever als die stil ligt.
 ### 2.3 Ontwikkelaarsopties
 1. Instellingen → **Over de telefoon** → **Software-informatie** → tik **7 keer** op
    **Buildnummer**. Je krijgt de melding dat de ontwikkelaarsopties aan staan.
-2. Instellingen → **Opties voor ontwikkelaars** (*Developer options*) → zet aan:
-   **Beperkingen voor onderliggende processen uitschakelen**
-   (*Disable child process restrictions*). Zonder dit stopt Android de leerserver na een tijdje.
-   Staat deze optie er niet, laat het me weten; dan doen we het via een computer met een
-   kabel (adb).
+2. Staat bij Instellingen → **Opties voor ontwikkelaars** de optie **Beperkingen voor
+   onderliggende processen uitschakelen** (*Disable child process restrictions*), zet die aan.
+   Staat hij er niet (op Samsung vaak het geval): **sla dit voor het meten over**. Houd Termux dan
+   open op het scherm tijdens het meten. Stopt het meten toch halverwege met
+   `[Process completed (signal 9)]`, volg dan **Bijlage A** onderaan.
 
 ### 2.4 Termux installeren
 Termux is een Linux-omgeving voor Android. **Niet** de versie uit de Play Store nemen (die is
@@ -154,3 +154,52 @@ Klaar met meten? Typ `exit` (je gaat terug naar Termux) en daarna `termux-wake-u
 | Termux sluit of stopt halverwege | Controleer 2.3 en 2.5; open Termux opnieuw en begin bij `termux-wake-lock`. |
 | `Killed` midden in een ronde | Geheugen vol: sluit andere apps, of meet met `--candles 20000`. |
 | De telefoon wordt erg heet | Stoppen met Ctrl+C (in Termux: Ctrl staat boven het toetsenbord). |
+
+---
+
+## Bijlage A: Android laten stoppen met het afsluiten van Termux (zonder computer)
+
+Nodig als het meten halverwege stopt met `[Process completed (signal 9)]`, en voor een
+leerserver die dag en nacht draait. De telefoon moet op wifi zitten.
+
+1. Instellingen → **Opties voor ontwikkelaars** → **Draadloze foutopsporing** aanzetten.
+2. Zet Termux en Instellingen naast elkaar op het grote scherm van de Fold.
+3. In Termux (niet in Debian; typ eerst `exit` als je in Debian zit):
+
+```bash
+pkg install -y android-tools
+```
+
+4. In Instellingen: **Draadloze foutopsporing** → **Apparaat koppelen met koppelingscode**. Je
+   ziet een code van 6 cijfers en een poort, bijvoorbeeld `192.168.1.20:37123`. In Termux, met
+   jouw poort:
+
+```bash
+adb pair localhost:37123
+```
+
+   Vul de code van 6 cijfers in.
+
+5. Op het hoofdscherm van Draadloze foutopsporing staat bij **IP-adres en poort** een ander
+   poortnummer. In Termux, met die poort:
+
+```bash
+adb connect localhost:41234
+```
+
+6. Kijk je Android-versie na: Instellingen → Over de telefoon → Software-informatie →
+   **Android-versie**.
+
+   Android 14 of hoger:
+
+```bash
+adb shell settings put global settings_enable_monitor_phantom_procs false
+```
+
+   Android 12 of 13:
+
+```bash
+adb shell "/system/bin/device_config set_sync_disabled_for_tests persistent; /system/bin/device_config put activity_manager max_phantom_processes 2147483647"
+```
+
+Dit blijft ook na een herstart gelden. Draadloze foutopsporing mag je daarna weer uitzetten.
