@@ -91,26 +91,33 @@ Opnieuw meten? Typ alleen `bash meten.sh`. Wat al geïnstalleerd is, wordt overg
 
 ## Deel 4: de telefoon als helper laten meedraaien
 
-Je leerserver moet eerst bijgewerkt zijn (zodat hij helpers kent). Pak dan de **helper-code**: in
-het dashboard, pagina **Trainer** → **Overzicht** → blok **Helpers** → **Tonen** (begint met `h-`).
+Je leerserver en je bot moeten eerst bijgewerkt zijn.
 
-Typ in **Termux** (niet in Debian; typ eerst `exit` als je in Debian zit):
+**Makkelijkst (niets typen):**
+1. Open het dashboard **op de telefoon** in de browser.
+2. Ga naar **Trainer** → **Overzicht** → blok **Helpers** → **Helper koppelen**.
+3. Tik op **Kopiëren** onder "Telefoon (Termux)".
+4. Open **Termux**, druk lang op het scherm → **Plakken** → Enter.
+
+**Of met de hand:** typ in Termux (niet in Debian):
 
 ```bash
 curl -fsSLo helper.sh https://raw.githubusercontent.com/iitssjstn/vetobot/main/scripts/telefoon-helper.sh && bash helper.sh
 ```
 
-De eerste keer vraagt hij:
-- **Adres**: het adres van je leerserver, hetzelfde als bij de bot (Instellingen → Eigen model);
-- **Helper-code**: de code die je net kopieerde (je ziet hem niet terwijl je typt).
+Hij vraagt dan het **adres** van je leerserver (hetzelfde als bij de bot, Instellingen → Eigen model)
+en de **koppelcode** van 6 cijfers uit het dashboard (Helpers → Helper koppelen; 15 minuten geldig).
 
 Daarna start de helper met 2 kernen (op de Fold4 het snelst) en zie je per opdracht een regel als
 `Opdracht: …` en `Klaar in 135 s`. In het dashboard staat de telefoon dan bij **Helpers**.
 
 - Laat Termux open op het scherm en de telefoon aan de lader ("Wakker blijven" aan, helderheid laag).
-- Stoppen: **Ctrl+C**. Later opnieuw starten: `bash helper.sh` (hij haalt dan ook de nieuwste versie op).
-- Ander adres of andere code: `OPNIEUW=1 bash helper.sh`.
+- Stoppen: **Ctrl+C**. Later opnieuw starten: `bash helper.sh` (hij haalt dan ook de nieuwste versie op;
+  koppelen hoeft maar één keer).
+- Opnieuw koppelen (ander adres of verlopen code): `OPNIEUW=1 bash helper.sh`.
 - Stopt hij steeds vanzelf met `[Process completed (signal 9)]`: volg **Bijlage A**.
+- `Geweigerd (403) door iets vóór de leerserver`: kijk in Nginx Proxy Manager bij je leerserver naar de
+  Access List en "Block Common Exploits", of naar Cloudflare (Bot Fight Mode).
 
 ---
 

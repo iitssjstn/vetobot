@@ -1146,6 +1146,34 @@ class Helpers(unittest.TestCase):
         self.assertTrue(seen['User-agent'].startswith('vetobot-helper/'), seen)
         self.assertEqual(seen['Authorization'], 'Bearer h-1')
 
+    def test_pairing_with_short_code(self):
+        import helper
+        s = self.s
+        s.pairing.update({'code': None, 'until': 0.0, 'wrong': 0, 'fails': [], 'blockedUntil': 0.0})
+        self.assertEqual(self.req('POST', '/helper/pair-code', {}, tok=s.helper_token())[0], 401, 'helper-code mag geen koppelcode maken')
+        code, body = self.req('POST', '/helper/pair-code', {}, tok=s.token())
+        self.assertEqual(code, 200)
+        self.assertRegex(body['code'], r'^\d{6}$')
+        wrong = '000000' if body['code'] != '000000' else '111111'
+        self.assertEqual(self.req('POST', '/helper/pair', {'code': wrong})[0], 403)
+        # Inwisselen via de helper zelf: de lange code komt in een bestand dat alleen jij kunt lezen.
+        d = tempfile.mkdtemp()
+        st = {'url': self.base, 'token': '', 'data': d, 'name': 'pi'}
+        tok = helper.pair(st, body['code'][:3] + ' ' + body['code'][3:])
+        self.assertEqual(tok, s.helper_token())
+        p = os.path.join(d, 'helper-token')
+        with open(p) as fh:
+            self.assertEqual(fh.read(), tok)
+        self.assertEqual(os.stat(p).st_mode & 0o777, 0o600)
+        self.assertEqual(self.req('POST', '/helper/pair', {'code': body['code']})[0], 403, 'maar één keer te gebruiken')
+        # Na 5 foute pogingen is een koppelcode ongeldig.
+        code2 = self.req('POST', '/helper/pair-code', {}, tok=s.token())[1]['code']
+        bad = '000000' if code2 != '000000' else '111111'
+        for _ in range(5):
+            s.helper_pair({'code': bad})
+        self.assertEqual(s.helper_pair({'code': code2})[0], 403)
+        s.pairing.update({'code': None, 'until': 0.0, 'wrong': 0, 'fails': [], 'blockedUntil': 0.0})
+
     def test_lease_expires_when_helper_disappears(self):
         s = self.s
         s.write_json('config.json', {'pairs': ['A/EUR'], 'costPct': 0.2, 'days': 60,

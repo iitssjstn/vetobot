@@ -516,6 +516,14 @@ export function createApp({ users, manager, log = console }) {
   }));
 
   // Orderboek en transacties opnemen aan/uit.
+  // Koppelcode voor een helper (6 cijfers, 15 minuten geldig) plus het adres van de leerserver,
+  // zodat het dashboard een kant-en-klaar startcommando kan tonen.
+  app.post('/api/admin/trainer/helper-pair', adminOnly, wrap(async (req) => {
+    const r = await manager.trainerRequest('/helper/pair-code', { method: 'POST', body: {} });
+    log.info(`Koppelcode voor een helper gemaakt door ${req.user.username}`);
+    return { ...r.data, url: manager.trainerAccess()?.url ?? null };
+  }));
+
   app.post('/api/admin/trainer/micro', adminOnly, wrap(async (req) => {
     const r = await manager.trainerRequest('/config', { method: 'POST', body: { micro: { enabled: Boolean(req.body?.enabled) } } });
     return { ok: true, config: r.data.config };

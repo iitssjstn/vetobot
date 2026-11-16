@@ -983,6 +983,50 @@ def helper_result(body):
     return 200, {'ok': True}
 
 
+# ---------- Koppelen met een korte code ----------
+# De helper-code is lang. In het dashboard maak je een koppelcode van 6 cijfers (15 minuten geldig,
+# één keer te gebruiken); de helper ruilt die bij /helper/pair in voor de helper-code. Tegen raden:
+# een koppelcode is na 5 foute pogingen ongeldig, en na 20 foute pogingen in 15 minuten wordt
+# koppelen 15 minuten geweigerd.
+PAIR_TTL_S = 15 * 60
+pairing = {'code': None, 'until': 0.0, 'wrong': 0, 'fails': [], 'blockedUntil': 0.0}
+pairing_lock = threading.Lock()
+
+
+def new_pair_code():
+    with pairing_lock:
+        pairing.update({'code': f'{secrets.randbelow(1_000_000):06d}', 'until': time.time() + PAIR_TTL_S, 'wrong': 0})
+        return {'code': pairing['code'], 'expiresAt': datetime.fromtimestamp(pairing['until']).isoformat(timespec='seconds'),
+                'minutes': PAIR_TTL_S // 60}
+
+
+def helper_pair(body):
+    """Koppelcode inwisselen voor de helper-code. Geeft (status, antwoord)."""
+    code = ''.join(ch for ch in str(body.get('code') or '') if ch.isdigit())
+    now = time.time()
+    with pairing_lock:
+        pairing['fails'] = [t for t in pairing['fails'] if now - t < PAIR_TTL_S]
+        if now < pairing['blockedUntil']:
+            return 429, {'error': 'Te veel foute koppelcodes; probeer het over een kwartier opnieuw.'}
+        ok = bool(pairing['code']) and now < pairing['until'] and hmac.compare_digest(code, pairing['code'])
+        if ok:
+            pairing.update({'code': None, 'until': 0.0, 'wrong': 0})
+        else:
+            pairing['fails'].append(now)
+            pairing['wrong'] += 1
+            if pairing['wrong'] >= 5:
+                pairing.update({'code': None, 'until': 0.0})
+            if len(pairing['fails']) >= 20:
+                pairing['blockedUntil'] = now + PAIR_TTL_S
+    if not ok:
+        time.sleep(float(os.environ.get('PAIR_FAIL_DELAY', '1')))  # raden vertragen
+        return 403, {'error': 'Onjuiste of verlopen koppelcode. Maak een nieuwe in het dashboard (Trainer → Helpers).'}
+    name = str(body.get('name') or 'helper')[:40]
+    log(f'Helper {name} gekoppeld met een koppelcode')
+    think(f'Er is een nieuwe helper gekoppeld: {name}. Hij gaat recepten voor me trainen.', kind='info')
+    return 200, {'token': helper_token()}
+
+
 def helpers_info():
     now = datetime.now()
     out = []
@@ -1542,7 +1586,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send(404, {'error': 'Niet gevonden'})
 
     def do_POST(self):
-        if not self.authed(helper=self.path.startswith('/helper/')):
+        if self.path == '/helper/pair':  # zonder code: alleen met een geldige koppelcode
+            try:
+                body = json.loads(self.rfile.read(min(int(self.headers.get('Content-Length') or 0), 2000)) or b'{}')
+            except ValueError:
+                return self.send(400, {'error': 'Ongeldige JSON'})
+            code, out = helper_pair(body)
+            return self.send(code, out)
+        if not self.authed(helper=self.path.startswith('/helper/') and self.path != '/helper/pair-code'):
             return
         limit = {'/feedback': 500_000, '/helper/result': 60_000_000}.get(self.path, 20_000)
         length = min(int(self.headers.get('Content-Length') or 0), limit)
@@ -1564,6 +1615,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/feedback':
             added = add_feedback(body.get('trades'))
             return self.send(200, {'ok': True, 'added': added})
+        if self.path == '/helper/pair-code':  # alleen met de hoofdcode (de bot, voor het dashboard)
+            return self.send(200, new_pair_code())
         if self.path == '/helper/claim':
             return self.send(200, helper_claim(body))
         if self.path == '/helper/result':

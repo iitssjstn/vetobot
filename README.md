@@ -260,7 +260,7 @@ services:
         max-file: "3"
 ```
 
-**Helpers: meer apparaten laten meeleren.** Op elk apparaat met Docker of Linux (pc, laptop, Raspberry Pi 4/5, tweede server, Android-telefoon via Termux) kan een **helper** draaien. Een helper vraagt de leerserver om een recept, haalt zelf de koersen bij Bitvavo, traint en test het recept met dezelfde code en stuurt de uitkomst terug. De leerserver blijft de baas: hij kiest de recepten, beoordeelt de uitkomsten en bepaalt wat de bot gebruikt. Een recept dat al getraind wordt, deelt hij niet nog eens uit; komt een helper niet binnen 90 minuten terug, dan gaat het recept vanzelf terug. Helpers gebruiken een **aparte helper-code** (pagina Trainer → Overzicht → Helpers → Tonen, en in de log van de leerserver), die alleen toegang geeft tot recepten ophalen en uitkomsten terugsturen. Op de pagina Trainer zie je welke helpers meedoen. Helpers trainen ook buiten de leeruren van de VPS.
+**Helpers: meer apparaten laten meeleren.** Op elk apparaat met Docker of Linux (pc, laptop, Raspberry Pi 4/5, tweede server, Android-telefoon via Termux) kan een **helper** draaien. Een helper vraagt de leerserver om een recept, haalt zelf de koersen bij Bitvavo, traint en test het recept met dezelfde code en stuurt de uitkomst terug. De leerserver blijft de baas: hij kiest de recepten, beoordeelt de uitkomsten en bepaalt wat de bot gebruikt. Een recept dat al getraind wordt, deelt hij niet nog eens uit; komt een helper niet binnen 90 minuten terug, dan gaat het recept vanzelf terug. Helpers gebruiken een **aparte helper-code**, die alleen toegang geeft tot recepten ophalen en uitkomsten terugsturen; je koppelt een helper met een korte koppelcode van 6 cijfers (zie hieronder). Op de pagina Trainer zie je welke helpers meedoen. Helpers trainen ook buiten de leeruren van de VPS.
 
 Helper met Docker (op een ander apparaat):
 
@@ -278,7 +278,7 @@ services:
       - ./helper-data:/data
 ```
 
-Zet de helper-code in een bestand naast de compose, niet in de compose zelf: `mkdir -p helper-data && echo 'h-…' > helper-data/helper-token`, daarna `docker compose up -d vetobot-helper`. Niet op je thuisserver met de Athlon (numpy draait daar niet), en het apparaat heeft ±1,5 GB vrij geheugen nodig bij 365 dagen geschiedenis.
+**Koppelen:** klik op de pagina Trainer → Overzicht → Helpers op **Helper koppelen**. Je krijgt een koppelcode van 6 cijfers (15 minuten geldig, één keer te gebruiken). Zet die de eerste keer als `PAIR_CODE=123456` bij de environment van de helper en start hem (`docker compose up -d vetobot-helper`); de helper wisselt de koppelcode zelf in voor de lange helper-code en bewaart die in `helper-data/helper-token`. Daarna mag `PAIR_CODE` weer weg. Zonder koppelcode kan ook: zet de lange helper-code (Helpers → Tonen) in `helper-data/helper-token`. Niet op je thuisserver met de Athlon (numpy draait daar niet), en het apparaat heeft ±1,5 GB vrij geheugen nodig bij 365 dagen geschiedenis.
 
 Helper op een Android-telefoon (Termux): `curl -fsSLo helper.sh https://raw.githubusercontent.com/iitssjstn/vetobot/main/scripts/telefoon-helper.sh && bash helper.sh` (zie [docs/telefoon-trainer.md](docs/telefoon-trainer.md)).
 

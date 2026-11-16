@@ -2111,7 +2111,11 @@ document.addEventListener('click', (e) => { const b = e.target.closest('[data-tr
 try { const t = localStorage.getItem('trtab'); if (t && document.querySelector(`[data-trpane="${t}"]`)) showTrTab(t); } catch { /* geen opslag */ }
 // Helpers: andere apparaten die recepten trainen voor de leerserver.
 let hlShow = false;
+let hlPair = null;
+let hlLast = null;
+const HL_SCRIPT = 'https://raw.githubusercontent.com/iitssjstn/vetobot/main/scripts/telefoon-helper.sh';
 function helpersRender(a, nl) {
+  hlLast = [a, nl];
   const list = a.helpers ?? [];
   const on = list.filter((h) => h.online);
   $('hl-hint').textContent = list.length ? `${on.length} actief` : 'nog geen';
@@ -2124,13 +2128,53 @@ function helpersRender(a, nl) {
     ['Nu', (h) => h.busy ? `<span class="muted">traint ${esc(h.busy.recipe)}</span>` : '<span class="muted">wacht</span>'],
     ['Laatst gezien', (h) => `<span class="muted">${time(h.lastSeen)}</span>`],
   ]) : '<p class="muted" style="margin:0">Nog geen helper verbonden.</p>';
-  const code = a.helperToken ?? '';
-  $('hl-body').innerHTML = `<p class="muted" style="margin:0 0 10px;font-size:13.5px">Een helper is een ander apparaat (pc, Raspberry Pi, tweede server, Android-telefoon) dat recepten traint voor de leerserver. De leerserver kiest de recepten en beoordeelt de uitkomsten; valt een helper uit, dan gaat het recept vanzelf terug. Hoe je een helper start staat in de README (Docker) en in <code>docs/telefoon-trainer.md</code> (telefoon).</p>`
+  const code = a.helperToken;
+  const pairHtml = hlPair?.error ? `<div class="msg err">${esc(hlPair.error)}</div>`
+    : hlPair ? (() => {
+      const phone = `curl -fsSLo helper.sh ${HL_SCRIPT} && ADRES=${hlPair.url ?? 'ADRES-VAN-JE-LEERSERVER'} KOPPELCODE=${hlPair.code} bash helper.sh`;
+      const docker = `ROLE=helper TRAINER_URL=${hlPair.url ?? '…'} PAIR_CODE=${hlPair.code}`;
+      return `<div style="margin-top:10px;padding:12px;border:1px solid var(--line);border-radius:10px">
+        <div style="font-size:13.5px">Koppelcode, ${hlPair.minutes ?? 15} minuten geldig en één keer te gebruiken:</div>
+        <div class="num" style="font-size:28px;font-weight:700;letter-spacing:.15em;margin:4px 0 10px">${esc(hlPair.code)}</div>
+        <div style="font-size:13.5px"><b>Telefoon (Termux):</b> open dit dashboard op de telefoon, kopieer en plak in Termux:</div>
+        <pre class="tr-log" style="white-space:pre-wrap;word-break:break-all;margin:6px 0">${esc(phone)}</pre>
+        <button class="btn sm" type="button" data-hl-copy="${esc(phone)}">Kopiëren</button> <span class="msg" id="hl-copy-msg"></span>
+        <div style="font-size:13.5px;margin-top:10px"><b>Docker</b> (pc, Raspberry Pi): zet in de eerste keer deze omgevingsvariabelen (zie de README):</div>
+        <pre class="tr-log" style="white-space:pre-wrap;word-break:break-all;margin:6px 0">${esc(docker)}</pre>
+        <div class="help">Ook zonder kopiëren: typ in de helper alleen het adres en deze 6 cijfers.</div>
+      </div>`;
+    })() : '';
+  $('hl-body').innerHTML = `<p class="muted" style="margin:0 0 10px;font-size:13.5px">Een helper is een ander apparaat (pc, Raspberry Pi, tweede server, Android-telefoon) dat recepten traint voor de leerserver. De leerserver kiest de recepten en beoordeelt de uitkomsten; valt een helper uit, dan gaat het recept vanzelf terug.</p>`
     + `<div class="scroll">${rows}</div>`
-    + `<div style="margin-top:10px;font-size:13.5px"><b>Helper-code</b> <span class="muted">(alleen voor recepten trainen; geeft geen toegang tot instellingen of modellen)</span><br>`
-    + `<code style="user-select:all">${hlShow ? esc(code) : '••••••••••••'}</code> <button class="btn sm" type="button" id="hl-toggle">${hlShow ? 'Verbergen' : 'Tonen'}</button></div>`;
+    + `<div class="row-actions" style="margin-top:10px"><button class="btn primary" type="button" id="hl-pair">Helper koppelen</button></div>`
+    + pairHtml
+    + `<div style="margin-top:12px;font-size:13px" class="muted">Lange helper-code (alleen nodig zonder koppelcode): `
+    + (code ? `<code style="user-select:all">${hlShow ? esc(code) : '••••••••••••'}</code> <button class="btn sm" type="button" id="hl-toggle">${hlShow ? 'Verbergen' : 'Tonen'}</button>`
+      : 'nog niet beschikbaar; werk de leerserver bij.') + '</div>';
 }
-document.addEventListener('click', (e) => { if (e.target.closest('#hl-toggle')) { hlShow = !hlShow; loadTrainer(); } });
+document.addEventListener('click', async (e) => {
+  if (e.target.closest('#hl-toggle')) { hlShow = !hlShow; if (hlLast) helpersRender(...hlLast); return; }
+  const copy = e.target.closest('[data-hl-copy]');
+  if (copy) {
+    const text = copy.dataset.hlCopy;
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; } catch { /* geen https: oude manier */ }
+    if (!ok) {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.setAttribute('readonly', ''); ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+      document.body.appendChild(ta); ta.select();
+      try { ok = document.execCommand('copy'); } catch { ok = false; }
+      ta.remove();
+    }
+    $('hl-copy-msg').textContent = ok ? 'Gekopieerd. Plak het in Termux (lang drukken → Plakken).' : 'Kopiëren lukte niet; selecteer de tekst en kopieer hem zelf.';
+    return;
+  }
+  if (e.target.closest('#hl-pair')) {
+    try { hlPair = await api('api/admin/trainer/helper-pair', {}); }
+    catch (err) { hlPair = { error: err.message }; }
+    if (hlLast) helpersRender(...hlLast);
+  }
+});
 function renderAgent(t, nl) {
   const a = t?.agent;
   $('tr-agent-panel').hidden = !a;

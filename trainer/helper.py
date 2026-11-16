@@ -48,8 +48,24 @@ def settings():
                 tok = f.read().strip()
         except OSError:
             tok = ''
-    return {'url': os.environ.get('TRAINER_URL', '').strip().rstrip('/'), 'token': tok, 'data': data,
-            'name': (os.environ.get('HELPER_NAME') or socket.gethostname() or 'helper').strip()[:40]}
+    st = {'url': os.environ.get('TRAINER_URL', '').strip().rstrip('/'), 'token': tok, 'data': data,
+          'name': (os.environ.get('HELPER_NAME') or socket.gethostname() or 'helper').strip()[:40]}
+    if st['url'] and not st['url'].startswith(('http://', 'https://')):
+        st['url'] = 'https://' + st['url']
+    return st
+
+
+def pair(st, code):
+    """Koppelcode (6 cijfers uit het dashboard) inwisselen voor de helper-code en die bewaren."""
+    req = urllib.request.Request(st['url'] + '/helper/pair', data=json.dumps({'code': code, 'name': st['name']}).encode(), method='POST',
+                                 headers={'Content-Type': 'application/json', 'User-Agent': f'vetobot-helper/{VERSION}'})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        tok = json.loads(r.read())['token']
+    p = os.path.join(st['data'], 'helper-token')
+    with open(os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'w') as f:
+        f.write(tok)
+    st['token'] = tok
+    return tok
 
 
 def log(msg):
@@ -129,6 +145,18 @@ def cleanup(st, now=None):
 
 def main():
     st = settings()
+    code = os.environ.get('PAIR_CODE', '').strip()
+    if st['url'] and code and not st['token']:
+        try:
+            pair(st, code)
+            print('Gekoppeld: de helper-code is bewaard op dit apparaat.')
+        except urllib.error.HTTPError as e:
+            msg = json.loads(e.read() or b'{}').get('error') if e.code in (403, 429) else None
+            print(f'Koppelen lukte niet ({e.code}): {msg or e.reason}')
+            return 3
+        except (urllib.error.URLError, OSError, ValueError, KeyError) as e:
+            print(f'Koppelen lukte niet: {e}')
+            return 3
     if not st['url'] or not st['token']:
         print('TRAINER_URL en de helper-code zijn nodig (HELPER_TOKEN, of het bestand '
               f"{os.path.join(st['data'], 'helper-token')}). De code staat op de pagina Trainer van je dashboard.")
