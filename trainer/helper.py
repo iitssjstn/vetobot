@@ -177,7 +177,12 @@ def main():
             wait = run_once(st)
             backoff = 10
         except urllib.error.HTTPError as e:
-            wait = 600 if e.code in (401, 403) else 60
+            if e.code == 401:
+                # Verkeerde of verouderde helper-code: niet eindeloos blijven proberen, maar opnieuw koppelen.
+                log('De leerserver kent deze helper-code niet (401). Koppel opnieuw met een nieuwe koppelcode '
+                    '(dashboard: Trainer → Helpers → Helper koppelen).')
+                return 4
+            wait = 600 if e.code == 403 else 60
             log({401: 'Onjuiste helper-code (401). Controleer de code op de pagina Trainer.',
                  403: 'Geweigerd (403) door iets vóór de leerserver (proxy, Cloudflare of een toegangslijst), niet door de '
                       'leerserver zelf. Sta de adressen /helper/claim en /helper/result toe, of het IP-adres van deze helper.',

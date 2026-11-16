@@ -1174,6 +1174,28 @@ class Helpers(unittest.TestCase):
         self.assertEqual(s.helper_pair({'code': code2})[0], 403)
         s.pairing.update({'code': None, 'until': 0.0, 'wrong': 0, 'fails': [], 'blockedUntil': 0.0})
 
+    def test_helper_stops_on_wrong_code(self):
+        import contextlib
+        import io
+        import helper
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, 'helper-token'), 'w') as f:
+            f.write('h-verkeerd')
+        old = {k: os.environ.get(k) for k in ('DATA_DIR', 'HELPER_TOKEN', 'TRAINER_URL', 'PAIR_CODE')}
+        try:
+            os.environ.update({'DATA_DIR': d, 'TRAINER_URL': self.base})
+            for k in ('HELPER_TOKEN', 'PAIR_CODE'):
+                os.environ.pop(k, None)
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(helper.main(), 4, 'stopt, zodat het script opnieuw laat koppelen')
+            self.assertIn('Koppel opnieuw', out.getvalue())
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
     def test_lease_expires_when_helper_disappears(self):
         s = self.s
         s.write_json('config.json', {'pairs': ['A/EUR'], 'costPct': 0.2, 'days': 60,

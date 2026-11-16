@@ -37,6 +37,8 @@ CONF="/root/.vetobot-helper"
 # zelf in voor de helper-code en bewaart die in Debian (alleen leesbaar voor jezelf).
 heeft_conf=$(proot-distro login debian -- /bin/bash -c "[ -s $CONF/url ] && [ -s $CONF/helper-token ] && echo ja || echo nee")
 PAIR=""
+# Een gekopieerd commando met KOPPELCODE= koppelt altijd opnieuw (de oude code kan verkeerd zijn).
+[ -n "${KOPPELCODE:-}" ] && OPNIEUW=1
 if [ "$heeft_conf" != "ja" ] || [ "$OPNIEUW" = "1" ]; then
   stap "Eenmalig: koppelen met de leerserver"
   URL="${ADRES:-}"
@@ -82,8 +84,11 @@ while true; do
   /root/vt/bin/python helper.py
   rc=$?
   set -e
-  if [ "$rc" = "3" ]; then
-    echo "Koppelen lukte niet. Maak een nieuwe koppelcode in het dashboard en start opnieuw met: OPNIEUW=1 bash helper.sh"
+  if [ "$rc" = "3" ] || [ "$rc" = "4" ]; then
+    rm -f /root/.vetobot-helper/helper-token
+    echo
+    echo "Opnieuw koppelen nodig. Maak in het dashboard een nieuwe koppelcode (Trainer → Helpers → Helper koppelen)"
+    echo "en start opnieuw met:  bash helper.sh"
     exit 1
   fi
   PAIR_CODE=""  # alleen de eerste keer
