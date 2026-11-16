@@ -89,6 +89,18 @@ def token():
         return f.read().strip()
 
 
+def helper_token():
+    """Aparte code voor helpers: geeft alleen toegang tot recepten ophalen en uitkomsten terugsturen,
+    niet tot de instellingen, de modellen of de status."""
+    p = path('helper-token')
+    if not os.path.exists(p):
+        with open(p, 'w') as f:
+            f.write('h-' + secrets.token_urlsafe(24))
+        os.chmod(p, 0o600)
+    with open(p) as f:
+        return f.read().strip()
+
+
 def log(msg):
     line = f'{datetime.now().strftime("%Y-%m-%d %H:%M:%S")} {msg}'
     print(line, flush=True)
@@ -855,43 +867,184 @@ WHY_RECIPE = {
 }
 
 
+# ---------- Leerrondes: de VPS zelf en helpers ----------
+# Een recept dat al getraind wordt (door de VPS of een helper) wordt niet nog eens uitgedeeld. Komt een
+# helper niet terug binnen LEASE_S, dan vervalt zijn opdracht en kan het recept opnieuw gekozen worden.
+LEASE_S = int(os.environ.get('HELPER_LEASE_MINUTES') or 90) * 60
+inflight = {}           # recept-sleutel -> {'id', 'by', 'at'}
+inflight_lock = threading.Lock()
+publish_lock = threading.Lock()
+
+
+def choose_recipe(cfg, data, by):
+    """Kies een recept dat nog niemand traint en zet het op naam van `by`. Geeft (recept, reden)."""
+    tfs = cfg['agent']['timeframes'] or agent_mod.DEFAULT_TIMEFRAMES
+    with inflight_lock:
+        now = time.time()
+        for k in [k for k, v in inflight.items() if now - v['at'] > LEASE_S]:
+            log(f"AI-trader: {inflight[k]['by']} kwam niet terug met {k}; het recept is weer vrij")
+            del inflight[k]
+        recipe, why = agent_search.pick(data['recipes'], tfs, rnd=random.Random(data.get('round', 0) + int(now * 1000) % 100000),
+                                        exclude=frozenset(inflight))
+        if recipe is None:
+            return None, None, None
+        job_id = secrets.token_hex(8)
+        inflight[agent_search.key_of(recipe)] = {'id': job_id, 'by': by, 'at': now}
+    return recipe, why, job_id
+
+
+def release(recipe):
+    with inflight_lock:
+        inflight.pop(agent_search.key_of(recipe), None)
+
+
+def round_config(cfg):
+    """Instellingen voor train_agent (ook wat een helper meekrijgt)."""
+    costs, _, cost_default = cost_table(cfg)
+    return {'costPct': cost_default, 'costs': costs, 'days': int(cfg['days']),
+            'agent': {k: cfg['agent'].get(k) for k in ('safetyStopPct', 'maxOpen')}}
+
+
+HELPER_PROTOCOL = 1
+helpers = {}            # naam -> wat de helper doet en deed (alleen in het geheugen)
+
+
+def _helper_seen(name, body):
+    h = helpers.setdefault(name, {'name': name, 'rounds': 0, 'failed': 0, 'seconds': [], 'firstSeen': datetime.now().isoformat(timespec='seconds')})
+    h.update({'lastSeen': datetime.now().isoformat(timespec='seconds'), 'platform': str(body.get('platform') or '')[:80],
+              'jobs': body.get('jobs'), 'version': body.get('version')})
+    return h
+
+
+def helper_claim(body):
+    """Een helper vraagt om werk. Geeft een recept met alles wat nodig is om het te trainen, of
+    {'job': None, 'waitSeconds': ...} als er nu niets te doen is."""
+    name = str(body.get('name') or 'helper')[:40]
+    h = _helper_seen(name, body)
+    if body.get('protocol') != HELPER_PROTOCOL:
+        return {'job': None, 'waitSeconds': 600, 'error': 'Deze helper is te oud of te nieuw voor de leerserver; werk hem bij.'}
+    cfg = config()
+    if not cfg['agent']['enabled']:
+        h['busy'] = None
+        return {'job': None, 'waitSeconds': 120, 'reason': 'De AI-trader leert nu niet.'}
+    data = load_agents()
+    recipe, why, job_id = choose_recipe(cfg, data, name)
+    if recipe is None:
+        return {'job': None, 'waitSeconds': 60, 'reason': 'Alle recepten worden al getraind.'}
+    h['busy'] = {'id': job_id, 'recipe': agent_search.key_of(recipe), 'since': datetime.now().isoformat(timespec='seconds')}
+    think(f"Helper {name} traint nu: {agent_mod.recipe_text(recipe)}. Waarom: {WHY_RECIPE.get(why, why)}", kind='doing')
+    return {'job': {'id': job_id, 'recipe': recipe, 'why': why, 'protocol': HELPER_PROTOCOL, 'agentsVersion': AGENTS_VERSION,
+                    'cfg': round_config(cfg), 'pairs': agent_pairs(cfg),
+                    'extra': [list(x) for x in agent_extra(recipe['timeframe'])], 'seed': data.get('round', 0) + 1}}
+
+
+def helper_result(body):
+    """Een helper stuurt de uitkomst terug. Wordt verwerkt alsof de VPS het recept zelf trainde."""
+    name = str(body.get('name') or 'helper')[:40]
+    h = _helper_seen(name, body)
+    job_id = str(body.get('id') or '')
+    with inflight_lock:
+        key = next((k for k, v in inflight.items() if v['id'] == job_id), None)
+    if key is None:
+        return 409, {'ok': False, 'error': 'Onbekende of verlopen opdracht'}
+    recipe = body.get('recipe') or {}
+    try:
+        if agent_search.key_of(recipe) != key:
+            raise ValueError('ander recept dan de opdracht')
+        if body.get('agentsVersion') != AGENTS_VERSION:
+            raise ValueError('andere manier van meten (werk de helper bij)')
+        report, agent = body.get('report'), body.get('agent')
+        if not isinstance(report, dict):
+            raise ValueError('geen rapport')
+        if agent is not None and (agent.get('kind') != 'agent' or agent.get('version') != 2 or not agent.get('entry') or not agent.get('exit')):
+            raise ValueError('onbekend formaat voor de AI-trader')
+    except (ValueError, TypeError, AttributeError) as e:
+        with inflight_lock:
+            inflight.pop(key, None)
+        h['failed'] += 1
+        h['busy'] = None
+        log(f'Helper {name}: uitkomst niet gebruikt: {e}')
+        return 400, {'ok': False, 'error': str(e)}
+    if body.get('error'):
+        with inflight_lock:
+            inflight.pop(key, None)
+        h['failed'] += 1
+        h['busy'] = None
+        log(f"Helper {name}: ronde mislukt: {str(body['error'])[:300]}")
+        return 200, {'ok': True}
+    try:
+        finish_round(recipe, agent, report, by=name)
+    finally:
+        release(recipe)
+    h['rounds'] += 1
+    h['busy'] = None
+    if isinstance(body.get('seconds'), (int, float)):
+        h['seconds'] = (h['seconds'] + [round(float(body['seconds']), 1)])[-20:]
+    return 200, {'ok': True}
+
+
+def helpers_info():
+    now = datetime.now()
+    out = []
+    for h in helpers.values():
+        seen = datetime.fromisoformat(h['lastSeen'])
+        out.append({**{k: h.get(k) for k in ('name', 'platform', 'jobs', 'rounds', 'failed', 'busy', 'lastSeen', 'firstSeen', 'version')},
+                    'online': (now - seen).total_seconds() < LEASE_S,
+                    'avgSeconds': round(sum(h['seconds']) / len(h['seconds']), 1) if h['seconds'] else None})
+    return sorted(out, key=lambda x: x['lastSeen'], reverse=True)
+
+
 def agent_round():
     """Eén leerronde: zelf een recept kiezen, trainen, testen, en de beste manier van traden kiezen."""
     cfg = config()
-    tfs = cfg['agent']['timeframes'] or agent_mod.DEFAULT_TIMEFRAMES
     try:
         fill_trade_market(cfg)
     except Exception as e:
         log(f'Marktbeweging bij trades invullen mislukt: {e}')
     data = load_agents()
-    recipe, why = agent_search.pick(data['recipes'], tfs, rnd=random.Random(data.get('round', 0) + int(time.time())))
-    key = agent_search.key_of(recipe)
-    cache = os.path.join(DATA, 'candles')
-    fetch = lambda pair, t, days: trainer.fetch_candles(pair, t, days, cache_dir=cache)
-    pairs = agent_pairs(cfg)
-    think(f"Ik probeer nu: {agent_mod.recipe_text(recipe)}, op {len(pairs)} coins. Waarom: {WHY_RECIPE.get(why, why)}", kind='doing')
-    with work_lock:
-        state['agentBusy'] = True
-        state['agentProgress'] = {'startedAt': datetime.now().isoformat(timespec='seconds'), 'phase': 'agent', 'done': 0, 'total': 5,
-                                  'text': f'Recept {agent_mod.recipe_text(recipe)}: starten'}
-        try:
-            def prog(phase, done, total, text):
-                state['agentProgress'] = {**state['agentProgress'], 'done': done, 'total': total, 'text': text}
-            costs, _, cost_default = cost_table(cfg)
-            agent, report = agent_mod.train_agent({**cfg, 'agent': cfg['agent'], 'costPct': cost_default, 'costs': costs,
-                                                   'featureCache': os.path.join(DATA, 'features')}, recipe, fetch, pairs, log=log,
-                                                  progress=prog, extra=agent_extra(recipe['timeframe']), seed=data.get('round', 0) + 1)
-        finally:
-            state['agentBusy'] = False
+    recipe, why, _ = choose_recipe(cfg, data, 'VPS')
+    if recipe is None:
+        return  # alles wordt al getraind (door helpers)
+    try:
+        cache = os.path.join(DATA, 'candles')
+        fetch = lambda pair, t, days: trainer.fetch_candles(pair, t, days, cache_dir=cache)
+        pairs = agent_pairs(cfg)
+        think(f"Ik probeer nu: {agent_mod.recipe_text(recipe)}, op {len(pairs)} coins. Waarom: {WHY_RECIPE.get(why, why)}", kind='doing')
+        with work_lock:
+            state['agentBusy'] = True
+            state['agentProgress'] = {'startedAt': datetime.now().isoformat(timespec='seconds'), 'phase': 'agent', 'done': 0, 'total': 5,
+                                      'text': f'Recept {agent_mod.recipe_text(recipe)}: starten'}
+            try:
+                def prog(phase, done, total, text):
+                    state['agentProgress'] = {**state['agentProgress'], 'done': done, 'total': total, 'text': text}
+                agent, report = agent_mod.train_agent({**cfg, **round_config(cfg), 'featureCache': os.path.join(DATA, 'features')},
+                                                      recipe, fetch, pairs, log=log, progress=prog,
+                                                      extra=agent_extra(recipe['timeframe']), seed=data.get('round', 0) + 1)
+            finally:
+                state['agentBusy'] = False
+        finish_round(recipe, agent, report, 'VPS')
+    finally:
+        release(recipe)
+
+
+def finish_round(recipe, agent, report, by='VPS'):
+    """Uitkomst van een ronde verwerken (van de VPS zelf of van een helper): bewaren, beoordelen en
+    de beste manier van traden kiezen voor de bot."""
+    with publish_lock:
+        _finish_round(recipe, agent, report, by)
+
+
+def _finish_round(recipe, agent, report, by):
     data = load_agents()
     data['round'] = data.get('round', 0) + 1
+    key = agent_search.key_of(recipe)
     report['at'] = datetime.now().isoformat(timespec='seconds')
     entry = agent_search.add_round(data['recipes'], recipe, report)
     os.makedirs(path('agents'), exist_ok=True)
     if agent:
         write_json(os.path.join('agents', key.replace('|', '_') + '.json'), agent)
     try:
-        think(agent_mod_say(report, entry), kind='result' if report.get('ok') else 'warn')
+        think((f'Helper {by}: ' if by != 'VPS' else '') + agent_mod_say(report, entry), kind='result' if report.get('ok') else 'warn')
     except Exception as e:  # een bericht mag een leerronde nooit laten mislukken
         log(f'AI-trader: bericht over de ronde mislukt: {e}')
     # De beste manier van traden kiezen: hoogste status, dan gemiddelde over de rondes.
@@ -1242,6 +1395,7 @@ def agent_info():
             'regimes': {reg: {k: v for k, v in p.items() if k != 'agent'} | {'text': agent_mod.recipe_text(data['recipes'][p['key']]['recipe']) if p.get('key') in data.get('recipes', {}) else None}
                         for reg, p in ((pub or {}).get('regimes') or {}).items()},
             'hours': agent_hours(cfg), 'trainJobs': resources.TRAIN_JOBS,
+            'helpers': helpers_info(), 'helperToken': helper_token(), 'inflight': len(inflight),
             'liveCheck': (pub or {}).get('liveCheck'),
             'liveRules': {'minTrades': livecheck.MIN_TRADES, 'minDays': livecheck.MIN_DAYS, 'minAvg': livecheck.MIN_AVG, 'maxDd': livecheck.MAX_DD},
             # De lange paper-test: per week, sinds de nieuwe manier van meten.
@@ -1310,9 +1464,12 @@ class Handler(BaseHTTPRequestHandler):
         except _GONE:
             self.close_connection = True  # de client (bot/proxy) heeft de verbinding al verbroken
 
-    def authed(self):
-        got = self.headers.get('Authorization', '')
-        ok = hmac.compare_digest(got.encode(), f'Bearer {token()}'.encode())
+    def authed(self, helper=False):
+        """De hoofdcode mag alles; de helper-code alleen de /helper/-adressen."""
+        got = self.headers.get('Authorization', '').encode()
+        ok = hmac.compare_digest(got, f'Bearer {token()}'.encode())
+        if not ok and helper:
+            ok = hmac.compare_digest(got, f'Bearer {helper_token()}'.encode())
         if not ok:
             time.sleep(0.5)  # raden vertragen
             self.send(401, {'error': 'Onjuiste of ontbrekende code'})
@@ -1385,9 +1542,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send(404, {'error': 'Niet gevonden'})
 
     def do_POST(self):
-        if not self.authed():
+        if not self.authed(helper=self.path.startswith('/helper/')):
             return
-        length = min(int(self.headers.get('Content-Length') or 0), 500000 if self.path == '/feedback' else 20000)
+        limit = {'/feedback': 500_000, '/helper/result': 60_000_000}.get(self.path, 20_000)
+        length = min(int(self.headers.get('Content-Length') or 0), limit)
         try:
             body = json.loads(self.rfile.read(length) or b'{}')
         except ValueError:
@@ -1406,6 +1564,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/feedback':
             added = add_feedback(body.get('trades'))
             return self.send(200, {'ok': True, 'added': added})
+        if self.path == '/helper/claim':
+            return self.send(200, helper_claim(body))
+        if self.path == '/helper/result':
+            code, out = helper_result(body)
+            return self.send(code, out)
         if self.path == '/train':
             started = run_training('handmatig vanuit vetobot')
             return self.send(200 if started else 409, {'ok': started, 'error': None if started else 'Er loopt al een training'})
@@ -1413,6 +1576,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    if os.environ.get('ROLE') == 'helper':
+        import helper
+        return helper.main()
     nice = resources.lower_priority()
     resources.limit_threads()
     resources.set_warning_baseline()
@@ -1423,6 +1589,7 @@ def main():
     print('=' * 70, flush=True)
     print(' vetobot-trainer', flush=True)
     print(f' Code voor het dashboard (Instellingen -> Eigen model): {t}', flush=True)
+    print(f' Code voor helpers (alleen recepten trainen): {helper_token()}', flush=True)
     print(f' Volgende training (voorspelmodel): {next_run():%Y-%m-%d %H:%M}', flush=True)
     hours = agent_hours(config())
     print(f" AI-trader leert: {'doorlopend' if not hours else 'op de uren ' + ', '.join(map(str, hours))}"

@@ -260,6 +260,28 @@ services:
         max-file: "3"
 ```
 
+**Helpers: meer apparaten laten meeleren.** Op elk apparaat met Docker of Linux (pc, laptop, Raspberry Pi 4/5, tweede server, Android-telefoon via Termux) kan een **helper** draaien. Een helper vraagt de leerserver om een recept, haalt zelf de koersen bij Bitvavo, traint en test het recept met dezelfde code en stuurt de uitkomst terug. De leerserver blijft de baas: hij kiest de recepten, beoordeelt de uitkomsten en bepaalt wat de bot gebruikt. Een recept dat al getraind wordt, deelt hij niet nog eens uit; komt een helper niet binnen 90 minuten terug, dan gaat het recept vanzelf terug. Helpers gebruiken een **aparte helper-code** (pagina Trainer → Overzicht → Helpers → Tonen, en in de log van de leerserver), die alleen toegang geeft tot recepten ophalen en uitkomsten terugsturen. Op de pagina Trainer zie je welke helpers meedoen. Helpers trainen ook buiten de leeruren van de VPS.
+
+Helper met Docker (op een ander apparaat):
+
+```yaml
+services:
+  vetobot-helper:
+    image: ghcr.io/iitssjstn/vetobot-trainer:latest
+    restart: unless-stopped
+    environment:
+      - ROLE=helper
+      - TRAINER_URL=https://trainer.jouwdomein.nl
+      - HELPER_NAME=pc-zolder      # naam op het dashboard
+      - TRAIN_JOBS=2
+    volumes:
+      - ./helper-data:/data
+```
+
+Zet de helper-code in een bestand naast de compose, niet in de compose zelf: `mkdir -p helper-data && echo 'h-…' > helper-data/helper-token`, daarna `docker compose up -d vetobot-helper`. Niet op je thuisserver met de Athlon (numpy draait daar niet), en het apparaat heeft ±1,5 GB vrij geheugen nodig bij 365 dagen geschiedenis.
+
+Helper op een Android-telefoon (Termux): `curl -fsSLo helper.sh https://raw.githubusercontent.com/iitssjstn/vetobot/main/scripts/telefoon-helper.sh && bash helper.sh` (zie [docs/telefoon-trainer.md](docs/telefoon-trainer.md)).
+
 **Telefoon als leerserver?** Zie [docs/telefoon-trainer.md](docs/telefoon-trainer.md): een stappenplan voor een Android-telefoon (Termux) en het meetprogramma `bench.py`, dat een paar nep-leerrondes draait en zegt hoe snel een apparaat leert (`docker run --rm ghcr.io/iitssjstn/vetobot-trainer:latest python bench.py`).
 
 **Resources op een gedeelde server.** Het trainen gebruikt standaard 2 kernen (`TRAIN_JOBS`) met lagere voorrang (`TRAIN_NICE`). De **AI-trader leert doorlopend** (een ronde, korte pauze, de volgende); dat is iets anders dan `TRAIN_HOUR`, dat alleen voor het voorspelmodel van de oude methode geldt. Wil je dat de AI-trader alleen 's nachts leert, zet dan `AGENT_HOURS=0-7`, of vul de **Leeruren** in op de pagina Trainer → Recepten (die instelling gaat voor de omgevingsvariabele). De koersopslag wordt hooguit eens per half uur bijgewerkt en de opgeslagen kenmerken eens per 6 uur; elk uur ruimt hij oude bestanden op.

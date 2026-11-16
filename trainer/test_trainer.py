@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 
@@ -1025,6 +1026,123 @@ class Bench(unittest.TestCase):
         text = out.getvalue()
         for part in ('Werklast : 2 coins × 6.000 candles (5m), 2 rondes', 'Ronde 1:', 'Ronde 2:', 'rondes per uur', 'Geheugen (piek)'):
             self.assertIn(part, text)
+
+
+class Helpers(unittest.TestCase):
+    """Helpers trainen recepten op een ander apparaat; de leerserver blijft de baas."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault('DATA_DIR', tempfile.mkdtemp())
+        import server
+        cls.s = server
+        cls.httpd = server.QuietHTTPServer(('127.0.0.1', 0), server.Handler)
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+        cls.base = f'http://127.0.0.1:{cls.httpd.server_address[1]}'
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+
+    def req(self, method, p, body=None, tok=None):
+        h = {'Content-Type': 'application/json', 'Authorization': f'Bearer {tok}'}
+        r = urllib.request.Request(self.base + p, method=method, headers=h, data=json.dumps(body).encode() if body is not None else None)
+        try:
+            with urllib.request.urlopen(r) as res:
+                return res.status, json.loads(res.read() or b'{}')
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read() or b'{}')
+
+    def test_pick_skips_recipes_in_training(self):
+        import agent_search as A
+        allowed = A.all_recipes(['15m'])
+        busy = frozenset(A.key_of(r) for r in allowed[:-1])
+        rec, why = A.pick({}, ['15m'], rnd=random.Random(1), exclude=busy)
+        self.assertEqual(A.key_of(rec), A.key_of(allowed[-1]), 'alleen het recept dat nog niemand traint')
+        self.assertEqual(A.pick({}, ['15m'], rnd=random.Random(1), exclude=frozenset(A.key_of(r) for r in allowed)), (None, None))
+
+    def test_helper_code_only_for_helper_work(self):
+        s = self.s
+        ht = s.helper_token()
+        self.assertTrue(ht.startswith('h-'))
+        self.assertNotEqual(ht, s.token())
+        self.assertEqual(self.req('GET', '/status', tok=ht)[0], 401, 'helper-code: geen status')
+        self.assertEqual(self.req('POST', '/config', {'days': 30}, tok=ht)[0], 401, 'helper-code: geen instellingen')
+        self.assertEqual(self.req('POST', '/helper/claim', {'name': 't', 'protocol': 999}, tok=ht)[0], 200)
+        self.assertEqual(self.req('POST', '/helper/claim', {'name': 't'}, tok='fout')[0], 401)
+        code, body = self.req('POST', '/helper/result', {'name': 't', 'id': 'bestaat-niet'}, tok=ht)
+        self.assertEqual(code, 409)
+
+    def test_helper_trains_a_recipe_end_to_end(self):
+        import helper
+        s = self.s
+        pairs = ['A/EUR', 'B/EUR', 'C/EUR']
+        good = {p: market(9000, i, momentum=0.6) for i, p in enumerate(pairs)}
+        good['BTC/EUR'] = market(9000, 99, momentum=0.3)
+        s.write_json('agents.json', {'version': s.AGENTS_VERSION, 'recipes': {}, 'published': None, 'live': {}, 'round': 0})
+        s.write_json('config.json', {'pairs': pairs, 'costPct': 0.2, 'days': 60,
+                                     'agent': {'enabled': True, 'timeframes': ['15m'], 'coinPool': 'eigen'}})
+        s.inflight.clear()
+        d = tempfile.mkdtemp()
+        st = {'url': self.base, 'token': s.helper_token(), 'data': d, 'name': 'fold4'}
+        said = []
+        orig = s.think
+        s.think = lambda t, kind='info': said.append(t)
+        try:
+            wait = helper.run_once(st, fetch=lambda p, tf, days: good[p])
+        finally:
+            s.think = orig
+        self.assertEqual(wait, 0)
+        data = s.load_agents()
+        self.assertEqual(len(data['recipes']), 1, 'de uitkomst is verwerkt alsof de VPS hem trainde')
+        self.assertEqual(data['round'], 1)
+        pub = s.read_json('agent.json', None)
+        self.assertIsNotNone(pub, 'en de bot krijgt de beste manier van traden')
+        self.assertTrue(any(t.startswith('Helper fold4 traint nu:') for t in said), said)
+        self.assertTrue(any(t.startswith('Helper fold4: Resultaat') for t in said), said)
+        self.assertEqual(s.inflight, {}, 'recept weer vrij')
+        info = {h['name']: h for h in s.helpers_info()}
+        self.assertEqual(info['fold4']['rounds'], 1)
+        self.assertTrue(info['fold4']['online'])
+        self.assertIsNotNone(info['fold4']['avgSeconds'])
+
+    def test_helper_settings_from_file_and_missing(self):
+        import helper
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, 'helper-token'), 'w') as f:
+            f.write('h-geheim\n')
+        old = {k: os.environ.get(k) for k in ('DATA_DIR', 'HELPER_TOKEN', 'TRAINER_URL', 'HELPER_NAME')}
+        try:
+            os.environ.update({'DATA_DIR': d, 'TRAINER_URL': 'https://trainer.example/', 'HELPER_NAME': 'pi'})
+            os.environ.pop('HELPER_TOKEN', None)
+            st = helper.settings()
+            self.assertEqual((st['url'], st['token'], st['name']), ('https://trainer.example', 'h-geheim', 'pi'))
+            os.environ['TRAINER_URL'] = ''
+            import contextlib
+            import io
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(helper.main(), 2)
+            self.assertIn('TRAINER_URL en de helper-code zijn nodig', out.getvalue())
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_lease_expires_when_helper_disappears(self):
+        s = self.s
+        s.write_json('config.json', {'pairs': ['A/EUR'], 'costPct': 0.2, 'days': 60,
+                                     'agent': {'enabled': True, 'timeframes': ['15m'], 'coinPool': 'eigen'}})
+        s.inflight.clear()
+        data = s.load_agents()
+        rec, why, job = s.choose_recipe(s.config(), data, 'weg')
+        key = __import__('agent_search').key_of(rec)
+        self.assertIn(key, s.inflight)
+        s.inflight[key]['at'] -= s.LEASE_S + 1
+        s.choose_recipe(s.config(), data, 'VPS')
+        self.assertNotEqual(s.inflight.get(key, {}).get('by'), 'weg', 'verlopen opdracht is vrijgegeven')
+        s.inflight.clear()
 
 
 class HonestTesting(unittest.TestCase):

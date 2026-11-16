@@ -551,6 +551,10 @@
         <div class="panel-h"><h2><svg class="i"><use href="#i-pulse"/></svg>AI-trader</h2><span class="hint" id="ag-hint"></span></div>
         <div class="panel-b" id="ag-body"></div>
       </div>
+      <div class="panel gap" data-agentpanel hidden>
+        <div class="panel-h"><h2><svg class="i"><use href="#i-cpu"/></svg>Helpers</h2><span class="hint" id="hl-hint"></span></div>
+        <div class="panel-b" id="hl-body"></div>
+      </div>
       <div class="panel gap" id="tr-think-panel" hidden>
         <div class="panel-h"><h2><svg class="i"><use href="#i-chat"/></svg>Wat denkt het model?</h2><span class="hint">nieuwste onderaan</span></div>
         <div class="think" id="think-list"></div>
@@ -2105,6 +2109,28 @@ function showTrTab(name) {
 }
 document.addEventListener('click', (e) => { const b = e.target.closest('[data-trtab]'); if (b) showTrTab(b.dataset.trtab); });
 try { const t = localStorage.getItem('trtab'); if (t && document.querySelector(`[data-trpane="${t}"]`)) showTrTab(t); } catch { /* geen opslag */ }
+// Helpers: andere apparaten die recepten trainen voor de leerserver.
+let hlShow = false;
+function helpersRender(a, nl) {
+  const list = a.helpers ?? [];
+  const on = list.filter((h) => h.online);
+  $('hl-hint').textContent = list.length ? `${on.length} actief` : 'nog geen';
+  const rows = list.length ? table(list, [
+    ['Naam', (h) => `<b>${esc(h.name)}</b>${h.online ? '' : ' <span class="badge soft">weg</span>'}`],
+    ['Apparaat', (h) => `<span class="muted">${esc(h.platform ?? '–')}</span>`],
+    ['Kernen', (h) => `<span class="num">${h.jobs ?? '–'}</span>`, 'r'],
+    ['Rondes', (h) => `<span class="num">${h.rounds}</span>${h.failed ? ` <span class="muted">(${h.failed} mislukt)</span>` : ''}`, 'r'],
+    ['Per ronde', (h) => h.avgSeconds != null ? `<span class="num">${nl(h.avgSeconds, 0)} s</span>` : '–', 'r'],
+    ['Nu', (h) => h.busy ? `<span class="muted">traint ${esc(h.busy.recipe)}</span>` : '<span class="muted">wacht</span>'],
+    ['Laatst gezien', (h) => `<span class="muted">${time(h.lastSeen)}</span>`],
+  ]) : '<p class="muted" style="margin:0">Nog geen helper verbonden.</p>';
+  const code = a.helperToken ?? '';
+  $('hl-body').innerHTML = `<p class="muted" style="margin:0 0 10px;font-size:13.5px">Een helper is een ander apparaat (pc, Raspberry Pi, tweede server, Android-telefoon) dat recepten traint voor de leerserver. De leerserver kiest de recepten en beoordeelt de uitkomsten; valt een helper uit, dan gaat het recept vanzelf terug. Hoe je een helper start staat in de README (Docker) en in <code>docs/telefoon-trainer.md</code> (telefoon).</p>`
+    + `<div class="scroll">${rows}</div>`
+    + `<div style="margin-top:10px;font-size:13.5px"><b>Helper-code</b> <span class="muted">(alleen voor recepten trainen; geeft geen toegang tot instellingen of modellen)</span><br>`
+    + `<code style="user-select:all">${hlShow ? esc(code) : '••••••••••••'}</code> <button class="btn sm" type="button" id="hl-toggle">${hlShow ? 'Verbergen' : 'Tonen'}</button></div>`;
+}
+document.addEventListener('click', (e) => { if (e.target.closest('#hl-toggle')) { hlShow = !hlShow; loadTrainer(); } });
 function renderAgent(t, nl) {
   const a = t?.agent;
   $('tr-agent-panel').hidden = !a;
@@ -2135,6 +2161,7 @@ function renderAgent(t, nl) {
       ['Coin', (x) => esc(x.pair)], ['Gemeten', (x) => `<span class="num">${nl(x.measured, 2)}%</span> <span class="muted">(mediaan ${nl(x.median, 2)}%, ${x.n} trades)</span>`],
       ['Gebruikt in het leren', (x) => `<span class="num ${x.used > cs.configured * 1.5 ? 'down' : ''}">${nl(x.used, 2)}%</span>`, 'r']]) : '<p class="muted" style="margin:0">Nog geen gemeten trades.</p>') : '';
   $('ag-live').innerHTML = agentLiveHtml(a, bot, sign, nl);
+  helpersRender(a, nl);
   rewardsRender(bot?.team?.rewards, a.roundTrend, sign, nl);
   $('ag-table').innerHTML = rows.length ? table(rows, [
     ['Recept', (r) => `${esc(r.text)}${pub?.key === r.key ? ' <span class="badge ok">bot handelt hiermee</span>' : ''}`],

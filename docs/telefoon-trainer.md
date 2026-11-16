@@ -89,6 +89,31 @@ Opnieuw meten? Typ alleen `bash meten.sh`. Wat al geïnstalleerd is, wordt overg
 
 ---
 
+## Deel 4: de telefoon als helper laten meedraaien
+
+Je leerserver moet eerst bijgewerkt zijn (zodat hij helpers kent). Pak dan de **helper-code**: in
+het dashboard, pagina **Trainer** → **Overzicht** → blok **Helpers** → **Tonen** (begint met `h-`).
+
+Typ in **Termux** (niet in Debian; typ eerst `exit` als je in Debian zit):
+
+```bash
+curl -fsSLo helper.sh https://raw.githubusercontent.com/iitssjstn/vetobot/main/scripts/telefoon-helper.sh && bash helper.sh
+```
+
+De eerste keer vraagt hij:
+- **Adres**: het adres van je leerserver, hetzelfde als bij de bot (Instellingen → Eigen model);
+- **Helper-code**: de code die je net kopieerde (je ziet hem niet terwijl je typt).
+
+Daarna start de helper met 2 kernen (op de Fold4 het snelst) en zie je per opdracht een regel als
+`Opdracht: …` en `Klaar in 135 s`. In het dashboard staat de telefoon dan bij **Helpers**.
+
+- Laat Termux open op het scherm en de telefoon aan de lader ("Wakker blijven" aan, helderheid laag).
+- Stoppen: **Ctrl+C**. Later opnieuw starten: `bash helper.sh` (hij haalt dan ook de nieuwste versie op).
+- Ander adres of andere code: `OPNIEUW=1 bash helper.sh`.
+- Stopt hij steeds vanzelf met `[Process completed (signal 9)]`: volg **Bijlage A**.
+
+---
+
 ## Problemen
 
 | Wat je ziet | Wat te doen |

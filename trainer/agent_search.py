@@ -220,11 +220,12 @@ def tf_weight(recipes, tf):
     return max(0.2, min(3.0, 1.0 + avg * 5))
 
 
-def pick(recipes, timeframes, rnd=None, now=None):
-    """Welk recept deze ronde, en waarom. Geeft (recept, reden)."""
+def pick(recipes, timeframes, rnd=None, now=None, exclude=frozenset()):
+    """Welk recept deze ronde, en waarom. Geeft (recept, reden).
+    exclude: sleutels van recepten die nu al door de VPS of een helper getraind worden."""
     rnd = rnd or random.Random()
     now = now or time.time()
-    allowed = {key_of(r): r for r in all_recipes(timeframes)}
+    allowed = {key_of(r): r for r in all_recipes(timeframes) if key_of(r) not in exclude}
     board = [e for e in leaderboard(recipes, 5) if key_of(e['recipe']) in allowed and status(e) not in ('afgevallen', 'te riskant')]
     # 1. De beste opnieuw als die nog geen bewijs over meerdere rondes heeft, of al even niet getest is.
     if board:
@@ -248,7 +249,11 @@ def pick(recipes, timeframes, rnd=None, now=None):
     # Alles al eens geprobeerd: het langst niet geteste goede recept opnieuw.
     old = sorted((e for e in recipes.values() if key_of(e['recipe']) in allowed and status(e) not in ('afgevallen', 'te riskant')),
                  key=lambda e: e['rounds'][-1].get('ts', 0) if e.get('rounds') else 0)
-    return (old[0]['recipe'], 'old') if old else (rnd.choice(list(allowed.values())), 'fresh')
+    if old:
+        return old[0]['recipe'], 'old'
+    if allowed:
+        return rnd.choice(list(allowed.values())), 'fresh'
+    return None, None
 
 
 def add_round(recipes, recipe, report):
