@@ -1130,6 +1130,22 @@ class Helpers(unittest.TestCase):
                 else:
                     os.environ[k] = v
 
+    def test_helper_identifies_itself(self):
+        import helper
+        seen = {}
+        orig = urllib.request.urlopen
+        def fake(req, timeout=None):
+            seen.update(dict(req.header_items()))
+            raise urllib.error.URLError('test')
+        urllib.request.urlopen = fake
+        try:
+            with self.assertRaises(urllib.error.URLError):
+                helper.call({'url': 'https://x', 'token': 'h-1'}, '/helper/claim', {})
+        finally:
+            urllib.request.urlopen = orig
+        self.assertTrue(seen['User-agent'].startswith('vetobot-helper/'), seen)
+        self.assertEqual(seen['Authorization'], 'Bearer h-1')
+
     def test_lease_expires_when_helper_disappears(self):
         s = self.s
         s.write_json('config.json', {'pairs': ['A/EUR'], 'costPct': 0.2, 'days': 60,

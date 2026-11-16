@@ -58,7 +58,9 @@ def log(msg):
 
 def call(st, path, body, timeout=60):
     req = urllib.request.Request(st['url'] + path, data=json.dumps(body).encode(), method='POST',
-                                 headers={'Authorization': f"Bearer {st['token']}", 'Content-Type': 'application/json'})
+                                 headers={'Authorization': f"Bearer {st['token']}", 'Content-Type': 'application/json',
+                                          # Eigen naam: sommige proxies/firewalls weigeren 'Python-urllib' (403).
+                                          'User-Agent': f'vetobot-helper/{VERSION}', 'Accept': 'application/json'})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read() or b'{}')
 
@@ -147,9 +149,11 @@ def main():
             wait = run_once(st)
             backoff = 10
         except urllib.error.HTTPError as e:
-            wait = 600 if e.code == 401 else 60
-            log('Onjuiste helper-code (401). Controleer de code op de pagina Trainer.' if e.code == 401
-                else f'Leerserver gaf fout {e.code}')
+            wait = 600 if e.code in (401, 403) else 60
+            log({401: 'Onjuiste helper-code (401). Controleer de code op de pagina Trainer.',
+                 403: 'Geweigerd (403) door iets vóór de leerserver (proxy, Cloudflare of een toegangslijst), niet door de '
+                      'leerserver zelf. Sta de adressen /helper/claim en /helper/result toe, of het IP-adres van deze helper.',
+                 404: 'Niet gevonden (404): is de leerserver bijgewerkt, en klopt het adres?'}.get(e.code, f'Leerserver gaf fout {e.code}'))
         except (urllib.error.URLError, OSError) as e:
             wait, backoff = backoff, min(600, backoff * 2)
             log(f'Leerserver niet bereikbaar ({e}); opnieuw over {wait} s')
