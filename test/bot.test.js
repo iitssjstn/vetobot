@@ -1095,6 +1095,66 @@ test('AI-trader live: kleinste inzet in het begin, en terug uit live als een eis
   assert.match(m.message, /Beter dan de markt \(nu: -0,1%\)/);
 });
 
+test('AI-trader live op eigen risico: eigen inzet, eigen verliesgrens, stopt vanzelf', async () => {
+  const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
+  const { bot, ex } = setup({});
+  const sent = [];
+  bot.notifier = { send: async (event, payload) => { sent.push({ event, ...payload }); return true; }, heartbeat: async () => null };
+  await bot.setRisk({ cooldownMinutes: 0, stakeEur: 20 });
+  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0 });
+  bot.settings.data.mode = 'live';
+  bot.liveBalance = { eurFree: 1000 };
+  ex.apiKey = 'k'; ex.secret = 's';
+  const pb = new PaperBroker(ex, 0.25);
+  Object.assign(bot.brokers.live, { buy: (...a) => pb.buy(...a), sell: (...a) => pb.sell(...a) });
+  // Haalt de eisen voor live niet, maar wel de backtests (getest).
+  const agent = { ...fx.agent, stage: 'getest', recipeKey: 'R', liveCheck: { allMet: false, checks: [{ ok: false, label: 'Paper-trades', now: '12' }] },
+    entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 },
+    regimes: { stijgend: { key: 'R', why: 'best' }, zijwaarts: { key: 'R', why: 'best' }, dalend: { key: 'R', why: 'best' } } };
+  bot.getAgent = () => agent;
+  assert.equal(bot.agentAllowed(agent), false, 'zonder akkoord niet live');
+  assert.equal(bot.agentRiskyStage({ stage: 'oefenen' }), false, 'oefenen mag niet op eigen risico');
+  assert.throws(() => bot.settings.setAgentLiveRisky('R', 0), /Verliesgrens/);
+  bot.settings.setAgentLiveRisky('R', 3);
+  bot.settings.setAgentLive('X', true);
+  assert.equal(bot.settings.agentLive.risky.R.maxLossEur, 3, 'akkoord op een ander recept laat de verliesgrens staan');
+  assert.equal(bot.agentAllowed(agent), true);
+  ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+  await bot.tick();
+  const pos = bot.store.state.positions['BTC/EUR'];
+  assert.ok(pos, bot.pairStatus['BTC/EUR']?.reason);
+  assert.ok(pos.costEur > 15, `op eigen risico je eigen inzet: ${pos.costEur}`);
+  // Koers keldert: verlies groter dan de grens van € 3 → stopt en meldt het.
+  bot.store.state.trades.unshift({ pair: 'ETH/EUR', openedAt: new Date().toISOString(), closedAt: new Date().toISOString(), pnlEur: -4, pnlPct: -20, agent: { recipe: 'R' } });
+  assert.equal(bot.agentAllowed(agent), false, 'grens bereikt');
+  await bot.tick();
+  assert.equal(bot.settings.agentLive.risky.R, undefined);
+  const m = sent.find((x) => x.title === 'AI-trader op eigen risico gestopt');
+  assert.ok(m, 'melding');
+  assert.match(m.message, /verliesgrens van € 3\.00 is bereikt/);
+});
+
+test('AI-trader live: kleinste start uit te zetten', async () => {
+  const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
+  const { bot, ex } = setup({});
+  await bot.setRisk({ cooldownMinutes: 0, stakeEur: 20 });
+  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0, agentLiveSmallStart: 0 });
+  bot.settings.data.mode = 'live';
+  bot.liveBalance = { eurFree: 1000 };
+  ex.apiKey = 'k'; ex.secret = 's';
+  const pb = new PaperBroker(ex, 0.25);
+  Object.assign(bot.brokers.live, { buy: (...a) => pb.buy(...a), sell: (...a) => pb.sell(...a) });
+  const agent = { ...fx.agent, stage: 'bewezen', recipeKey: 'R', liveCheck: { allMet: true, checks: [] }, entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 },
+    regimes: { stijgend: { key: 'R', why: 'best' }, zijwaarts: { key: 'R', why: 'best' }, dalend: { key: 'R', why: 'best' } } };
+  bot.getAgent = () => agent;
+  bot.settings.setAgentLive('R', true);
+  ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+  await bot.tick();
+  const pos = bot.store.state.positions['BTC/EUR'];
+  assert.ok(pos, bot.pairStatus['BTC/EUR']?.reason);
+  assert.ok(pos.costEur > 15, `meteen eigen inzet: ${pos.costEur}`);
+});
+
 test('AI-trader: handelt alleen de coins die hij zelf gekozen heeft, ook buiten je eigen lijst', async () => {
   const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
   const { bot, ex } = setup({});

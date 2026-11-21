@@ -840,6 +840,7 @@
             <div><label for="st-hold">Minimaal in positie (candles, 0 = uit)</label><input id="st-hold" type="number" min="0" max="500" step="1" required></div>
             <div><label for="st-agent">AI-trader</label><select id="st-agent"><option value="0">Uit</option><option value="1">Aan: de AI-trader beslist zelf</option></select></div>
             <div data-agentonly><label for="st-agentveto">AI-controleur bij de AI-trader</label><select id="st-agentveto"><option value="1">Aan: de AI-controleur mag nee zeggen</option><option value="0">Uit: de AI-trader beslist alleen</option></select></div>
+            <div data-agentonly><label for="st-agentsmall">Live beginnen met de kleinste inzet</label><select id="st-agentsmall"><option value="1">Aan: € 5 tot 20 live trades met winst</option><option value="0">Uit: meteen mijn eigen inzet</option></select></div>
             <div data-agentonly><label for="st-agentexplore">Verkenner (alleen paper)</label><select id="st-agentexplore"><option value="1">Aan: virtueel verkennen</option><option value="0">Uit</option></select></div>
             <div><label for="st-mltrial">Oefenen in paper</label><select id="st-mltrial"><option value="1">Aan: ook oefenen als hij nog niet bewezen is</option><option value="0">Uit: alleen als hij getest/bewezen is</option></select></div>
             <div data-noagent><label for="st-mlmin">Minimale modelkans (%, 0 = uit)</label><input id="st-mlmin" type="number" min="0" max="100" step="any" required></div>
@@ -1635,6 +1636,7 @@ function renderSettings() {
     $('st-agent').value = String(s.strategy.agentMode ?? 0);
     $('st-agentveto').value = String(s.strategy.agentVeto ?? 1);
     $('st-agentexplore').value = String(s.strategy.agentExplore ?? 1);
+    $('st-agentsmall').value = String(s.strategy.agentLiveSmallStart ?? 1);
     $('st-mltrial').value = String(s.strategy.mlTrialPaper ?? 1);
     agentFields();
     $('st-hold').value = s.strategy.minHoldCandles ?? 0;
@@ -1979,10 +1981,21 @@ function agentLiveHtml(a, bot, sign, nl) {
   const list = recs.map((r) => {
     const checks = r.checks.length ? r.checks.map((c) => `<div>${c.ok ? '<span class="up">✓</span>' : '<span class="down">✗</span>'} ${esc(c.label)} <span class="muted">· nu: ${esc(c.now)}</span></div>`).join('')
       : '<div class="muted">Nog geen gegevens van de leerserver.</div>';
+    const k = esc(r.recipe);
+    const rk = r.risky;
     const btn = r.approved
-      ? `<button class="btn" type="button" data-agent-live="${esc(r.recipe)}" data-allow="0">Live intrekken</button> <span class="badge ok">live toegestaan</span>`
-      : r.ready ? `<button class="btn primary" type="button" data-agent-live="${esc(r.recipe)}" data-allow="1">Live toestaan voor dit recept</button>`
-        : '<span class="badge soft">nog niet alle eisen gehaald</span>';
+      ? `<button class="btn" type="button" data-agent-live="${k}" data-allow="0">Live intrekken</button> <span class="badge ok">live toegestaan</span>`
+      : rk ? `<button class="btn" type="button" data-agent-live="${k}" data-allow="0">Live intrekken</button> <span class="badge wait">live op eigen risico</span>
+          <div class="muted" style="margin-top:6px;font-size:13.5px">Sinds ${esc(time(rk.at))}: <span class="${rk.lossEur >= 0 ? 'up' : 'down'}">${rk.lossEur >= 0 ? '+' : '−'}€ ${nl(Math.abs(rk.lossEur), 2)}</span> na ${rk.trades} trades · stopt vanzelf bij <b>−€ ${nl(rk.maxLossEur, 2)}</b></div>`
+      : r.ready ? `<button class="btn primary" type="button" data-agent-live="${k}" data-allow="1">Live toestaan voor dit recept</button>`
+        : r.riskyAllowed ? `<span class="badge soft">nog niet alle eisen gehaald</span>
+          <details style="margin-top:6px"><summary>Toch live op eigen risico</summary>
+            <p class="muted" style="margin:6px 0;font-size:13.5px">Hij handelt dan live met <b>je eigen inzet</b>, ook al haalt hij niet alle eisen. Kies hoeveel je hooguit wilt verliezen met dit recept (gesloten + open trades, na kosten). Is dat bereikt, dan stopt hij live vanzelf en krijg je een melding. De noodstop en de dagelijkse verlieslimiet blijven gelden.</p>
+            <div class="row-actions"><input type="number" min="1" step="1" placeholder="Verliesgrens in €" data-risky-max="${k}" style="max-width:160px">
+              <input type="text" placeholder="Typ EIGEN RISICO" data-risky-confirm="${k}" autocomplete="off" style="max-width:180px">
+              <button class="btn danger" type="button" data-agent-live="${k}" data-allow="1" data-risky="1">Live op eigen risico</button></div>
+          </details>`
+          : '<span class="badge soft">nog niet alle eisen gehaald</span> <span class="muted">· op eigen risico kan pas als hij de backtests haalt</span>';
     return `<div style="margin:0 0 12px"><b>${esc(r.recipe)}</b> <span class="muted">(${esc(r.stage ?? '')})</span><div style="margin:4px 0 6px;font-size:13.5px;line-height:1.6">${checks}</div>${btn}</div>`;
   }).join('');
   const pt = a.paperTest;
@@ -1995,9 +2008,9 @@ function agentLiveHtml(a, bot, sign, nl) {
     ['Marktfases', (w) => esc((w.regimes ?? []).join(', ') || '–')],
   ]) : '<p class="muted" style="margin:0">Nog geen paper-trades sinds de nieuwe manier van meten.</p>';
   return `<div class="sub-h" style="margin:0 0 6px">${icon('target')}Live-toelating</div>
-    <p class="muted" style="margin:0 0 10px;font-size:13.5px">Live handelt de AI-trader pas als een recept <b>alle</b> eisen haalt én jij het daarna zelf toestaat. Valt een eis later weg, dan stopt hij live vanzelf (met een melding) en trekt hij je akkoord in. Live begint hij met de kleinste inzet tot hij live 20 trades met gemiddeld winst heeft.</p>
+    <p class="muted" style="margin:0 0 10px;font-size:13.5px">Live handelt de AI-trader pas als een recept <b>alle</b> eisen haalt én jij het daarna zelf toestaat. Valt een eis later weg, dan stopt hij live vanzelf (met een melding) en trekt hij je akkoord in. ${bot?.smallStart === false ? 'Live gebruikt hij meteen je eigen inzet ("Live beginnen met de kleinste inzet" staat uit).' : 'Live begint hij met de kleinste inzet tot hij live 20 trades met gemiddeld winst heeft (uit te zetten bij Instellingen → Strategie).'} Op <b>eigen risico</b> gebruikt hij altijd je eigen inzet, met een verliesgrens die jij kiest.</p>
     ${list || '<p class="muted">De AI-trader gebruikt nog geen recept.</p>'}
-    ${recs.some((r) => r.ready || r.approved) ? `<div class="row-actions"><input id="ag-live-pass" type="password" placeholder="Je wachtwoord" autocomplete="current-password" style="max-width:240px"><span class="msg" id="ag-live-msg"></span></div>` : ''}
+    ${recs.some((r) => r.ready || r.approved || r.risky || r.riskyAllowed) ? `<div class="row-actions"><input id="ag-live-pass" type="password" placeholder="Je wachtwoord" autocomplete="current-password" style="max-width:240px"><span class="msg" id="ag-live-msg"></span></div>` : ''}
     ${live ? '' : '<div class="help">Je staat nu in paper: live toestaan heeft pas effect als je naar live overstapt.</div>'}
     <div class="sub-h" style="margin:16px 0 6px">${icon('target')}Klopt zijn verwachting?</div>
     <p class="muted" style="margin:0 0 8px;font-size:13.5px">Per groep verwachtingen bij het kopen: wat er echt van terechtkwam (na kosten). Liggen <b>verwacht</b> en <b>echt</b> dicht bij elkaar, dan kun je zijn voorspellingen vertrouwen. Doet de verkenner het bij lage verwachtingen beter dan verwacht, dan is de AI-trader te voorzichtig; slechter, dan terecht.</p>
@@ -2018,8 +2031,12 @@ document.addEventListener('click', async (e) => {
   if (!b) return;
   const msg = (t, c) => { const m = $('ag-live-msg'); if (m) { m.className = `msg ${c ?? ''}`; m.textContent = t; } };
   try {
-    await api('api/agent/live', { recipe: b.dataset.agentLive, allow: b.dataset.allow === '1', password: $('ag-live-pass')?.value ?? '' });
-    msg(b.dataset.allow === '1' ? 'Live toegestaan.' : 'Live ingetrokken.', 'ok');
+    const key = b.dataset.agentLive;
+    const risky = b.dataset.risky === '1';
+    const find = (attr) => [...document.querySelectorAll(`[${attr}]`)].find((x) => x.getAttribute(attr) === key)?.value ?? '';
+    await api('api/agent/live', { recipe: key, allow: b.dataset.allow === '1', password: $('ag-live-pass')?.value ?? '',
+      ...(risky ? { risky: true, maxLossEur: find('data-risky-max'), confirmText: find('data-risky-confirm') } : {}) });
+    msg(risky ? 'Live op eigen risico gezet.' : b.dataset.allow === '1' ? 'Live toegestaan.' : 'Live ingetrokken.', 'ok');
     load();
   } catch (err) {
     msg(err.message, 'err');
@@ -2990,6 +3007,7 @@ const HELP = {
   'st-mlbandit': 'Zelflerend: de bevestigde strategieën van de strategie-zoeker bepalen zelf wanneer er gekocht wordt, elk op haar eigen candle-tijd en met een eigen model, doel, stop en maximale duur (los van je eigen candle-instelling en EMA-kruisingen). Willen er meerdere kopen, dan kiest de bot er één. Na elke gesloten trade krijgt die strategie een beloning: de echte winst of het verlies. Strategieën die geld opleverden kiest hij daarna vaker; de andere probeert hij af en toe opnieuw, want het kan geluk geweest zijn of de markt kan veranderd zijn. Recente trades tellen zwaarder. De gekozen strategie bepaalt voor die trade de stop, het winstdoel en de maximale duur (jouw ATR-stop en trailing stop gelden dan niet). Zolang er nog geen bevestigde strategie is, gelden gewoon je eigen instellingen. Een positie van een strategie wordt alleen gesloten op haar eigen stop, doel of maximale duur (of handmatig). Paper en live delen hetzelfde geheugen.',
   'st-agent': 'De AI-trader van de trainer beslist zelf wanneer hij koopt en wanneer hij verkoopt: geen EMA-kruisingen, winstdoelen of vaste strategieën. Hij kijkt op zijn eigen candle-tijd (die hij zelf kiest) en verkoopt zodra hij van langer vasthouden niets meer verwacht. Alleen de noodstop (instelbaar op de pagina Trainer) en een maximale duur gelden als vangnet. Je AI (bij AI) blijft als controleur meekijken, en de orderboek-check blijft gelden. Live handelt hij pas als een recept alle eisen voor live haalt (pagina Trainer → Live-toelating) én jij het daar zelf toestaat; in paper zodra hij in de test winst maakte (of eerder als oefening, als "Oefenen in paper" aan staat). Staat dit aan, dan gelden minimale modelkans, marktfase en de oude strategie-keuze niet (die worden verborgen).',
   'st-agentexplore': 'Alleen in paper, nooit live. De verkenner koopt kansen die de AI-trader laat liggen (onder zijn koopdrempel, coins die hij niet koos, marktfases waar de Strategy Agent niet handelt) en kiest daaruit slim: vooral dicht bij de koopdrempel, waar nog weinig trades zijn en waar de echte uitkomsten beter waren dan verwacht. Wat in minstens 30 trades duidelijk slechter uitkwam, slaat hij over. Zo hoort de AI-trader ook hoe het afloopt bij kansen die hij anders afwijst, en leert hij waar zijn verwachting te optimistisch of te voorzichtig is. Met de kleinste inzet (€ 5), hooguit één verkennerspositie tegelijk (naast je gewone trades) en hooguit 8 per dag. Zijn trades zijn leervoorbeelden voor de leerserver, maar tellen niet mee voor de eisen voor live en het weekoverzicht van de paper-test. Je ziet ze op AI-chat als <b>Verkenner</b>.',
+  'st-agentsmall': 'Alleen live, voor recepten die alle eisen haalden. Aan: de AI-trader begint live met de kleinste inzet (€ 5), tot hij live 20 trades met gemiddeld winst heeft; daarna je eigen inzet. Uit: meteen je eigen inzet. Een recept op eigen risico (Trainer → Live-toelating) gebruikt altijd je eigen inzet, met de verliesgrens die je daar kiest.',
   'st-agentveto': 'Aan: elke aankoop van de AI-trader gaat eerst langs de AI-controleur (het taalmodel bij AI). Die kan nee zeggen, bijvoorbeeld bij slecht nieuws of een rare grafiek: een extra rem, maar hij kan ook goede trades tegenhouden. Uit: de AI-trader beslist helemaal zelf, sneller en zonder Groq-limieten, en leert ook van de trades die anders tegengehouden waren. Verkopen doet de AI-trader altijd zelf. De noodstop, dagelijkse verlieslimiet en orderboek-check blijven altijd gelden. Bij "Samenwerking AI + model" op de pagina Trainer zie je wie vaker gelijk had.',
   'st-mltrial': 'Alleen voor paper. Aan: de AI-trader (en bij de oude methode de proefstrategieën) handelt in paper ook als hij in de test nog geen winst maakte, zodat hij oefent en van zijn eigen trades leert. Uit: pas als hij in de test winst maakte. Live handelt hij hoe dan ook pas als hij alle eisen voor live haalt en jij het toestaat.',
   'st-mlregime': 'Het model herkent het soort markt van een coin: stijgend, zijwaarts of dalend (de trend over een langere periode, vergeleken met hoe hard de coin normaal beweegt). De trainer houdt bij hoe de trades die het model zou nemen het in elk soort markt deden op de testperiode. Verloor het model in de huidige soort markt geld (minstens 30 testtrades), dan krijgt de AI een waarschuwing. Met "Overslaan" slaat de bot zo\'n signaal helemaal over.',
@@ -3170,7 +3188,7 @@ $('strat-form').onsubmit = async (e) => {
   const strategy = { emaFast: $('st-fast').value, emaSlow: $('st-slow').value, rsiPeriod: $('st-rsi').value, rsiMaxEntry: $('st-rsimax').value,
     trendEma: $('st-trend').value, adxMin: $('st-adx').value, volumeMult: $('st-vol').value, btcFilter: $('st-btc').value,
     maxChasePct: $('st-chase').value, useOpenCandle: $('st-open').value,
-    sellConfirmCandles: $('st-confirm').value, minHoldCandles: $('st-hold').value, aiStrictness: $('st-strict').value, mlMinProb: $('st-mlmin').value, mlSkipBadRegime: $('st-mlregime').value, mlBandit: $('st-mlbandit').value, mlTrialPaper: $('st-mltrial').value, agentMode: $('st-agent').value, agentVeto: $('st-agentveto').value, agentExplore: $('st-agentexplore').value };
+    sellConfirmCandles: $('st-confirm').value, minHoldCandles: $('st-hold').value, aiStrictness: $('st-strict').value, mlMinProb: $('st-mlmin').value, mlSkipBadRegime: $('st-mlregime').value, mlBandit: $('st-mlbandit').value, mlTrialPaper: $('st-mltrial').value, agentMode: $('st-agent').value, agentVeto: $('st-agentveto').value, agentExplore: $('st-agentexplore').value, agentLiveSmallStart: $('st-agentsmall').value };
   if (state.mode === 'live' && !$('st-pass').value) { $('strat-msg').className = 'msg err'; $('strat-msg').textContent = 'Vul je wachtwoord in'; return; }
   try {
     await api('api/settings/strategy', { strategy, password: $('st-pass').value });

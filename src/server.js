@@ -295,21 +295,35 @@ export function createApp({ users, manager, log = console }) {
         if (!a) return null;
         // Per recept dat de bot kan gebruiken: haalt het de eisen voor live, en heb jij het live toegestaan?
         const parts = [a, ...Object.values(a.regimes ?? {}).map((p) => p?.agent).filter(Boolean)];
-        const approved = settings.agentLive.approved;
+        const { approved, risky } = settings.agentLive;
         return { timeframe: a.timeframe, stage: a.stage, coins: a.coins ?? null, allowed: bot.agentAllowed(a), live: a.live ?? null, team: bot.agentTeam(),
           recipes: [...new Map(parts.map((p) => [p.recipeKey, { recipe: p.recipeKey, stage: p.stage, ready: bot.agentLiveReady(p), approved: approved.includes(p.recipeKey),
-            checks: p.liveCheck?.checks ?? [] }])).values()] };
+            riskyAllowed: bot.agentRiskyStage(p),
+            risky: risky[p.recipeKey] ? { ...risky[p.recipeKey], lossEur: +bot.agentRiskyLoss(p.recipeKey).pnlEur.toFixed(2), trades: bot.agentRiskyLoss(p.recipeKey).trades } : null,
+            checks: p.liveCheck?.checks ?? [] }])).values()], smallStart: Number(bot.strategy.agentLiveSmallStart ?? 1) === 1 };
       })(),
       serverTime: new Date().toISOString(),
     });
   });
 
   // Een recept van de AI-trader live toestaan (alleen als alle eisen gehaald zijn) of dat intrekken.
+  // Of op eigen risico (risky): dan zonder alle eisen, met je eigen verliesgrens in euro.
   app.post('/api/agent/live', wrap((req, { bot, settings }) => {
-    const { recipe, allow, password } = req.body ?? {};
+    const { recipe, allow, password, risky, maxLossEur, confirmText } = req.body ?? {};
     confirm(req, password);
     const main = bot.getAgent?.();
     const part = [main, ...Object.values(main?.regimes ?? {}).map((p) => p?.agent)].find((p) => p?.recipeKey === recipe);
+    if (allow && risky) {
+      if (!part) throw new Error('Dit recept gebruikt de AI-trader nu niet');
+      if (!bot.agentRiskyStage(part)) throw new Error('Alleen een recept dat de backtests haalde (getest of betrouwbaar) mag op eigen risico live');
+      if (String(confirmText ?? '').trim().toUpperCase() !== 'EIGEN RISICO') throw new Error('Typ EIGEN RISICO om te bevestigen');
+      const n = Number(maxLossEur);
+      if (!Number.isFinite(n) || n < 1) throw new Error('Kies een verliesgrens van minstens € 1');
+      settings.setAgentLiveRisky(recipe, n);
+      log.warn(`AI-trader ${recipe} live op eigen risico gezet (verliesgrens € ${n.toFixed(2)}) door ${req.user.username}`);
+      return { ok: true, risky: settings.agentLive.risky };
+    }
+    if (!allow) settings.setAgentLiveRisky(recipe, null);
     if (allow) {
       if (!part) throw new Error('Dit recept gebruikt de AI-trader nu niet');
       if (!bot.agentLiveReady(part)) throw new Error('Dit recept haalt nog niet alle eisen voor live');

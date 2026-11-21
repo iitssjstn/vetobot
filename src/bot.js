@@ -1121,7 +1121,7 @@ export class Bot {
   // dit recept daarna zelf live heeft toegestaan.
   agentAllowed(agent) {
     if (agent.stage === 'geblokkeerd') return false;
-    if (this.mode === 'live') return this.agentLiveReady(agent) && this.settings.agentLive.approved.includes(agent.recipeKey);
+    if (this.mode === 'live') return (this.agentLiveReady(agent) && this.settings.agentLive.approved.includes(agent.recipeKey)) || this.agentRiskyActive(agent);
     return agent.stage === 'getest' || agent.stage === 'bewezen' || (agent.stage === 'oefenen' && this.strategy.mlTrialPaper !== 0);
   }
 
@@ -1129,11 +1129,55 @@ export class Bot {
     return Boolean(agent?.liveCheck?.allMet) && agent.stage !== 'geblokkeerd';
   }
 
+  // Live op eigen risico mag alleen voor recepten die de backtests haalden (getest of betrouwbaar).
+  agentRiskyStage(agent) {
+    return agent?.stage === 'getest' || agent?.stage === 'bewezen';
+  }
+
+  // Live winst/verlies van een recept sinds je het op eigen risico live zette (gesloten + open, na kosten).
+  agentRiskyLoss(recipeKey) {
+    const r = this.settings.agentLive.risky?.[recipeKey];
+    const st = this.stores?.live?.state;
+    if (!r || !st) return { pnlEur: 0, trades: 0 };
+    const since = Date.parse(r.at);
+    const closed = (st.trades ?? []).filter((t) => t.agent?.recipe === recipeKey && Date.parse(t.closedAt) >= since);
+    let pnl = closed.reduce((a, t) => a + (t.pnlEur ?? 0), 0);
+    const fee = (this.risk.feePct ?? 0) / 100;
+    for (const p of Object.values(st.positions ?? {})) {
+      if (p.agent?.recipe !== recipeKey || Date.parse(p.openedAt) < since) continue;
+      const price = this.livePrices?.[p.pair]?.price ?? this.pairStatus?.[p.pair]?.price;
+      if (price != null) pnl += p.amount * price * (1 - fee) - p.costEur;
+    }
+    return { pnlEur: pnl, trades: closed.length };
+  }
+
+  agentRiskyActive(agent) {
+    const r = this.settings.agentLive.risky?.[agent?.recipeKey];
+    if (!r || !this.agentRiskyStage(agent)) return false;
+    return this.agentRiskyLoss(agent.recipeKey).pnlEur > -r.maxLossEur;
+  }
+
   // Valt een eis weg terwijl de AI-trader live mocht: niet meer live handelen, akkoord intrekken en melden.
   #agentLiveWatch() {
     const main = this.strategy.agentMode && !this.following ? this.getAgent?.() : null;
     if (!main || this.mode !== 'live') return;
     for (const a of agentParts(main)) {
+      const risky = this.settings.agentLive.risky?.[a.recipeKey];
+      if (risky) {
+        const { pnlEur, trades } = this.agentRiskyLoss(a.recipeKey);
+        const why = pnlEur <= -risky.maxLossEur ? `de verliesgrens van € ${risky.maxLossEur.toFixed(2)} is bereikt (nu ${pnlEur.toFixed(2)} euro na ${trades} trades)`
+          : !this.agentRiskyStage(a) ? `het recept staat nu op "${a.stage}" en haalt de backtests niet meer` : null;
+        if (why) {
+          this.settings.setAgentLiveRisky(a.recipeKey, null);
+          this.#event('warn', null, `AI-trader ${a.recipeKey}: live op eigen risico gestopt, ${why}`);
+          this.#notify('mode', {
+            title: 'AI-trader op eigen risico gestopt',
+            message: `Recept ${a.recipeKey} handelt niet meer live: ${why}.\n\nHij koopt live niets meer (open posities worden nog gewoon bewaakt). ` +
+              'Je kunt hem op de pagina Trainer opnieuw op eigen risico live zetten, met een nieuwe verliesgrens.',
+            level: 'warn',
+          });
+        }
+      }
       if (!this.settings.agentLive.approved.includes(a.recipeKey) || this.agentLiveReady(a)) continue;
       this.settings.setAgentLive(a.recipeKey, false);
       const missing = (a.liveCheck?.checks ?? []).filter((c) => !c.ok).map((c) => `${c.label} (nu: ${c.now})`);
@@ -1713,7 +1757,9 @@ export class Bot {
     // De verkenner koopt altijd met de kleinste inzet.
     if (indicators?.agent?.explore) stake = Math.min(stake, LIVE_MIN_STAKE_EUR);
     // Live begint de AI-trader met de kleinste inzet, tot hij live 20 trades met gemiddeld winst heeft.
-    if (this.broker.mode === 'live' && indicators?.agent) {
+    // Op eigen risico geldt altijd je eigen inzet; de kleinste start is ook uit te zetten.
+    if (this.broker.mode === 'live' && indicators?.agent && !this.settings.agentLive.risky?.[indicators.agent.recipe]
+      && Number(this.strategy.agentLiveSmallStart ?? 1) === 1) {
       const lt = this.store.state.trades.filter((t) => t.agent);
       const avg = lt.length ? lt.reduce((x, t) => x + (t.pnlPct ?? 0), 0) / lt.length : 0;
       if (lt.length < LIVE_AGENT_PROVEN || avg <= 0) stake = Math.min(stake, LIVE_MIN_STAKE_EUR);

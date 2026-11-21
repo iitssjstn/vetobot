@@ -57,6 +57,7 @@ export const STRATEGY_LIMITS = {
   agentMode: [0, 1],
   agentVeto: [0, 1],
   agentExplore: [0, 1],
+  agentLiveSmallStart: [0, 1],
 };
 export const AI_FAIL_MODES = ['reject', 'approve'];
 const NOTIFY_DEFAULTS = {
@@ -95,6 +96,7 @@ const RISK_LABELS = {
   agentMode: 'AI-trader',
   agentVeto: 'AI-controleur bij de AI-trader',
   agentExplore: 'Verkenner (alleen paper)',
+  agentLiveSmallStart: 'Live beginnen met de kleinste inzet',
   aiExitMinPct: 'AI winst nemen vanaf',
   aiExitEveryMin: 'AI winstcheck elke',
   reinvestPct: 'Winst herinvesteren',
@@ -145,7 +147,8 @@ export class Settings {
         mode: saved.ai?.mode === 'team' ? 'team' : 'single',
         fallbacks: Array.isArray(saved.ai?.fallbacks) ? saved.ai.fallbacks : [],
       },
-      strategy: Object.fromEntries(Object.keys(STRATEGY_LIMITS).map((k) => [k, saved.strategy?.[k] ?? defaults.strategy?.[k] ?? 0])),
+      // Ontbreekt een instelling, dan 0 (uit); alleen de kleinste live-start staat veiligheidshalve aan.
+      strategy: Object.fromEntries(Object.keys(STRATEGY_LIMITS).map((k) => [k, saved.strategy?.[k] ?? defaults.strategy?.[k] ?? (k === 'agentLiveSmallStart' ? 1 : 0)])),
       pairs: saved.pairs ?? defaults.pairs,
       timeframe: saved.timeframe ?? defaults.timeframe,
       checkIntervalMinutes: saved.checkIntervalMinutes ?? defaults.checkIntervalMinutes,
@@ -223,7 +226,7 @@ export class Settings {
   }
 
   setStrategy(values) {
-    const next = validated({ ...this.data.strategy, ...values }, STRATEGY_LIMITS, ['emaFast', 'emaSlow', 'rsiPeriod', 'trendEma', 'btcFilter', 'useOpenCandle', 'sellConfirmCandles', 'minHoldCandles', 'aiStrictness', 'mlSkipBadRegime', 'mlBandit', 'mlTrialPaper', 'agentMode', 'agentVeto', 'agentExplore']);
+    const next = validated({ ...this.data.strategy, ...values }, STRATEGY_LIMITS, ['emaFast', 'emaSlow', 'rsiPeriod', 'trendEma', 'btcFilter', 'useOpenCandle', 'sellConfirmCandles', 'minHoldCandles', 'aiStrictness', 'mlSkipBadRegime', 'mlBandit', 'mlTrialPaper', 'agentMode', 'agentVeto', 'agentExplore', 'agentLiveSmallStart']);
     if (next.emaFast >= next.emaSlow) throw new Error('EMA fast moet kleiner zijn dan EMA slow');
     this.data.strategy = next;
     this.#save();
@@ -251,7 +254,24 @@ export class Settings {
 
   // Recepten van de AI-trader die de eigenaar zelf live heeft toegestaan (nadat alle eisen gehaald waren).
   get agentLive() {
-    return { approved: [], ...(this.data.agentLive ?? {}) };
+    return { approved: [], risky: {}, ...(this.data.agentLive ?? {}) };
+  }
+
+  // Live op eigen risico: een recept dat niet alle eisen haalt toch live, met je eigen inzet en een
+  // verliesgrens in euro die jij kiest. Haalt hij die grens, dan stopt de bot hem vanzelf.
+  setAgentLiveRisky(recipe, maxLossEur) {
+    const key = String(recipe ?? '');
+    if (!key) throw new Error('Geen recept opgegeven');
+    const cur = this.agentLive;
+    const risky = { ...cur.risky };
+    if (maxLossEur == null) delete risky[key];
+    else {
+      const n = Number(maxLossEur);
+      if (!Number.isFinite(n) || n < 1 || n > 100000000) throw new Error('Verliesgrens moet tussen € 1 en € 100.000.000 liggen');
+      risky[key] = { maxLossEur: Math.round(n * 100) / 100, at: new Date().toISOString() };
+    }
+    this.data.agentLive = { ...cur, risky, changedAt: new Date().toISOString() };
+    this.#save();
   }
 
   setAgentLive(recipe, allowed) {
@@ -260,7 +280,7 @@ export class Settings {
     const cur = new Set(this.agentLive.approved);
     if (allowed) cur.add(key);
     else cur.delete(key);
-    this.data.agentLive = { approved: [...cur], changedAt: new Date().toISOString() };
+    this.data.agentLive = { ...this.agentLive, approved: [...cur], changedAt: new Date().toISOString() };
     this.#save();
   }
 
