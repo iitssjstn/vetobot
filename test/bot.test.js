@@ -1134,6 +1134,30 @@ test('AI-trader live op eigen risico: eigen inzet, eigen verliesgrens, stopt van
   assert.match(m.message, /verliesgrens van € 3\.00 is bereikt/);
 });
 
+test('live: vrij saldo wordt binnen een ronde bijgehouden na kopen en verkopen', async () => {
+  const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
+  const { bot, ex } = setup({});
+  await bot.setRisk({ cooldownMinutes: 0, stakeEur: 20 });
+  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0, agentLiveSmallStart: 0 });
+  bot.settings.data.mode = 'live';
+  bot.liveBalance = { eurFree: 100 };
+  bot.refreshLiveBalance = async () => {};
+  ex.apiKey = 'k'; ex.secret = 's';
+  const pb = new PaperBroker(ex, 0.25);
+  Object.assign(bot.brokers.live, { buy: (...a) => pb.buy(...a), sell: (...a) => pb.sell(...a) });
+  const agent = { ...fx.agent, stage: 'bewezen', recipeKey: 'R', liveCheck: { allMet: true, checks: [] }, entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 },
+    regimes: { stijgend: { key: 'R', why: 'best' }, zijwaarts: { key: 'R', why: 'best' }, dalend: { key: 'R', why: 'best' } } };
+  bot.getAgent = () => agent;
+  bot.settings.setAgentLive('R', true);
+  ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+  await bot.tick();
+  const pos = bot.store.state.positions['BTC/EUR'];
+  assert.ok(pos, bot.pairStatus['BTC/EUR']?.reason);
+  assert.ok(Math.abs(bot.liveBalance.eurFree - (100 - pos.costEur)) < 1e-9, `na kopen: ${bot.liveBalance.eurFree}`);
+  await bot.closeManual('BTC/EUR');
+  assert.ok(bot.liveBalance.eurFree > 99 && bot.liveBalance.eurFree < 100, `na verkopen: ${bot.liveBalance.eurFree}`);
+});
+
 test('AI-trader live: kleinste start uit te zetten', async () => {
   const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
   const { bot, ex } = setup({});

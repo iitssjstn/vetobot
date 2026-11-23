@@ -244,7 +244,7 @@ export class LiveBroker {
     if (!hasTradingKeys(this.ex)) throw new Error('Bitvavo-keys ontbreken, vul ze in via het dashboard');
   }
 
-  async #settle(order, pair) {
+  async #settle(order, pair, side) {
     // Market orders zijn meestal direct gevuld; zo niet, haal de order opnieuw op.
     let o = order;
     for (let i = 0; i < 5 && o.status !== 'closed'; i++) {
@@ -252,8 +252,7 @@ export class LiveBroker {
       o = await this.ex.fetchOrder(o.id, pair);
     }
     if (!o.filled) throw new Error(`Order ${o.id} is niet gevuld (status ${o.status})`);
-    const feeEur = o.fee?.currency === 'EUR' ? o.fee.cost : 0;
-    return { amount: o.filled, price: o.average ?? o.price, costEur: o.cost, feeEur };
+    return this.#fillOf(o, side, pair);
   }
 
   // Wacht tot een order gevuld is, maximaal waitSec. Daarna de rest annuleren en de
@@ -276,9 +275,18 @@ export class LiveBroker {
     return o;
   }
 
-  #fillOf(o) {
-    const feeEur = o.fee?.currency === 'EUR' ? o.fee.cost : 0;
-    return { amount: o.filled, price: o.average ?? o.price, costEur: o.cost, feeEur };
+  // Zelfde betekenis als in paper: bij kopen is costEur wat je in totaal betaalde (inclusief fee),
+  // bij verkopen wat je netto ontving (na fee). Zonder dit telden de fees live niet mee in de winst.
+  // Een fee in de coin zelf (bij kopen) gaat van de ontvangen hoeveelheid af.
+  #fillOf(o, side, pair) {
+    const fees = o.fees?.length ? o.fees : o.fee ? [o.fee] : [];
+    const base = String(pair ?? '').split('/')[0];
+    const sum = (cur) => fees.filter((f) => f?.currency === cur).reduce((a, f) => a + (Number(f.cost) || 0), 0);
+    const feeEur = sum('EUR');
+    const feeBase = side === 'buy' && base ? sum(base) : 0;
+    const price = o.average ?? o.price;
+    const cost = Number.isFinite(o.cost) ? o.cost : o.filled * price;
+    return { amount: o.filled - feeBase, price, costEur: side === 'buy' ? cost + feeEur : cost - feeEur, feeEur: feeEur + feeBase * price };
   }
 
   async buy(pair, stakeEur, opts = {}) {
@@ -297,7 +305,7 @@ export class LiveBroker {
       }
       const o = await this.#waitFill(order, pair, opts.waitSec ?? 20);
       if (!o.filled) return null;
-      return { ...this.#fillOf(o), limit: true, partial: o.filled < amount };
+      return { ...this.#fillOf(o, 'buy', pair), limit: true, partial: o.filled < amount };
     }
     let order;
     if (this.ex.has.createMarketBuyOrderWithCost) {
@@ -307,7 +315,7 @@ export class LiveBroker {
       const amount = Number(this.ex.amountToPrecision(pair, stakeEur / price));
       order = await this.ex.createMarketOrder(pair, 'buy', amount);
     }
-    return this.#settle(order, pair);
+    return this.#settle(order, pair, 'buy');
   }
 
   async sell(pair, amount, opts = {}) {
@@ -325,17 +333,17 @@ export class LiveBroker {
         o = null;
       }
       const filled = o?.filled ?? 0;
-      if (filled >= amt) return { ...this.#fillOf(o), limit: true };
+      if (filled >= amt) return { ...this.#fillOf(o, 'sell', pair), limit: true };
       // Rest alsnog met een market order, zodat de positie echt dicht gaat.
       const rest = Number(this.ex.amountToPrecision(pair, amt - filled));
-      const restFill = rest > 0 ? await this.#settle(await this.ex.createMarketOrder(pair, 'sell', rest), pair) : null;
+      const restFill = rest > 0 ? await this.#settle(await this.ex.createMarketOrder(pair, 'sell', rest), pair, 'sell') : null;
       if (!filled) return { ...restFill, limitFallback: true };
-      const a = this.#fillOf(o);
-      const b = restFill ?? { amount: 0, costEur: 0, feeEur: 0 };
+      const a = this.#fillOf(o, 'sell', pair);
+      const b = restFill ?? { amount: 0, price: 0, costEur: 0, feeEur: 0 };
       const total = a.amount + b.amount;
-      return { amount: total, price: (a.costEur + b.costEur) / total, costEur: a.costEur + b.costEur, feeEur: a.feeEur + b.feeEur, limit: true, limitFallback: true };
+      return { amount: total, price: (a.amount * a.price + b.amount * b.price) / total, costEur: a.costEur + b.costEur, feeEur: a.feeEur + b.feeEur, limit: true, limitFallback: true };
     }
     const order = await this.ex.createMarketOrder(pair, 'sell', amt);
-    return this.#settle(order, pair);
+    return this.#settle(order, pair, 'sell');
   }
 }

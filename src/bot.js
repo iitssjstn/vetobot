@@ -1775,6 +1775,9 @@ export class Bot {
     if (this.tickStats) this.tickStats.opened++;
     this.#execution(pair, 'buy', expected, fill);
     if (this.broker.mode === 'paper') this.store.state.balanceEur -= fill.costEur;
+    // Live: het saldo pas aan het eind van de ronde opnieuw ophalen; tot dan zelf bijhouden, anders
+    // denkt een tweede aankoop in dezelfde ronde dat het geld er nog is (en weigert Bitvavo de order).
+    else if (this.liveBalance) this.liveBalance.eurFree = Math.max(0, this.liveBalance.eurFree - fill.costEur);
     this.store.state.positions[pair] = {
       pair,
       openedAt: new Date().toISOString(),
@@ -2030,6 +2033,7 @@ export class Bot {
       ? +(((pos.entryFeeEur ?? 0) + (fill.feeEur ?? 0)) / pos.costEur * 100 + Math.max(0, pos.entrySlipPct ?? 0) + Math.max(0, sellSlip ?? 0)).toFixed(4)
       : null;
     if (this.broker.mode === 'paper') this.store.state.balanceEur += fill.costEur;
+    else if (this.liveBalance) this.liveBalance.eurFree += fill.costEur;
     delete this.store.state.positions[pair];
     this.store.state.lastExit ??= {};
     this.store.state.lastExit[pair] = new Date().toISOString();

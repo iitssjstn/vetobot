@@ -76,7 +76,9 @@ test('live: limiet-koop post-only op de biedprijs, gevuld tegen maker-fee', asyn
   assert.equal(ex.calls[0][4], 99.9, 'op de biedprijs');
   assert.equal(ex.calls[0][5], true, 'post-only');
   assert.equal(f.limit, true);
-  assert.ok(Math.abs(f.costEur - 50) < 0.01);
+  // Betaald = order + maker-fee (net als in paper telt de fee mee in de kosten).
+  assert.ok(Math.abs(f.costEur - 50 * 1.0015) < 0.01, f.costEur);
+  assert.ok(f.feeEur > 0.07);
 });
 
 test('live: limiet-koop niet gevuld → geannuleerd, geen aankoop', async () => {
@@ -92,7 +94,9 @@ test('live: limiet-verkoop half gevuld → rest met market, samen één resultaa
   assert.ok(ex.calls.some((c) => c[0] === 'cancel'));
   assert.deepEqual(ex.calls.find((c) => c[0] === 'market'), ['market', 'sell', 1]);
   assert.equal(f.amount, 2);
-  assert.ok(Math.abs(f.costEur - (100.1 + 99.5)) < 1e-9);
+  // Netto ontvangen: opbrengst min de fees van beide delen.
+  assert.ok(Math.abs(f.costEur - (100.1 + 99.5 - 0.01 - 99.5 * 0.0025)) < 1e-9, f.costEur);
+  assert.ok(Math.abs(f.price - (100.1 + 99.5) / 2) < 1e-9);
   assert.equal(f.limitFallback, true);
 });
 
@@ -101,4 +105,23 @@ test('live: stop-loss en gewone orders blijven market', async () => {
   ex.has = { createMarketBuyOrderWithCost: false };
   await new LiveBroker(ex).sell('X/EUR', 1);
   assert.deepEqual(ex.calls.map((c) => c[0]), ['market']);
+});
+
+test('live: fees tellen mee in winst/verlies, net als in paper', async () => {
+  const ex = fakeLive();
+  ex.has = { createMarketBuyOrderWithCost: false };
+  const b = new LiveBroker(ex);
+  const sell = await b.sell('X/EUR', 1);
+  assert.ok(Math.abs(sell.costEur - 99.5 * (1 - 0.0025)) < 1e-9, 'verkopen: netto na fee');
+  assert.ok(Math.abs(sell.feeEur - 99.5 * 0.0025) < 1e-9);
+});
+
+test('live: fee in de coin zelf gaat van de gekochte hoeveelheid af', async () => {
+  const ex = fakeLive();
+  ex.has = { createMarketBuyOrderWithCost: true };
+  ex.createMarketBuyOrderWithCost = async () => ({ id: 'b', status: 'closed', filled: 0.5, average: 100, cost: 50, fee: { currency: 'X', cost: 0.001 } });
+  const f = await new LiveBroker(ex).buy('X/EUR', 50);
+  assert.ok(Math.abs(f.amount - 0.499) < 1e-12, 'zoveel kun je later echt verkopen');
+  assert.equal(f.costEur, 50);
+  assert.ok(Math.abs(f.feeEur - 0.1) < 1e-9);
 });
