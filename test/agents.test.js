@@ -183,3 +183,27 @@ test('inzet: tussen jouw inzet en je maximum, naar vertrouwen', () => {
   // Verkenner telt niet mee; geen ruimte zonder maximum.
   assert.equal(sizeStake({ base: 10, max: 0, q: 1.0, threshold: 0.3, trades: good }).stake, 10);
 });
+
+test('Directe bijsturing met gemiste kansen: laag gewicht, pas vanaf genoeg gelabelde afwijzingen', () => {
+  const miss = (pair, exp, ret) => ({ pair, expectedPct: exp, retPct: ret, regime: 'stijgend' });
+  // Te weinig afwijzingen: telt niet mee.
+  const few = onlineCorrection([], LEARN, [...Array(LEARN.minRejected - 1)].map(() => miss('A', 0.3, 1.3)));
+  assert.equal(few.rejected, 0);
+  assert.equal(correctedExpectation(0.3, 'A', few).adj, 0);
+  // Genoeg: gewicht 0,15 per afwijzing. 40 kansen rond +0,3% verwacht die 1 punt beter afliepen.
+  const many = [...Array(40)].map(() => miss('A', 0.3, 1.3));
+  const c = onlineCorrection([], LEARN, many);
+  assert.equal(LEARN.rejectedWeight, 0.15);
+  assert.equal(c.rejected, 40);
+  assert.equal(c.trades, 0, 'geen echte trades');
+  const b = c.bins[3];
+  assert.ok(Math.abs(b.n - 40 * LEARN.rejectedWeight) < 1e-9, `gewicht: ${b.n}`);
+  assert.ok(Math.abs(b.adj - (40 * LEARN.rejectedWeight) / (40 * LEARN.rejectedWeight + LEARN.prior)) < 1e-9);
+  assert.ok(correctedExpectation(0.3, 'A', c).adj > 0, 'gemiste kansen sturen omhoog');
+  // Een echte trade weegt veel zwaarder dan een afwijzing.
+  const real = [...Array(40)].map(() => ({ pair: 'A', pnlPct: -0.7, agent: { expectedPct: 0.3 } }));
+  assert.ok(onlineCorrection(real, LEARN, many).bins[3].adj < 0, 'echte trades gaan voor');
+  // Geen ervaring per marktfase voor de verkenner uit afwijzingen; gewicht 0 = uit.
+  assert.deepEqual(c.regimes, {});
+  assert.equal(onlineCorrection([], { ...LEARN, rejectedWeight: 0 }, many).rejected, 0);
+});

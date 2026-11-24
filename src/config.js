@@ -56,6 +56,8 @@ export const config = {
     agentExplore: num('AGENT_EXPLORE', 1),
     agentLiveSmallStart: num('AGENT_LIVE_SMALL_START', 1),
     agentSizing: num('AGENT_SIZING', 1),
+    // 1 = de Strategy Agent koopt niet met een recept dat in de huidige volatiliteit van de coin aantoonbaar verloor.
+    agentVolGuard: num('AGENT_VOL_GUARD', 1),
   },
 
   // Harde limieten. De AI kan hier nooit aan komen.
@@ -95,6 +97,8 @@ export const config = {
     makerFeePct: num('MAKER_FEE_PCT', 0.15),
     // Maximale tijd in een positie in minuten; daarna verkopen (0 = uit).
     maxHoldMinutes: num('MAX_HOLD_MINUTES', 0),
+    // Live: na elke aankoop ook een stop-loss-order bij Bitvavo zelf zetten, op de noodstop (1 = aan, 0 = uit).
+    exchangeStop: num('EXCHANGE_STOP', 1),
   },
 
   paper: {

@@ -265,6 +265,40 @@ test('volatiliteitsregime: laatste ATR% tegen de mediaan van de voorgaande 500 c
   assert.equal(volRegimeOf(mk(900, (i) => (i < 300 ? 10 : 1))), 'normaal');
 });
 
+test('gelabelde afwijzingen van de AI-trader: juiste horizon, verwachting van het model, geen leakage', () => {
+  const { j } = journal({ horizons: [60, 240, 1440], mainHorizon: 240 });
+  const now = Date.parse('2026-11-24T12:00:00Z');
+  const rec = (d) => j.record({ mode: 'paper', pair: 'BTC/EUR', price: 100, timeframe: '15m', kind: 'agent', outcome: 'rejected', stage: 'toelating',
+    recipe: 'R', expectedPct: 0.5, rule: { type: 'ai-trader', expectedPct: 0.3, adjustedPct: 0.5 }, regime: 'stijgend', ...d });
+  const lab = (id, h, ret, settledAt) => j.db.prepare('INSERT INTO labels (decision_id, horizon_min, ret_pct, mfe_pct, mae_pct, settled_at) VALUES (?, ?, ?, 0, 0, ?)').run(id, h, ret, settledAt);
+  const a = rec({ at: now - 2 * DAY });
+  lab(a, 60, 0.1, now - 2 * DAY + 70 * M);
+  lab(a, 240, 0.8, now - 2 * DAY + 250 * M);
+  lab(a, 1440, -0.4, now - DAY + 10 * M);
+  // Niet mee: geaccepteerd, andere soort, niet-gevuld, label opgegeven (null), andere modus.
+  lab(rec({ at: now - DAY, outcome: 'accepted', stage: 'approved' }), 240, 1, now - DAY + 250 * M);
+  lab(rec({ at: now - DAY, kind: 'rules', stage: 'ai-veto' }), 240, 1, now - DAY + 250 * M);
+  lab(rec({ at: now - DAY, stage: 'not-filled' }), 240, 1, now - DAY + 250 * M);
+  lab(rec({ at: now - DAY }), 240, null, now - DAY + 250 * M);
+  lab(rec({ at: now - DAY, mode: 'live' }), 240, 1, now - DAY + 250 * M);
+  // Hoofdhorizon (240), verwachting van het model zelf (rule.expectedPct), niet de bijgestuurde.
+  const rows = j.labeledRejections({ mode: 'paper', now });
+  assert.equal(rows.length, 1);
+  assert.deepEqual({ ...rows[0], at: undefined }, { id: a, at: undefined, pair: 'BTC/EUR', recipe: 'R', timeframe: '15m', regime: 'stijgend', stage: 'toelating',
+    expectedPct: 0.3, adjustedPct: 0.5, horizon: 240, retPct: 0.8 });
+  // Houdtijd van het recept ± 20 uur → horizon 1440.
+  assert.equal(j.labeledRejections({ mode: 'paper', now, holdMinutes: (r) => (r === 'R' ? 1200 : null) })[0].retPct, -0.4);
+  assert.equal(j.labeledRejections({ mode: 'paper', now, holdMinutes: () => 50 })[0].horizon, 60);
+  // Geen leakage: op een moment vóór het label vaststond telt het niet mee.
+  assert.deepEqual(j.labeledRejections({ mode: 'paper', now: now - 2 * DAY + 200 * M }), [], 'label op 240 nog niet bekend');
+  const early = j.labeledRejections({ mode: 'paper', now: now - 2 * DAY + 200 * M, holdMinutes: () => 60 });
+  assert.equal(early.length, 1, 'het 60-minutenlabel stond toen al vast');
+  assert.equal(j.labeledRejections({ mode: 'paper', now: now - 2 * DAY + 200 * M, holdMinutes: () => 1440 }).length, 0);
+  // limit en periode
+  assert.equal(j.labeledRejections({ mode: 'paper', now, days: 1 }).length, 0);
+  assert.deepEqual(new Journal(null).labeledRejections(), []);
+});
+
 test('instellingen uit environment variables', () => {
   assert.deepEqual(journalOptionsFromEnv({}), { enabled: true, horizons: [60, 240, 1440], retentionDays: 180, mainHorizon: 240 });
   const o = journalOptionsFromEnv({ JOURNAL_ENABLED: '0', JOURNAL_HORIZONS: '30,120', JOURNAL_MAIN_HORIZON: '120', JOURNAL_RETENTION_DAYS: '90' });
