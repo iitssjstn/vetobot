@@ -2004,7 +2004,7 @@ function agentLiveHtml(a, bot, sign, nl) {
               <button class="btn danger" type="button" data-agent-live="${k}" data-allow="1" data-risky="1">Live op eigen risico</button></div>
           </details>`
           : '<span class="badge soft">nog niet alle eisen gehaald</span> <span class="muted">· op eigen risico kan pas als hij de backtests haalt</span>';
-    return `<div style="margin:0 0 12px"><b>${esc(r.recipe)}</b> <span class="muted">(${esc(r.stage ?? '')})</span><div style="margin:4px 0 6px;font-size:13.5px;line-height:1.6">${checks}</div>${btn}</div>`;
+    return `<div style="margin:0 0 12px"><b>${esc(r.recipe)}</b> <span class="muted">(${esc(r.stage ?? '')}${r.extra ? ', extra recept: alleen in gebruik als je het live zet' : ''})</span><div style="margin:4px 0 6px;font-size:13.5px;line-height:1.6">${checks}</div>${btn}</div>`;
   }).join('');
   const pt = a.paperTest;
   const wk = pt?.weeks ?? [];

@@ -8,6 +8,7 @@ import { COOKIE, readCookie } from './users.js';
 import { SECRET_NAMES, remapAiKeys } from './secrets.js';
 import { NOTIFY_EVENTS } from './notify.js';
 import { aiLabel } from './ai.js';
+import { allAgentParts } from './agents.js';
 import { analyzeTrades } from './analysis.js';
 import { AI_PROVIDERS, MAX_PAIRS, TIMEFRAMES, RISK_LIMITS, STRATEGY_LIMITS } from './settings.js';
 
@@ -294,10 +295,11 @@ export function createApp({ users, manager, log = console }) {
         const a = bot.getAgent?.();
         if (!a) return null;
         // Per recept dat de bot kan gebruiken: haalt het de eisen voor live, en heb jij het live toegestaan?
-        const parts = [a, ...Object.values(a.regimes ?? {}).map((p) => p?.agent).filter(Boolean)];
+        // Ook de extra recepten die de leerserver meestuurde (om live te zetten).
+        const parts = allAgentParts(a);
         const { approved, risky } = settings.agentLive;
         return { timeframe: a.timeframe, stage: a.stage, coins: a.coins ?? null, allowed: bot.agentAllowed(a), live: a.live ?? null, team: bot.agentTeam(),
-          recipes: [...new Map(parts.map((p) => [p.recipeKey, { recipe: p.recipeKey, stage: p.stage, ready: bot.agentLiveReady(p), approved: approved.includes(p.recipeKey),
+          recipes: [...new Map(parts.map((p) => [p.recipeKey, { recipe: p.recipeKey, stage: p.stage, extra: Boolean(p.extra), ready: bot.agentLiveReady(p), approved: approved.includes(p.recipeKey),
             riskyAllowed: bot.agentRiskyStage(p),
             risky: risky[p.recipeKey] ? { ...risky[p.recipeKey], lossEur: +bot.agentRiskyLoss(p.recipeKey).pnlEur.toFixed(2), trades: bot.agentRiskyLoss(p.recipeKey).trades } : null,
             checks: p.liveCheck?.checks ?? [] }])).values()], smallStart: Number(bot.strategy.agentLiveSmallStart ?? 1) === 1 };
@@ -312,7 +314,7 @@ export function createApp({ users, manager, log = console }) {
     const { recipe, allow, password, risky, maxLossEur, confirmText } = req.body ?? {};
     confirm(req, password);
     const main = bot.getAgent?.();
-    const part = [main, ...Object.values(main?.regimes ?? {}).map((p) => p?.agent)].find((p) => p?.recipeKey === recipe);
+    const part = allAgentParts(main).find((p) => p?.recipeKey === recipe);
     if (allow && risky) {
       if (!part) throw new Error('Dit recept gebruikt de AI-trader nu niet');
       if (!bot.agentRiskyStage(part)) throw new Error('Alleen een recept dat de backtests haalde (getest of betrouwbaar) mag op eigen risico live');

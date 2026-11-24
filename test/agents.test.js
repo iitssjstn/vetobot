@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { explorationOutcome, rewardSummary, exploreScore, EXPLORE, onlineCorrection, correctedExpectation, LEARN, agentForRecipe, allAgentCoins, chooseForRegime, assessRisk, riskStake, slippagePct, execSummary, lossStreak, RISK } from '../src/agents.js';
+import { explorationOutcome, rewardSummary, exploreScore, EXPLORE, onlineCorrection, correctedExpectation, LEARN, agentForRecipe, allAgentCoins, agentParts, allAgentParts, activeAgent, chooseForRegime, assessRisk, riskStake, slippagePct, execSummary, lossStreak, RISK } from '../src/agents.js';
 
 const main = { recipeKey: 'A', coins: ['BTC/EUR'], regimes: {
   stijgend: { key: 'B', why: 'best', edge: 0.3, trades: 40, agent: { recipeKey: 'B', coins: ['ETH/EUR'] } },
@@ -146,4 +146,17 @@ test('Beloningen door de tijd: punten, weken en conclusie', () => {
   const r2 = rewardSummary([...many, t(20, 0.5)], now, 10);
   assert.equal(r2.points.filter((p) => p.who === 'ai').length, 1);
   assert.equal(r2.points.filter((p) => p.who === 'verkenner').length, 10);
+});
+
+test('extra recepten: alleen actief als ze live mogen', () => {
+  const raw = { recipeKey: 'A', coins: ['BTC/EUR'], regimes: {}, extras: [{ recipeKey: 'X', coins: ['ETH/EUR'] }, { recipeKey: 'Y', coins: ['SOL/EUR'] }] };
+  const off = activeAgent(raw, () => false);
+  assert.deepEqual(agentParts(off).map((p) => p.recipeKey), ['A'], 'niet actief: geen extra coins of candles');
+  assert.deepEqual(allAgentCoins(off), ['BTC/EUR']);
+  assert.deepEqual(allAgentParts(off).map((p) => p.recipeKey), ['A', 'X', 'Y'], 'wel te zien om live te zetten');
+  const on = activeAgent(raw, (k) => k === 'Y');
+  assert.deepEqual(agentParts(on).map((p) => p.recipeKey), ['A', 'Y']);
+  assert.equal(agentForRecipe(on, 'Y').recipeKey, 'Y', 'verkopen met het recept dat kocht');
+  assert.deepEqual(allAgentParts(on).map((p) => p.recipeKey), ['A', 'Y', 'X']);
+  assert.equal(activeAgent(null, () => true), null);
 });

@@ -1107,6 +1107,7 @@ def _finish_round(recipe, agent, report, by):
         a['recipeStatus'] = st
         a['live'] = lv
         a['regimes'] = regime_plan(board, best, data)
+        a['extras'] = extra_recipes(board, best, a['regimes'], data)
         write_json('agent.json', a)
         plan_now = {reg: p['key'] for reg, p in a['regimes'].items()}
         plan_before = (prev or {}).get('regimes')
@@ -1220,6 +1221,31 @@ def regime_plan(board, best, data):
                 item['agent'] = {**{k: sub[k] for k in AGENT_PART_KEYS if k in sub}, 'recipeKey': p['key'],
                                  'recipeStatus': agent_search.status(entry), 'stage': agent_stage(entry, lc), 'live': lv, 'liveCheck': lc}
         out[reg] = item
+    return out
+
+
+EXTRA_RECIPES = 6
+
+
+def extra_recipes(board, best, regimes, data, limit=EXTRA_RECIPES):
+    """De beste andere recepten (getest of betrouwbaar) gaan ook mee naar de bot, zodat de eigenaar
+    ze live kan toestaan of op eigen risico live kan zetten. De bot gebruikt ze alleen als dat zo is."""
+    used = {best['key']} | {p.get('key') for p in (regimes or {}).values() if p.get('key')}
+    out = []
+    for e in board:
+        if len(out) >= limit:
+            break
+        if e['key'] in used:
+            continue
+        sub = read_json(os.path.join('agents', e['key'].replace('|', '_') + '.json'), None)
+        if not sub:
+            continue
+        lc = live_check(e['key'], e, sub.get('costPct'))
+        stage = agent_stage(e, lc)
+        if stage not in ('getest', 'bewezen'):
+            continue
+        out.append({**{k: sub[k] for k in AGENT_PART_KEYS if k in sub}, 'recipeKey': e['key'], 'recipeStatus': agent_search.status(e),
+                    'stage': stage, 'live': data['live'].get(e['key']) or {}, 'liveCheck': lc, 'extra': True})
     return out
 
 
@@ -1541,7 +1567,7 @@ class Handler(BaseHTTPRequestHandler):
             live = data.get('live', {})
             a['live'] = live.get(a.get('recipeKey') or a['timeframe'], {})
             # Eisen voor live steeds actueel (nieuwe paper-trades komen tussen de leerrondes binnen).
-            for part in [a] + [p['agent'] for p in (a.get('regimes') or {}).values() if p.get('agent')]:
+            for part in [a] + [p['agent'] for p in (a.get('regimes') or {}).values() if p.get('agent')] + list(a.get('extras') or []):
                 part['live'] = live.get(part.get('recipeKey'), {})
                 entry = data['recipes'].get(part.get('recipeKey'))
                 if entry and part.get('stage') != 'geblokkeerd':

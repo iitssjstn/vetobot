@@ -738,6 +738,29 @@ class LiveAdmission(unittest.TestCase):
         self.assertEqual(sum(w['trades'] for w in wk), 30)
 
 
+class ExtraRecipes(unittest.TestCase):
+    def test_best_other_recipes_go_along(self):
+        from unittest import mock
+        import server
+        board = [{'key': k} for k in ('A', 'B', 'C', 'D', 'E')]
+        stages = {'C': 'getest', 'D': 'oefenen', 'E': 'bewezen'}
+        with mock.patch.object(server, 'read_json', side_effect=lambda f, d=None: None if 'E' in f else {'entry': 1, 'exit': 2, 'timeframe': '15m', 'secret': 9}), \
+                mock.patch.object(server, 'live_check', return_value={'allMet': False}), \
+                mock.patch.object(server, 'agent_stage', side_effect=lambda e, lc: stages.get(e['key'], 'getest')), \
+                mock.patch.object(server.agent_search, 'status', return_value='betrouwbaar'):
+            out = server.extra_recipes(board, board[0], {'stijgend': {'key': 'B'}, 'dalend': {'key': None}}, {'live': {}})
+        # A is het hoofdrecept, B zit in het fase-plan, D oefent nog, E heeft geen bestand.
+        self.assertEqual([x['recipeKey'] for x in out], ['C'])
+        self.assertTrue(out[0]['extra'])
+        self.assertNotIn('secret', out[0], 'alleen de onderdelen die de bot nodig heeft')
+        with mock.patch.object(server, 'read_json', return_value={'entry': 1}), \
+                mock.patch.object(server, 'live_check', return_value={}), \
+                mock.patch.object(server, 'agent_stage', return_value='getest'), \
+                mock.patch.object(server.agent_search, 'status', return_value='betrouwbaar'):
+            many = server.extra_recipes([{'key': str(i)} for i in range(20)], {'key': '0'}, {}, {'live': {}})
+        self.assertEqual(len(many), server.EXTRA_RECIPES)
+
+
 class Explorer(unittest.TestCase):
     def test_virtual_examples_have_lower_weight(self):
         import agent

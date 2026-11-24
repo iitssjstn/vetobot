@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Bot } from '../src/bot.js';
 import { PaperBroker } from '../src/exchange.js';
+import { activeAgent } from '../src/agents.js';
 import { Store } from '../src/store.js';
 import { Settings } from '../src/settings.js';
 
@@ -1181,6 +1182,27 @@ test('AI-trader live: recept voor deze fase mag niet live, ander recept op eigen
   assert.ok(pos, bot.pairStatus['BTC/EUR']?.reason);
   assert.equal(pos.agent.recipe, 'B');
   assert.ok(pos.costEur > 15, 'eigen inzet');
+});
+
+test('AI-trader live: extra recept op eigen risico wordt gebruikt', async () => {
+  const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
+  const { bot, ex } = setup({});
+  await bot.setRisk({ cooldownMinutes: 0, stakeEur: 20 });
+  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0 });
+  bot.settings.data.mode = 'live';
+  bot.liveBalance = { eurFree: 1000 };
+  ex.apiKey = 'k'; ex.secret = 's';
+  const pb = new PaperBroker(ex, 0.25);
+  Object.assign(bot.brokers.live, { buy: (...a) => pb.buy(...a), sell: (...a) => pb.sell(...a) });
+  const base = { ...fx.agent, liveCheck: { allMet: false, checks: [] }, entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 } };
+  const raw = { ...base, stage: 'getest', recipeKey: 'A', regimes: {}, extras: [{ ...base, stage: 'getest', recipeKey: 'X', extra: true }] };
+  bot.settings.setAgentLiveRisky('X', 50);
+  bot.getAgent = () => activeAgent(raw, (k) => bot.mode === 'live' && Boolean(bot.settings.agentLive.risky[k]));
+  ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+  await bot.tick();
+  const pos = bot.store.state.positions['BTC/EUR'];
+  assert.ok(pos, bot.pairStatus['BTC/EUR']?.reason);
+  assert.equal(pos.agent.recipe, 'X');
 });
 
 test('AI-trader live: kleinste start uit te zetten', async () => {

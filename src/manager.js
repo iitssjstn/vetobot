@@ -7,6 +7,7 @@ import { Settings } from './settings.js';
 import { Bot } from './bot.js';
 import { Notifier } from './notify.js';
 import { validateModel, validateAgent } from './mlmodel.js';
+import { activeAgent } from './agents.js';
 
 // Beheert één bot per gebruiker.
 //
@@ -157,6 +158,8 @@ export class BotManager {
       for (const [reg, p] of Object.entries(r.data.regimes ?? {})) {
         if (p?.agent && validateAgent(p.agent)) r.data.regimes[reg] = { ...p, key: r.data.recipeKey ?? null, why: 'weinig bewijs', agent: undefined };
       }
+      // Extra recepten (om live te zetten): een onbruikbaar recept laten we weg.
+      r.data.extras = (r.data.extras ?? []).filter((p) => p?.recipeKey && !validateAgent(p));
       const before = this.ml.agent;
       this.ml.agent = r.data;
       this.ml.agentEtag = r.etag;
@@ -287,7 +290,20 @@ export class BotManager {
     bot.getTeamwork = () => this.ml.teamwork ?? null;
     bot.getArms = () => this.ml.arms ?? [];
     bot.getMicro = (pair) => this.ml.micro?.features?.[pair] ?? null;
-    bot.getAgent = () => this.ml.agent ?? null;
+    // Extra recepten van de leerserver gebruikt de bot alleen live, en alleen als je ze zelf live
+    // toestond of op eigen risico live zette. Onthouden zolang er niets verandert.
+    let memo = null;
+    bot.getAgent = () => {
+      const raw = this.ml.agent ?? null;
+      if (!raw) return null;
+      const { approved, risky } = settings.agentLive;
+      const sig = `${bot.mode}|${approved.join(',')}|${Object.keys(risky ?? {}).join(',')}`;
+      if (memo?.raw !== raw || memo.sig !== sig) {
+        const active = (k) => bot.mode === 'live' && (approved.includes(k) || Boolean(risky?.[k]));
+        memo = { raw, sig, agent: activeAgent(raw, active) };
+      }
+      return memo.agent;
+    };
     bot.onFeedback = (trade) => { this.queueFeedback(trade).catch(() => {}); };
     const ctx = { user, dir, settings, secrets, exchange, brokers, stores, notifier, bot, timer: null, watchTimer: null };
     this.contexts.set(user.id, ctx);

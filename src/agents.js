@@ -12,7 +12,22 @@ export const MARKET_TF = '1h';
 export function agentParts(main) {
   if (!main) return [];
   const subs = Object.values(main.regimes ?? {}).map((p) => p?.agent).filter(Boolean);
-  return [main, ...subs];
+  // Extra recepten tellen alleen mee als ze actief zijn (live toegestaan of op eigen risico; zie activeAgent).
+  return [main, ...subs, ...(main.extras ?? [])];
+}
+
+// Alle recepten die de leerserver meestuurde, ook de extra recepten die (nog) niet actief zijn.
+export function allAgentParts(main) {
+  if (!main) return [];
+  const seen = new Set();
+  return [...agentParts(main), ...(main.extrasAll ?? [])].filter((p) => p && !seen.has(p) && seen.add(p));
+}
+
+// De AI-trader zoals de bot hem gebruikt: extra recepten alleen als isActive(recipeKey) zegt dat het mag.
+export function activeAgent(main, isActive) {
+  if (!main) return null;
+  const all = main.extrasAll ?? main.extras ?? [];
+  return { ...main, extras: all.filter((p) => p?.recipeKey && isActive(p.recipeKey)), extrasAll: all };
 }
 
 // De AI-trader van een recept (voor het verkopen: dezelfde die kocht).
