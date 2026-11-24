@@ -297,6 +297,104 @@ Op de pagina **Trainer** (alleen voor de admin) zie je live wat de trainer doet:
 
 Gebruik bij voorkeur HTTPS (bijv. via Nginx Proxy Manager op de VPS), zodat de code niet onversleuteld over internet gaat. Het model is gedeeld: alle gebruikers van je vetobot gebruiken hetzelfde model.
 
+## Learning: hoe vetobot leert en zich verbetert
+
+Vetobot leert in een gesloten, gecontroleerde cyclus. Live gaat er nooit iets vanzelf.
+
+```
+marktdata ─► beslissing (bot) ─► dagboek (learning.db) ─► achteraf: wat gebeurde er? (labels)
+                                        │
+trades + feedback ─► leerserver: nieuw model trainen ─► eerlijk testen ─► vergelijken met het actieve model
+                                        │
+              alleen aantoonbaar beter ─► publiceren voor paper ─► paper-test ─► live alleen met jouw akkoord per recept
+```
+
+### Onderdelen
+
+| Onderdeel | Waar | Wat |
+|---|---|---|
+| Trading Engine | `src/bot.js`, `src/exchange.js`, `src/risk.js` | Kopen/verkopen, harde risicolimieten, orderboek-check, paper/live-brokers |
+| Decision Engine | `src/agents.js`, `src/strategy.js`, `src/ai.js` | AI-trader en zijn team (Market/Strategy/Risk/Execution Agent), AI-controleur |
+| Data Collection | `src/journal.js` | Beslissingsdagboek (SQLite), labels achteraf, trades met kosten en MFE/MAE |
+| Learning Engine | `trainer/agent.py`, `trainer/agent_search.py` | Recepten leren, walk-forward, aparte eindtest, metrics |
+| Model Manager | `trainer/registry.py`, `trainer/server.py` | Modelversies, poortwachter bij publiceren, terugzetten/vastzetten |
+| Model Evaluation | `trainer/livecheck.py`, `trainer/agent.py` | Eisen voor live, profit factor, Sharpe, per marktomstandigheid |
+| Dashboard | `public/index.html` (pagina **Learning**), `src/server.js` (`/api/learning`) | Inzicht in wat de bot leert |
+
+### 1. Beslissingsdagboek (bot)
+
+Bij elke echte koopkans legt de bot vast: coin, tijd, candle-tijd, prijs, indicatoren (trend, RSI, ATR/volatiliteit, volume), orderboek (spread, kosten van je order, diepte), het advies van de AI-controleur (model, ja/nee, reden), het regelgebaseerde advies (EMA/RSI-signaal of de verwachting en drempel van de AI-trader), het recept en de modelversie, de marktfase (trend én volatiliteit) en **of en waarom** er gekocht werd. Ook afgewezen kansen: door de toelating (live/paper), de Risk Agent, een pauze in de marktfase, de risicoregels, de orderboek-check, de AI-controleur, of een order die niet gevuld werd. (Gewone candles onder de koopdrempel niet: dat zijn geen kansen.)
+
+**Achteraf beoordelen zonder lekken.** Na 1 uur, 4 uur en 24 uur rekent de bot uit wat er gebeurd zou zijn: rendement na kosten en de grootste stijging/daling, met **alleen koersen ná het besluit**. Die uitkomsten staan in een aparte tabel en komen nooit in de gegevens van de beslissing zelf. Zo zie je of een afwijzing terecht was. Trades krijgen fees, spread, slippage in/uit en hun grootste stijging (MFE) en daling (MAE) tijdens de trade.
+
+Bestand: `learning.db` in de map van elke gebruiker (`data/users/<id>/`). Beslissingen ouder dan 180 dagen worden opgeruimd.
+
+### 2. Marktomstandigheden
+
+Naast de trend (stijgend / zijwaarts / dalend) herkent vetobot nu de **volatiliteit**: de ATR (in % van de koers) vergeleken met de mediaan van de voorgaande (max. 500) candles van die coin. Boven 1,5× = hoog, onder 0,67× = laag, anders normaal; met minder dan 100 voorgaande candles: onbekend. Bot en leerserver gebruiken exact dezelfde regel, alleen met verleden data.
+
+### 3. Modellen beoordelen
+
+Elke leerronde wordt getest op een periode die het model nooit zag (eindtest), plus walk-forward over meerdere periodes, met echte kosten per coin en portefeuille-terugval. Per model: netto (samengesteld) rendement, winrate, **profit factor**, **Sharpe** (per trade), maximale terugval, aantal trades, gemiddelde winst en gemiddeld verlies per trade, en resultaten **per trend én per volatiliteit**. Baseline: de markt tijdens dezelfde trades ("beter dan meedobberen").
+
+### 4. Modelversies en promotie
+
+Elke leerronde wordt een versie in `registry.db` (op de leerserver) met datum, wie hem trainde (VPS of helper), dataset (coins, dagen, periodes), kenmerken, instellingen, alle metrics, de vergelijking met het actieve model en de beslissing met reden:
+
+- **gepromoot**: aantoonbaar beter. Een ánder recept moet minstens 2 geteste rondes hebben, een duidelijk hogere score (≥ 5%), een eindtest-terugval van hooguit 1,25× die van het actieve model en geen lagere profit factor. Hetzelfde recept opnieuw getraind mag als het hooguit 5% slechter is (ruis).
+- **niet beter** (kept): het actieve model blijft. Bij een nieuwe training van hetzelfde recept die slechter is, blijft ook het vorige model van dat recept.
+- **afgewezen**: niet bruikbaar of niet beter.
+- **teruggezet**: jij zette een eerdere versie terug.
+
+Van elke gepromote versie wordt een kopie bewaard (`agents/versions/v<n>.json`) als terugvaloptie; die worden nooit opgeruimd. Is het actieve model te riskant geworden (> 25% terugval), dan kiest de leerserver uit veiligheid zelf het beste veilige model.
+
+**Promotie gaat alleen naar paper.** Live handelt de bot uitsluitend met recepten die jij zelf live toestaat of op eigen risico live zet (Trainer → Live).
+
+**Terugzetten**: op de pagina Learning (admin, met wachtwoord) bij een gepromote versie **Terugzetten**. Die versie wordt actief en **vastgezet**: nieuwe leerrondes worden nog getest en geregistreerd, maar niet in gebruik genomen tot je **Vastzetten opheffen** kiest. Een te riskant recept kan niet terug.
+
+**Alleen trainen als er iets nieuws is**: een al getest recept wordt pas opnieuw getraind na 6 uur (of één candle van het recept als dat langer is) of na 20 nieuwe trades met dat recept. Nieuwe recepten blijven altijd mogelijk.
+
+### 5. De pagina Learning
+
+Voor iedere gebruiker, kies modus (paper/live) en periode:
+
+- **Overzicht**: huidige modelversie, laatste training, aantal sessies, datapunten, geaccepteerd/afgewezen, laatste evaluatie.
+- **Modelprestaties**: de gepromote versies naast elkaar (rendement, winrate, profit factor, Sharpe, terugval, trades, gemiddelde winst/verlies, per marktomstandigheid).
+- **Trainingsgeschiedenis**: elke leerronde met de data, de uitkomst, de reden en het verschil met het actieve model; terugzetten (admin).
+- **Beslissingsanalyse**: goede en slechte beslissingen, terecht afgewezen, **gemiste kansen** (regels/toelating hielden een stijging tegen), **onterechte afwijzingen** (de AI-controleur zei nee, maar het steeg), per AI-model, per coin, per marktomstandigheid, per stap waar het besluit viel, en de laatste beslissingen met hun uitkomst na 1/4/24 uur.
+
+### 6. Database, migraties en herstel
+
+- Twee SQLite-databases, zonder extra software (Node 22 en Python hebben SQLite ingebouwd): `learning.db` per gebruiker (bot) en `registry.db` op de leerserver.
+- Bestaande gegevens (`state-paper.json`, `state-live.json`, `agents.json`, `agent.json`) blijven zoals ze waren; de databases staan ernaast. **Herstel**: stop de container en verwijder of hernoem de database; de bot en de leerserver beginnen dan met een lege, en alles werkt zoals vóór deze versie.
+- Elke database heeft een `schema_version` en genummerde migraties die maar één keer draaien. Is een database kapot, dan wordt hij hernoemd naar `*.corrupt-<tijd>` en begint een nieuwe; trading en leren gaan door.
+- Een fout in het dagboek of het register (schijf vol, kapotte database) heeft nooit invloed op kopen of verkopen.
+
+### 7. Instellingen
+
+Bot (compose, `vetobot`):
+
+| Variabele | Standaard | Betekenis |
+|---|---|---|
+| `JOURNAL_ENABLED` | 1 | Beslissingsdagboek aan (0 = uit) |
+| `JOURNAL_HORIZONS` | 60,240,1440 | Na zoveel minuten beoordelen |
+| `JOURNAL_MAIN_HORIZON` | 240 | Horizon voor terecht/onterecht/gemist |
+| `JOURNAL_RETENTION_DAYS` | 180 | Zo lang beslissingen bewaren |
+| `BITVAVO_OPERATOR_ID` | 1 | Verplicht nummer bij Bitvavo-orders |
+
+Leerserver (compose, `vetobot-trainer`; ook in de config van de leerserver):
+
+| Variabele | Standaard | Betekenis |
+|---|---|---|
+| `PROMOTE_MIN_GAIN_PCT` | 5 | Zoveel % betere score nodig om een ander recept te promoten |
+| `PROMOTE_MIN_ROUNDS` | 2 | Minimaal zoveel geteste rondes |
+| `PROMOTE_MAX_DD_FACTOR` | 1.25 | Eindtest-terugval hooguit zoveel × die van het actieve model |
+| `RETRAIN_TOLERANCE_PCT` | 5 | Hetzelfde recept opnieuw getraind: hooguit zoveel % slechter |
+| `RETEST_HOURS` | 6 | Een recept pas na zoveel uur opnieuw trainen ... |
+| `RETEST_TRADES` | 20 | ... of na zoveel nieuwe trades met dat recept |
+
+Geen nieuwe containers, volumes of poorten nodig: de databases staan in de bestaande data-volumes.
+
 ## Meerdere gebruikers
 
 Je kunt andere mensen uitnodigen. Iedereen heeft een eigen bot met eigen Bitvavo- en AI-keys, eigen saldo, trades en instellingen, in een eigen map `data/users/<id>/`.
@@ -318,6 +416,13 @@ Doe dit pas na weken paper trading met resultaten waar je tevreden over bent.
 2. Vul de key en het secret in bij Instellingen → API-keys en klik op **Bitvavo-keys testen**.
 3. Klik bij Handelsmodus op **Overschakelen naar live**, vul je wachtwoord in en typ `LIVE`.
 4. Begin met een kleine inzet (minimaal € 5, het minimum van Bitvavo) en een lage daglimiet. De bot gebruikt nooit meer dan inzet × maximaal open trades; met € 5 en 2 trades heb je genoeg aan zo'n € 15 tot € 20 op Bitvavo. In paper kan de inzet vanaf € 0,10.
+
+Beveiligingen tijdens live handelen:
+
+- Kan de bot het orderboek niet ophalen, dan koopt hij live niet ("in live koop ik niet blind"); in paper wel.
+- Per coin loopt er nooit meer dan één order tegelijk, en een positie wordt nooit twee keer verkocht.
+- De AI (controleur, AI-trader, eigen inzet) kan de harde limieten niet omzeilen: max. open trades, dagelijkse verlieslimiet, budgetplafond, vrij saldo, max. inzet en de noodstop worden vlak voor elke order nog een keer gecontroleerd.
+- Het vrije Bitvavo-saldo wordt na elke order bijgewerkt; fees tellen mee in winst en verlies, net als in paper.
 
 Beveiligingen bij het wisselen:
 

@@ -1438,6 +1438,18 @@ def _finish_round(recipe, agent, report, by):
             _safe(lambda: reg.set_pinned(None), 'losmaken')
             think(f"Mijn recept {agent_mod.recipe_text(old['recipe'])} zakte in een test meer dan {agent_search.DANGER_DRAWDOWN}% terug. "
                   'Dat is te riskant: de bot handelt er niet meer mee, ook niet in paper, tot ik een veiliger recept vind.', kind='warn')
+    if main is None and board:
+        # Geen nieuw model: het actieve model blijft byte-gelijk, maar de lijst extra recepten (om live
+        # te zetten) wel bijwerken, anders zie je nieuwe goede recepten pas na een promotie.
+        def refresh_extras():
+            a = read_json('agent.json', None)
+            if not isinstance(a, dict) or a.get('stage') == 'geblokkeerd':
+                return
+            ext = extra_recipes(board, {'key': a.get('recipeKey')}, a.get('regimes'), data)
+            if [x.get('recipeKey') for x in ext] != [x.get('recipeKey') for x in a.get('extras') or []]:
+                a['extras'] = ext
+                write_json('agent.json', a)
+        _safe(refresh_extras, 'extra recepten bijwerken')
     write_json('agents.json', data)
     if decision == 'kept' and pinned is None and main is None and key != active_key and reason.startswith('kandidaat'):
         think(f'Ik houd mijn huidige model: {reason}.', kind='insight')
