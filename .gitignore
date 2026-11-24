@@ -4,3 +4,4 @@ data/
 *.log
 __pycache__/
 package-lock.json
+.claude/worktrees/
