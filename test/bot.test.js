@@ -52,6 +52,14 @@ function setup(exOpts) {
   return { bot, ex, dir, settings, stores };
 }
 
+// Live koopt de bot niet zonder orderboek: een diep boek met een kleine spread rond de koers.
+function liveBook(ex) {
+  ex.fetchOrderBook = async () => {
+    const p = ex.prices.at(-1);
+    return { bids: [[p * 0.9999, 1e6], [p * 0.99, 1e6]], asks: [[p * 1.0001, 1e6], [p * 1.01, 1e6]] };
+  };
+}
+
 async function openPaperPosition(bot, ex) {
   for (let n = 41; n <= 44 && !bot.store.state.positions['BTC/EUR']; n++) {
     ex.prices = [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66, 68]).slice(0, n);
@@ -1075,7 +1083,7 @@ test('AI-trader live: kleinste inzet in het begin, en terug uit live als een eis
   await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0 });
   bot.settings.data.mode = 'live';
   bot.liveBalance = { eurFree: 1000 };
-  ex.apiKey = 'k'; ex.secret = 's';
+  ex.apiKey = 'k'; ex.secret = 's'; liveBook(ex);
   const pb = new PaperBroker(ex, 0.25);
   Object.assign(bot.brokers.live, { buy: (...a) => pb.buy(...a), sell: (...a) => pb.sell(...a) });
   let agent = { ...fx.agent, stage: 'bewezen', recipeKey: 'R', liveCheck: { allMet: true, checks: [] }, entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 },
@@ -1105,7 +1113,7 @@ test('AI-trader live op eigen risico: eigen inzet, eigen verliesgrens, stopt van
   await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0 });
   bot.settings.data.mode = 'live';
   bot.liveBalance = { eurFree: 1000 };
-  ex.apiKey = 'k'; ex.secret = 's';
+  ex.apiKey = 'k'; ex.secret = 's'; liveBook(ex);
   const pb = new PaperBroker(ex, 0.25);
   Object.assign(bot.brokers.live, { buy: (...a) => pb.buy(...a), sell: (...a) => pb.sell(...a) });
   // Haalt de eisen voor live niet, maar wel de backtests (getest).
@@ -1143,7 +1151,7 @@ test('live: vrij saldo wordt binnen een ronde bijgehouden na kopen en verkopen',
   bot.settings.data.mode = 'live';
   bot.liveBalance = { eurFree: 100 };
   bot.refreshLiveBalance = async () => {};
-  ex.apiKey = 'k'; ex.secret = 's';
+  ex.apiKey = 'k'; ex.secret = 's'; liveBook(ex);
   const pb = new PaperBroker(ex, 0.25);
   Object.assign(bot.brokers.live, { buy: (...a) => pb.buy(...a), sell: (...a) => pb.sell(...a) });
   const agent = { ...fx.agent, stage: 'bewezen', recipeKey: 'R', liveCheck: { allMet: true, checks: [] }, entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 },
@@ -1166,7 +1174,7 @@ test('AI-trader live: recept voor deze fase mag niet live, ander recept op eigen
   await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0 });
   bot.settings.data.mode = 'live';
   bot.liveBalance = { eurFree: 1000 };
-  ex.apiKey = 'k'; ex.secret = 's';
+  ex.apiKey = 'k'; ex.secret = 's'; liveBook(ex);
   const pb = new PaperBroker(ex, 0.25);
   Object.assign(bot.brokers.live, { buy: (...a) => pb.buy(...a), sell: (...a) => pb.sell(...a) });
   const base = { ...fx.agent, liveCheck: { allMet: false, checks: [] }, entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 } };
@@ -1191,7 +1199,7 @@ test('AI-trader live: extra recept op eigen risico wordt gebruikt', async () => 
   await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0 });
   bot.settings.data.mode = 'live';
   bot.liveBalance = { eurFree: 1000 };
-  ex.apiKey = 'k'; ex.secret = 's';
+  ex.apiKey = 'k'; ex.secret = 's'; liveBook(ex);
   const pb = new PaperBroker(ex, 0.25);
   Object.assign(bot.brokers.live, { buy: (...a) => pb.buy(...a), sell: (...a) => pb.sell(...a) });
   const base = { ...fx.agent, liveCheck: { allMet: false, checks: [] }, entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 } };
@@ -1214,7 +1222,7 @@ test('AI-trader kiest zelf een grotere inzet, live, nooit meer dan er vrij is', 
     bot.settings.data.mode = 'live';
     bot.liveBalance = { eurFree };
     bot.refreshLiveBalance = async () => {};
-    ex.apiKey = 'k'; ex.secret = 's';
+    ex.apiKey = 'k'; ex.secret = 's'; liveBook(ex);
     const pb = new PaperBroker(ex, 0.25);
     Object.assign(bot.brokers.live, { buy: (...a) => pb.buy(...a), sell: (...a) => pb.sell(...a) });
     const agent = { ...fx.agent, stage: 'getest', recipeKey: 'R', liveCheck: { allMet: false, checks: [] }, entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 },
@@ -1249,7 +1257,7 @@ test('goedgekeurd maar kopen mislukt: reden bewaard en in het dagoverzicht', asy
   bot.settings.data.mode = 'live';
   bot.liveBalance = { eurFree: 100 };
   bot.refreshLiveBalance = async () => {};
-  ex.apiKey = 'k'; ex.secret = 's';
+  ex.apiKey = 'k'; ex.secret = 's'; liveBook(ex);
   Object.assign(bot.brokers.live, { buy: async () => { throw new Error('bitvavo {"errorCode":216,"error":"Insufficient balance"}'); } });
   const agent = { ...fx.agent, stage: 'getest', recipeKey: 'R', liveCheck: { allMet: false, checks: [] }, entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 },
     regimes: { stijgend: { key: 'R', why: 'best' }, zijwaarts: { key: 'R', why: 'best' }, dalend: { key: 'R', why: 'best' } } };
@@ -1275,7 +1283,7 @@ test('AI-trader live: kleinste start uit te zetten', async () => {
   await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0, agentLiveSmallStart: 0 });
   bot.settings.data.mode = 'live';
   bot.liveBalance = { eurFree: 1000 };
-  ex.apiKey = 'k'; ex.secret = 's';
+  ex.apiKey = 'k'; ex.secret = 's'; liveBook(ex);
   const pb = new PaperBroker(ex, 0.25);
   Object.assign(bot.brokers.live, { buy: (...a) => pb.buy(...a), sell: (...a) => pb.sell(...a) });
   const agent = { ...fx.agent, stage: 'bewezen', recipeKey: 'R', liveCheck: { allMet: true, checks: [] }, entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 },

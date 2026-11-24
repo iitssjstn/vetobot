@@ -8,6 +8,7 @@ import { fetchClosedCandles, fetchPrice, hasTradingKeys } from './exchange.js';
 import { checkEntry } from './risk.js';
 import { Bandit } from './bandit.js';
 import { analyzeBook, bookProblem } from './orderbook.js';
+import { Journal, journalOptionsFromEnv, volRegimeOf, pickIndicators, ruleOf } from './journal.js';
 import { MARKET_TF, RISK, LEARN, EXPLORE, explorationOutcome, rewardSummary, onlineCorrection, correctedExpectation, exploreWanted, exploreScore, agentParts, agentForRecipe, allAgentCoins, chooseForRegime, assessRisk, riskStake, sizeStake, slippagePct, execSummary, lossStreak } from './agents.js';
 import path from 'node:path';
 
@@ -29,6 +30,8 @@ const fmtAmount = (n) => nl(n, Math.abs(n) >= 100 ? 2 : Math.abs(n) >= 1 ? 4 : 8
 
 // Zoveel live-trades van de AI-trader (met gemiddeld winst) voordat hij live meer dan de kleinste inzet gebruikt.
 const LIVE_AGENT_PROVEN = 20;
+// #open en #close geven dit terug als er voor die coin al een order loopt (of er al een positie staat).
+const BUSY = 'busy';
 
 export class Bot {
   // brokers en stores: { paper, live }. De actieve modus komt uit settings en
@@ -54,6 +57,8 @@ export class Bot {
     this.lastFeatures = {};
     this.thoughts = [];
     this.activity = [];
+    // Coins waarvoor nu een koop- of verkooporder loopt: nooit twee orders tegelijk voor dezelfde coin.
+    this.ordering = new Set();
   }
 
   // Logt een gebeurtenis én bewaart hem voor het activiteitenlog in het dashboard.
@@ -156,10 +161,18 @@ export class Bot {
             { pair, openPnlEur: this.openPositionsValue().pnlEur });
           if (blocked) {
             this.store.addDecision({ pair, signal: 'buy', outcome: 'blocked', reason: `Volgen: ${blocked}`, indicators });
+            await this.#journalDecision(pair, { outcome: 'rejected', stage: 'risicoregels', reason: `Volgen: ${blocked}`, indicators, features: null });
             this.#event('warn', pair, `Trade van ${this.leader.username ?? 'de leider'} niet gevolgd: ${blocked}`);
           } else {
-            await this.#open(pair, `Gevolgd: ${reason}`, indicators);
-            this.store.state.positions[pair].followed = true;
+            const opened = await this.#open(pair, `Gevolgd: ${reason}`, indicators);
+            const p = opened !== false && opened !== BUSY ? this.store.state.positions[pair] : null;
+            if (p) {
+              p.followed = true;
+              const id = await this.#journalDecision(pair, { outcome: 'accepted', stage: 'approved', reason: `Gevolgd: ${reason}`, indicators, features: null, tradeRef: `${this.broker.mode}:${pair}:${p.openedAt}` });
+              if (id != null) p.journalId = id;
+            } else if (opened === false) {
+              await this.#journalDecision(pair, { outcome: 'rejected', stage: 'not-filled', reason: `Gevolgd: ${reason}`, indicators, features: null });
+            }
           }
         } else if (type === 'close' && pos?.followed) {
           await this.#close(pair, `Gevolgd: ${reason}`);
@@ -204,6 +217,93 @@ export class Bot {
       this._bandit = new Bandit(dir ? path.join(dir, 'bandit.json') : null);
     }
     return this._bandit;
+  }
+
+  // Leerdagboek (learning.db in de map van de gebruiker), pas geopend bij het eerste gebruik.
+  get journal() {
+    if (this._journal === undefined) {
+      const dir = this.stores.paper?.file ? path.dirname(this.stores.paper.file) : null;
+      this._journal = new Journal(dir ? path.join(dir, 'learning.db') : null, { ...journalOptionsFromEnv(), ...(this.config.journal ?? {}), log: this.log });
+    }
+    return this._journal;
+  }
+
+  set journal(j) {
+    this._journal = j;
+  }
+
+  // Wat het dagboek leerde, standaard voor de huidige modus.
+  learningStats(opts = {}) {
+    try {
+      return this.journal.stats({ mode: this.mode, ...opts });
+    } catch (err) {
+      this.#journalError(err);
+      return { enabled: false, horizons: [], counts: { decisions: 0, accepted: 0, rejected: 0, labeled: 0, pending: 0, trades: 0 },
+        outcomes: { good: 0, bad: 0, correctRejections: 0, missedOpportunities: 0, wrongRejections: 0 }, byAi: [], byPair: [], byRegime: [], byStage: [], recent: [] };
+    }
+  }
+
+  // Het dagboek is een extraatje: een fout daarin (db op slot, schijf vol) mag kopen en verkopen nooit raken.
+  #journalError(err) {
+    if (Date.now() - (this.journalErrAt ?? 0) < 60000) return;
+    this.journalErrAt = Date.now();
+    try { this.log.warn?.(`Leerdagboek: ${err?.message ?? err}`); } catch { /* niets */ }
+  }
+
+  // Eén beslissing in het dagboek. d: { outcome, stage, reason, indicators, features, ai, rule, price, book, volRegime, regime, timeframe, kind, tradeRef }.
+  // Alleen wat er nu bekend is; de koers daarna komt later in de labels. Geeft het id, of null.
+  async #journalDecision(pair, d) {
+    try {
+      const j = this.journal;
+      if (!j?.enabled) return null;
+      const ind = d.indicators ?? null;
+      const g = ind?.agent ?? null;
+      const arm = ind?.mlArm ?? null;
+      const lf = this.lastFeatures[pair];
+      const features = d.features !== undefined ? d.features : lf && Date.now() - lf.at < 30 * 60000 ? lf.features : null;
+      let price = d.price ?? d.book?.mid ?? null;
+      if (!(price > 0)) price = (await fetchPrice(this.ex, pair).catch(() => null)) ?? ind?.close ?? null;
+      return j.record({
+        mode: this.mode, pair, price, outcome: d.outcome, stage: d.stage, reason: d.reason,
+        timeframe: d.timeframe ?? g?.timeframe ?? arm?.timeframe ?? this.timeframe,
+        kind: d.kind ?? (g?.explore ? 'explore' : g ? 'agent' : arm ? 'arm' : 'rules'),
+        features, indicators: pickIndicators(ind, features), book: ind?.book ?? null, ai: d.ai ?? null,
+        rule: d.rule ?? ruleOf(ind, d.signalReason ?? null),
+        recipe: g?.recipe ?? arm?.key ?? null,
+        modelVersion: g?.version ?? (arm ? this.activeArms().find((a) => a.key === arm.key)?.model?.meta?.trainedAt : this.getModel?.()?.meta?.trainedAt) ?? null,
+        expectedPct: g ? (g.adjustedPct ?? g.expectedPct) : (arm?.estimatePct ?? null),
+        regime: d.regime ?? g?.marketRegime ?? ind?.mlRegime ?? null,
+        volRegime: d.volRegime ?? g?.volRegime ?? null,
+        tradeRef: d.tradeRef ?? null,
+      });
+    } catch (err) {
+      this.#journalError(err);
+      return null;
+    }
+  }
+
+  #journalTrade(t) {
+    try {
+      if (this.journal?.enabled) this.journal.recordTrade(t);
+    } catch (err) {
+      this.#journalError(err);
+    }
+  }
+
+  // Labels uitrekenen voor beslissingen waarvan een horizon voorbij is: hooguit elke 5 minuten,
+  // hooguit 50 per keer, met 5m-candles uit de gedeelde marktdata.
+  async #settleJournal() {
+    try {
+      if (Date.now() - (this.journalSettledAt ?? 0) < 5 * 60000) return;
+      this.journalSettledAt = Date.now();
+      const j = this.journal;
+      if (!j?.enabled) return;
+      const r = this.risk;
+      await j.settle((pair, since, limit) => this.ex.fetchOHLCV(pair, '5m', since, limit),
+        { costPct: (r.feePct ?? 0.25) * 2 + (r.slippagePct ?? 0), limit: 50 });
+    } catch (err) {
+      this.#journalError(err);
+    }
   }
 
   // Bevestigde strategieën van de trainer (elke candle-tijd), met hun eigen model.
@@ -687,7 +787,7 @@ export class Bot {
     return this.#exclusive(async () => {
       if (!this.store.state.positions[pair]) throw new Error(`Geen open positie voor ${pair}`);
       try {
-        await this.#close(pair, 'Handmatig gesloten');
+        if ((await this.#close(pair, 'Handmatig gesloten')) === BUSY) throw new Error(`Er loopt al een order voor ${pair}`);
         if (this.pairStatus[pair]) this.pairStatus[pair].inPosition = false;
         this.store.save();
         return this.store.state.trades[0];
@@ -755,6 +855,8 @@ export class Bot {
         if (!errors) this.lastError = null;
         this.store.save();
       });
+      // Leerdagboek: labels uitrekenen (los van de handel, fouten blijven binnen het dagboek).
+      await this.#settleJournal();
       // Bij checks sneller dan elke minuut: rustige checks hooguit één keer per minuut loggen.
       const t = this.tickStats;
       const quiet = !errors && !t.buySignals && !t.opened && !t.closed;
@@ -961,9 +1063,12 @@ export class Bot {
 
     const blocked = checkEntry(this.store, { risk: this.entryRisk() }, this.broker.mode, this.ex, this.liveBalance,
       { pair, openPnlEur: this.openPositionsValue().pnlEur, explore: exploring });
+    // Volatiliteitsregime uit de candles die er al zijn (voor het leerdagboek).
+    const volRegime = result.indicators?.agent?.volRegime ?? volRegimeOf(useOpen ? candles.slice(0, -1) : candles);
     if (blocked) {
       if (this.tickStats) this.tickStats.blocked++;
       this.store.addDecision({ pair, signal: 'buy', outcome: 'blocked', reason: blocked, indicators: result.indicators });
+      await this.#journalDecision(pair, { outcome: 'rejected', stage: 'risicoregels', reason: blocked, indicators: result.indicators, volRegime, signalReason: result.reason });
       this.#event('warn', pair, `Geblokkeerd door risicoregels: ${blocked}`);
       if (result.agentTalk) this.#agentChat(pair, 'buy', 'blocked', [...result.agentTalk, Bot.say('risk', 'Risicoregels', `Niet kopen: ${blocked}.`, 'reject')]);
       if (result.indicators?.agent && !exploring) this.#whyNot('risicoregels');
@@ -973,6 +1078,7 @@ export class Bot {
     // Orderboek-check: niet instappen als het verschil bied/laat of de kosten van je aankoop in
     // het boek te groot zijn. Werkt ook in paper (het orderboek is openbaar).
     let book = null;
+    let bookError = null;
     try {
       this.#step(`${pair}: orderboek bekijken`);
       // Met de inzet die deze trade echt krijgt (de Risk Agent en de verkenner kopen kleiner).
@@ -991,17 +1097,22 @@ export class Bot {
           book = small;
         }
       }
-    } catch {
-      book = null; // geen boek: niet blokkeren
+    } catch (err) {
+      book = null; // geen boek: in paper niet blokkeren
+      bookError = err;
     }
     if (book && result.indicators) {
       result.indicators.book = { spreadPct: +book.spreadPct.toFixed(3), buyCostPct: book.buyCostPct != null ? +book.buyCostPct.toFixed(3) : null,
         buyersShare: book.buyersShare != null ? +book.buyersShare.toFixed(3) : null, depthBidEur: Math.round(book.depthBidEur), depthAskEur: Math.round(book.depthAskEur) };
     }
-    const thin = bookProblem(book, { maxSpreadPct: risk.maxSpreadPct ?? 0, maxBookCostPct: risk.maxBookCostPct ?? 0 });
+    // Live nooit blind kopen: kan het orderboek niet bekeken worden, dan niet kopen. Paper blijft zoals het was.
+    const thin = !book && this.broker.mode === 'live'
+      ? `Orderboek niet beschikbaar: in live koop ik niet blind${bookError ? ` (${bookError.message})` : ''}`
+      : bookProblem(book, { maxSpreadPct: risk.maxSpreadPct ?? 0, maxBookCostPct: risk.maxBookCostPct ?? 0 });
     if (thin) {
       if (this.tickStats) this.tickStats.blocked++;
       this.store.addDecision({ pair, signal: 'buy', outcome: 'blocked', reason: thin, indicators: result.indicators });
+      await this.#journalDecision(pair, { outcome: 'rejected', stage: 'orderboek', reason: thin, indicators: result.indicators, book, volRegime, signalReason: result.reason });
       this.#event('warn', pair, thin);
       if (result.agentTalk) this.#agentChat(pair, 'buy', 'blocked', [...result.agentTalk, Bot.say('risk', 'Orderboek-check', `Niet kopen: ${thin}.`, 'reject')]);
       if (result.indicators?.agent && !exploring) this.#whyNot('orderboek');
@@ -1073,6 +1184,12 @@ export class Bot {
       ...(veto.transcript ? { team: veto.transcript } : {}),
     });
     this.#trimTranscripts();
+    // Voor het leerdagboek: wat de AI zei (niets als de AI-trader zelf besliste), en de kenmerken van nu
+    // (#open ruimt die op).
+    const jAi = skipVeto ? null : { provider: veto.provider ?? null, decision: veto.decision === 'approve' ? 'approve' : 'reject', reason: veto.reason ?? null, error: Boolean(veto.error) };
+    const jBase = { indicators: result.indicators, book, volRegime, ai: jAi, signalReason: result.reason,
+      features: lf && Date.now() - lf.at < 30 * 60000 ? lf.features : null };
+    if (veto.decision !== 'approve') await this.#journalDecision(pair, { ...jBase, outcome: 'rejected', stage: 'ai-veto', reason: veto.reason });
     this.#event(veto.decision === 'approve' ? 'info' : 'warn', pair,
       `AI (${veto.provider}) ${veto.decision === 'approve' ? 'keurt goed' : 'wijst af'}: ${veto.reason}`);
     if (result.indicators?.mlProb != null) {
@@ -1120,6 +1237,7 @@ export class Bot {
       try {
         opened = await this.#open(pair, result.reason, result.indicators);
       } catch (err) {
+        await this.#journalDecision(pair, { ...jBase, outcome: 'rejected', stage: 'error', reason: `Kopen mislukt: ${err.message}` });
         fail(err.message);
         if (chat) {
           chat.outcome = 'notFilled';
@@ -1128,6 +1246,18 @@ export class Bot {
         throw err;
       }
       if (opened === false) fail('limietorder niet gevuld binnen de wachttijd');
+      const bought = opened !== false && opened !== BUSY ? this.store.state.positions[pair] : null;
+      if (bought) {
+        const id = await this.#journalDecision(pair, { ...jBase, outcome: 'accepted', stage: 'approved', reason: veto.reason });
+        if (id != null) {
+          bought.journalId = id;
+          try { this.journal.linkTrade(id, `${this.broker.mode}:${pair}:${bought.openedAt}`); } catch (err) { this.#journalError(err); }
+        }
+      } else {
+        await this.#journalDecision(pair, { ...jBase, outcome: 'rejected', stage: opened === BUSY ? 'error' : 'not-filled',
+          reason: opened === BUSY ? 'Er liep al een order voor deze coin' : 'Limietorder niet gevuld binnen de wachttijd' });
+      }
+      if (opened === BUSY) return;
       if (chat) {
         const pos = opened !== false ? this.store.state.positions[pair] : null;
         const ex = this.store.state.execLog?.[0];
@@ -1278,7 +1408,7 @@ export class Bot {
     if (!ts) return null;
     const btc = pair === 'BTC/EUR' ? candles : await fetchClosedCandles(this.ex, 'BTC/EUR', tf, CANDLES_NEEDED).catch(() => null);
     const f = computeFeatures(candles, { btc, micro: this.getMicro?.(pair) });
-    return f ? { f, ts, close: candles.at(-1)[4] } : null;
+    return f ? { f, ts, close: candles.at(-1)[4], volRegime: volRegimeOf(candles) } : null;
   }
 
   // Market Agent: marktfase van deze coin op 1h-candles (zelfde berekening als de leerserver).
@@ -1342,6 +1472,7 @@ export class Bot {
         if (q != null && q > main.threshold) {
           talk.splice(1, 0, Bot.say('aitrader', 'AI-trader', `Ik zou kopen: ik verwacht ${pc(q)} na kosten (drempel ${pc(main.threshold)}).`));
           this.#agentChat(pair, 'buy', 'blocked', talk);
+          await this.#journalAgent(pair, main, regime, x, q, q, 'pauze', reason);
         }
       }
       return { buy: false, reason };
@@ -1359,6 +1490,15 @@ export class Bot {
       }
     }
     return this.#agentBuy(pair, agent, regime, choice, talk);
+  }
+
+  // Afgewezen kans van de AI-trader in het leerdagboek (toelating, Risk Agent, Strategy-pauze).
+  #journalAgent(pair, agent, regime, x, qModel, q, stage, reason) {
+    return this.#journalDecision(pair, {
+      kind: 'agent', outcome: 'rejected', stage, reason, timeframe: agent.timeframe, features: x?.f ?? null, regime: regime ?? null, volRegime: x?.volRegime ?? null,
+      indicators: { agent: { recipe: agent.recipeKey ?? null, version: agent.meta?.trainedAt ?? null, timeframe: agent.timeframe,
+        expectedPct: Number.isFinite(qModel) ? +qModel.toFixed(3) : null, adjustedPct: Number.isFinite(q) ? +q.toFixed(3) : null, threshold: agent.threshold, marketRegime: regime ?? null } },
+    });
   }
 
   // Waarom koopt de AI-trader (niet)? Per beoordeelde candle één reden, de laatste 24 uur.
@@ -1420,6 +1560,11 @@ export class Bot {
       minHoldCandles: Math.max(1, Number(agent.minHoldCandles) || 1), exitMarginPct: Math.max(0, Number(agent.exitMarginPct) || 0),
       modelKey, recipe: agent.recipeKey ?? null, version: agent.meta?.trainedAt ?? null,
       expectedPct: x.qModel ?? q, marketRegime: regime, exploreWhy: why });
+    const jid = await this.#journalDecision(pair, { kind: 'explore', outcome: 'accepted', stage: 'approved', reason: `Verkenner: ${because}`, price,
+      timeframe: tf, features: x.f, regime: regime ?? null, volRegime: x.volRegime ?? null,
+      indicators: { agent: { explore: true, exploreWhy: why, recipe: agent.recipeKey ?? null, version: agent.meta?.trainedAt ?? null, timeframe: tf,
+        expectedPct: +(x.qModel ?? q).toFixed(3), adjustedPct: +q.toFixed(3), threshold: agent.threshold, marketRegime: regime ?? null } } });
+    if (jid != null) open.at(-1).journalId = jid;
     talk.push(Bot.say('explore', 'Verkenner', `Ik volg ${pair} virtueel om te leren: ${because}${x.adjTxt ?? ''}.${learnTxt} Geen saldo of handelsplek nodig; kosten tellen mee.`, 'approve'));
     this.#agentChat(pair, 'explore', 'virtual', talk);
     return { buy: false, reason: `Virtuele verkenning (${tf}): ${because}` };
@@ -1450,6 +1595,7 @@ export class Bot {
       const price = prices.get(pair);
       if (!(price > 0)) { remaining.push(position); continue; }
       position.highest = Math.max(position.highest, price);
+      position.lowest = Math.min(position.lowest ?? position.entryPrice, price);
       let outcome = explorationOutcome(position, { price });
       if (!outcome && Date.now() >= position.lastTs + 2 * position.tfMs) {
         const key = `${pair}|${timeframe}`;
@@ -1470,6 +1616,11 @@ export class Bot {
       trades.unshift({ pair, openedAt: position.openedAt, closedAt: outcome.closedAt,
         pnlPct: outcome.pct, pnlEur: outcome.pct * LIVE_MIN_STAKE_EUR / 100, agent });
       trades.length = Math.min(trades.length, 1000);
+      this.#journalTrade({ decisionId: position.journalId ?? null, mode: 'paper', pair, openedAt: position.openedAt, closedAt: outcome.closedAt,
+        entryPrice: position.entryPrice, exitPrice: outcome.exitPrice, costEur: LIVE_MIN_STAKE_EUR, pnlPct: outcome.pct, pnlEur: outcome.pct * LIVE_MIN_STAKE_EUR / 100,
+        entrySlipPct: position.slippagePct, exitSlipPct: position.slippagePct,
+        mfePct: (position.highest / position.entryPrice - 1) * 100, maePct: ((position.lowest ?? position.entryPrice) / position.entryPrice - 1) * 100,
+        exitReason: outcome.reason, recipe: position.recipe, regime: position.marketRegime ?? null });
       try {
         this.onFeedback?.({ kind: 'agentTrade', pair, timeframe, recipe: position.recipe, pct: outcome.pct,
           version: position.version, features: position.features, mode: 'paper', entryTs: position.entryTs,
@@ -1507,6 +1658,10 @@ export class Bot {
     this.agentReason ??= {};
     const explore = this.#exploring(agent);
     if (opts.explore) {
+      // Strategy-pauze, maar het recept wilde wel kopen: een echte (afgewezen) kans.
+      if (opts.explore === 'pauze' && q > agent.threshold) {
+        await this.#journalAgent(pair, agent, regime, x, qModel, q, 'pauze', `Strategy Agent: in een ${REGIME_LABEL[regime] ?? regime} handel ik niet, daar deed geen recept het beter dan de markt`);
+      }
       return (await this.#exploreBuy(pair, agent, regime, x, q, talk, opts.explore))
         ?? { buy: false, reason: `Strategy Agent: in een ${REGIME_LABEL[regime] ?? regime} handel ik niet (de verkenner liet deze kans ook liggen)` };
     }
@@ -1539,6 +1694,7 @@ export class Bot {
       this.agentReason[pair] = reason;
       this.think(`Ik zie een kans bij ${pair}: ik verwacht ${nl(q)}% na kosten.${whyTxt} Maar ${why}.`, pair, 'info');
       talk.push(Bot.say('gate', 'Toelating', `Niet kopen: ${why}.`, 'reject'));
+      await this.#journalAgent(pair, agent, regime, x, qModel, q, 'toelating', reason);
       const e = explore ? await this.#exploreBuy(pair, agent, regime, x, q, talk, 'toelating') : null;
       if (e) return e;
       this.#agentChat(pair, 'buy', 'blocked', talk);
@@ -1552,6 +1708,7 @@ export class Bot {
       this.agentReason[pair] = reason;
       this.think(`Ik zie een kans bij ${pair} (${nl(q)}% verwacht), maar de Risk Agent houdt me tegen: ${risk.block}.`, pair, 'warn');
       talk.push(Bot.say('risk', 'Risk Agent', `Niet kopen: ${risk.block}.`, 'reject'));
+      await this.#journalAgent(pair, agent, regime, x, qModel, q, 'risk', reason);
       const e = explore ? await this.#exploreBuy(pair, agent, regime, x, q, talk, 'risico') : null;
       if (e) return e;
       this.#agentChat(pair, 'buy', 'blocked', talk);
@@ -1578,6 +1735,7 @@ export class Bot {
       reason: `AI-trader (${tf}): verwacht ${nl(q)}% na kosten (drempel ${nl(agent.threshold)}%)`,
       plan: { timeframe: tf, recipe: agent.recipeKey ?? null, expectedPct: +(x.qModel ?? q).toFixed(3), adjustedPct: +q.toFixed(3), version: agent.meta?.trainedAt ?? null, safetyStopPct: agent.safetyStopPct,
         maxHoldMinutes: agent.maxHoldCandles * tfMs / 60000, entryClose: x.close, marketRegime: regime, stakeFactor: risk.stakeFactor,
+        threshold: agent.threshold, volRegime: x.volRegime ?? null,
         ...(size && size.stake > er.stakeEur ? { sizeEur: size.stake, sizeFactor: size.factor } : {}) },
     };
   }
@@ -1589,6 +1747,7 @@ export class Bot {
     const agent = agentForRecipe(this.getAgent?.(), a.recipe);
     if (!agent || !this.strategy.agentMode) return false;
     position.highest = Math.max(position.highest ?? position.entryPrice, price);
+    position.lowest = Math.min(position.lowest ?? position.entryPrice, price);
     const tf = a.timeframe;
     const tfMs = (this.ex.parseTimeframe?.(tf) ?? 900) * 1000;
     if (a.lastTs && Date.now() < a.lastTs + 2 * tfMs) return false;
@@ -1838,7 +1997,29 @@ export class Bot {
     return { limit: true, waitSec: r.limitWaitSec > 0 ? r.limitWaitSec : 20 };
   }
 
+  // Geen dubbele orders: loopt er voor deze coin al een order, of staat er al een positie, dan niets doen.
   async #open(pair, reason, indicators = null) {
+    if (this.ordering.has(pair) || this.store.state.positions[pair]) {
+      this.#event('warn', pair, 'Niet gekocht: er loopt al een order of er staat al een positie voor deze coin');
+      return BUSY;
+    }
+    // Harde limieten nog één keer vlak voor de order, wat de AI ook besliste: noodstop/daglimiet en het maximum aantal trades.
+    const hard = this.store.state.halted ? `Handel gepauzeerd: ${this.store.state.halted.reason}`
+      : !indicators?.agent?.explore && Object.values(this.store.state.positions).filter((p) => !p?.explore).length >= this.risk.maxOpenTrades
+        ? `Maximum van ${this.risk.maxOpenTrades} open trades bereikt` : null;
+    if (hard) {
+      this.#event('warn', pair, `Niet gekocht: ${hard}`);
+      return BUSY;
+    }
+    this.ordering.add(pair);
+    try {
+      return await this.#placeBuy(pair, reason, indicators);
+    } finally {
+      this.ordering.delete(pair);
+    }
+  }
+
+  async #placeBuy(pair, reason, indicators) {
     this.#step(`${pair}: kopen`);
     const stakeInfo = this.stakeInfo();
     // Risk Agent: bij weinig bewijs een kleinere inzet.
@@ -1852,6 +2033,8 @@ export class Bot {
       const budget = this.broker.mode === 'live' && r.liveBudgetEur > 0 ? r.liveBudgetEur - inUse : Infinity;
       stake = Math.max(Math.min(stake, stakeInfo.effective), Math.floor(Math.min(stake, free, budget) * 100) / 100);
     }
+    // Harde grens: nooit boven je maximale inzet (of je eigen inzet als die hoger is), wat de AI-trader ook kiest.
+    if (this.risk.maxStakeEur > 0) stake = Math.min(stake, Math.max(stakeInfo.effective, this.risk.maxStakeEur));
     // De verkenner koopt altijd met de kleinste inzet.
     if (indicators?.agent?.explore) stake = Math.min(stake, LIVE_MIN_STAKE_EUR);
     // Live begint de AI-trader met de kleinste inzet, tot hij live 20 trades met gemiddeld winst heeft.
@@ -1885,6 +2068,7 @@ export class Bot {
       entryFeeEur: fill.feeEur,
       reason,
       highest: fill.price,
+      lowest: fill.price,
       atrAtEntry: indicators?.atr ?? null,
       entrySlipPct: slippagePct('buy', expected, fill.price),
     };
@@ -1965,6 +2149,7 @@ export class Bot {
     }
     const changePct = ((price - position.entryPrice) / position.entryPrice) * 100;
     position.highest = Math.max(position.highest ?? position.entryPrice, price);
+    position.lowest = Math.min(position.lowest ?? position.entryPrice, price);
     const fromTop = ((price - position.highest) / position.highest) * 100;
     // ATR-stop vervangt de vaste stop-loss als hij aan staat én bij de aankoop een ATR bekend was.
     const atrStop = risk.atrStopMult > 0 && position.atrAtEntry ? position.entryPrice - risk.atrStopMult * position.atrAtEntry : null;
@@ -1984,7 +2169,7 @@ export class Bot {
     if (!(Number.isFinite(price) && price > 0)) return false; // geen koers: niets beslissen
     const exit = this.#exitReason(position, price, risk) ?? (await this.#aiExit(pair, position, price, risk));
     if (!exit) return false;
-    await this.#close(pair, exit);
+    if ((await this.#close(pair, exit)) === BUSY) return false;
     this.pairStatus[pair] = {
       ...this.pairStatus[pair], at: new Date().toISOString(), price, signal: 'sell',
       reason: exit, inPosition: false, positionChangePct: null, error: null,
@@ -2043,6 +2228,8 @@ export class Bot {
             const price = await fetchPrice(this.ex, pair);
             // Een nieuw hoogste punt (voor de trailing stop) moet bewaard blijven.
             if (price > (position.highest ?? position.entryPrice)) changed = true;
+            // Net zo het laagste punt (voor de MAE in het leerdagboek).
+            if (price < (position.lowest ?? position.entryPrice)) changed = true;
             if (await this.#manageExit(pair, position, price, risk)) {
               closed++;
               changed = true;
@@ -2115,10 +2302,21 @@ export class Bot {
     };
   }
 
+  // Geen tweede verkoop van dezelfde positie: loopt er al een order voor deze coin (of is er geen positie), dan niets doen.
   async #close(pair, reason) {
+    const pos = this.store.state.positions[pair];
+    if (!pos || this.ordering.has(pair)) return BUSY;
+    this.ordering.add(pair);
+    try {
+      return await this.#placeSell(pair, reason, pos);
+    } finally {
+      this.ordering.delete(pair);
+    }
+  }
+
+  async #placeSell(pair, reason, pos) {
     this.#step(`${pair}: verkopen`);
     if (this.tickStats) this.tickStats.closed++;
-    const pos = this.store.state.positions[pair];
     const opts = this.#orderOpts(reason);
     if (opts.limit) this.#step(`${pair}: limietorder verkopen, wacht max. ${opts.waitSec} sec`);
     const expected = await fetchPrice(this.ex, pair).catch(() => null);
@@ -2132,6 +2330,9 @@ export class Bot {
       : null;
     if (this.broker.mode === 'paper') this.store.state.balanceEur += fill.costEur;
     else if (this.liveBalance) this.liveBalance.eurFree += fill.costEur;
+    // Grootste koerswinst en -verlies tijdens de trade (MFE/MAE), in % van de instapkoers.
+    const mfePct = pos.entryPrice > 0 ? +(((pos.highest ?? pos.entryPrice) / pos.entryPrice - 1) * 100).toFixed(3) : null;
+    const maePct = pos.entryPrice > 0 ? +(((pos.lowest ?? pos.entryPrice) / pos.entryPrice - 1) * 100).toFixed(3) : null;
     delete this.store.state.positions[pair];
     this.store.state.lastExit ??= {};
     this.store.state.lastExit[pair] = new Date().toISOString();
@@ -2150,12 +2351,18 @@ export class Bot {
       entryReason: pos.reason,
       exitReason: reason,
       costPct: tradeCost,
+      mfePct,
+      maePct,
       ...(pos.agent ? { agent: { recipe: pos.agent.recipe ?? null, marketRegime: pos.agent.marketRegime ?? null, expectedPct: pos.agent.expectedPct ?? null,
         ...(pos.agent.sizeFactor != null ? { sizeFactor: pos.agent.sizeFactor } : {}),
         ...(pos.agent.explore ? { explore: true, exploreWhy: pos.agent.exploreWhy ?? null } : {}) } } : {}),
     });
     const how = fill.limitFallback ? (fill.limit ? ', limietorder deels gevuld, rest market' : ', limietorder niet gevuld, market') : fill.limit ? ', limietorder' : '';
     this.#event(pnlEur >= 0 ? 'info' : 'warn', pair, `Verkocht @ ${fmtPrice(fill.price)}, resultaat ${fmtSigned(pnlEur)} (${reason}${how})`);
+    this.#journalTrade({ decisionId: pos.journalId ?? null, mode: this.broker.mode, pair, openedAt: pos.openedAt, closedAt: Date.now(),
+      entryPrice: pos.entryPrice, exitPrice: fill.price, costEur: pos.costEur, feesEur: (pos.entryFeeEur ?? 0) + (fill.feeEur ?? 0),
+      entrySlipPct: pos.entrySlipPct ?? null, exitSlipPct: sellSlip ?? null, pnlEur, pnlPct: (pnlEur / pos.costEur) * 100, mfePct, maePct,
+      exitReason: reason, recipe: pos.agent?.recipe ?? pos.plan?.key ?? null, regime: pos.agent?.marketRegime ?? null });
     this.onTrade?.('close', { pair, reason });
     // AI-trader: echte uitkomst terug naar de trainer (leren + bewijs in de praktijk).
     if (pos.agent && !/^Handmatig/.test(reason)) {

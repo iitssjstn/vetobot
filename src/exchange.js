@@ -74,7 +74,8 @@ export class SharedMarket {
   }
 
   fetchOHLCV(pair, tf, since, limit) {
-    return this.#cached(`ohlcv:${pair}:${tf}:${limit}`, 15000, () => this.ex.fetchOHLCV(pair, tf, since, limit));
+    // since hoort in de sleutel: anders krijgt een ander verzoek met dezelfde limit oude candles uit de cache.
+    return this.#cached(`ohlcv:${pair}:${tf}:${since ?? ''}:${limit}`, 15000, () => this.ex.fetchOHLCV(pair, tf, since, limit));
   }
 
   fetchTicker(pair) {
