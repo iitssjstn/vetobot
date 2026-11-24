@@ -170,7 +170,7 @@ def search_info():
 
 def validate_schedule(s, current):
     s = {**current, **(s or {})}
-    if s['mode'] not in ('times', 'interval', 'continuous'):
+    if s['mode'] not in ('times', 'interval', 'continuous', 'off'):
         raise ValueError('Onbekend schema')
     hours = sorted({int(h) for h in s.get('hours') or []})
     if s['mode'] == 'times' and (not hours or any(h < 0 or h > 23 for h in hours) or len(hours) > 24):
@@ -440,6 +440,8 @@ def next_run(now=None, schedule=None, last_finished=None):
     """Wanneer de volgende geplande training is, volgens het schema."""
     now = now or datetime.now()
     s = schedule or config()['schedule']
+    if s['mode'] == 'off':
+        return None  # uit: alleen nog als je zelf op 'Nu trainen' drukt
     last = last_finished if last_finished is not None else state.get('lastFinished')
     if s['mode'] == 'interval':
         if not last:
@@ -458,18 +460,23 @@ def next_run(now=None, schedule=None, last_finished=None):
     return now + timedelta(days=1)
 
 
-SCHEDULE_REASON = {'times': 'geplande training', 'interval': 'training volgens interval', 'continuous': 'doorlopende training'}
+SCHEDULE_REASON = {'off': 'handmatige training', 'times': 'geplande training', 'interval': 'training volgens interval', 'continuous': 'doorlopende training'}
 
 
 def scheduler():
-    if not os.path.exists(path('model.json')):
+    if not os.path.exists(path('model.json')) and next_run():
         run_training('eerste start')
     while True:
         due = next_run()
         wake.clear()
+        if due is None:
+            # Het oude voorspelmodel staat uit (de AI-trader leert zelf): wachten tot het schema verandert.
+            wake.wait(timeout=600)
+            continue
         # Slapen tot het tijd is, maar wakker worden als het schema verandert of een training klaar is.
         wake.wait(timeout=max(5, (due - datetime.now()).total_seconds()))
-        if state['running'] or datetime.now() < next_run():
+        nxt = next_run()
+        if state['running'] or nxt is None or datetime.now() < nxt:
             continue
         run_training(SCHEDULE_REASON.get(config()['schedule']['mode'], 'geplande training'))
 
@@ -1603,7 +1610,7 @@ class Handler(BaseHTTPRequestHandler):
             model = read_json('model.json', None)
             return self.send(200, {
                 'running': state['running'], 'progress': state['progress'] if state['running'] else None,
-                'config': config(), 'nextRunAt': None if state['running'] else next_run().isoformat(timespec='minutes'), 'trainHour': TRAIN_HOUR,
+                'config': config(), 'nextRunAt': None if state['running'] or not next_run() else next_run().isoformat(timespec='minutes'), 'trainHour': TRAIN_HOUR,
                 'cache': state.get('cache', []), 'feedback': feedback_info(), 'search': search_info(),
                 'teamwork': read_json('teamwork.json', {'total': 0}), 'thoughts': state.get('thoughts', [])[-120:],
                 'micro': micro_info(), 'agent': agent_info(),
@@ -1669,7 +1676,7 @@ def main():
     print(' vetobot-trainer', flush=True)
     print(f' Code voor het dashboard (Instellingen -> Eigen model): {t}', flush=True)
     print(f' Code voor helpers (alleen recepten trainen): {helper_token()}', flush=True)
-    print(f' Volgende training (voorspelmodel): {next_run():%Y-%m-%d %H:%M}', flush=True)
+    print(f" Volgende training (voorspelmodel): {next_run():%Y-%m-%d %H:%M}" if next_run() else ' Training van het voorspelmodel staat uit', flush=True)
     hours = agent_hours(config())
     print(f" AI-trader leert: {'doorlopend' if not hours else 'op de uren ' + ', '.join(map(str, hours))}"
           f" · max {resources.TRAIN_JOBS} kernen (TRAIN_JOBS) · voorrang nice {nice}", flush=True)

@@ -622,7 +622,7 @@
         <form class="panel-b" id="tr-sched">
           <div class="fields">
             <div><label for="ts-mode">Schema</label>
-              <select id="ts-mode"><option value="times">Op vaste tijden</option><option value="interval">Elke paar uur</option><option value="continuous">Doorlopend (na elke training opnieuw)</option></select></div>
+              <select id="ts-mode"><option value="times">Op vaste tijden</option><option value="interval">Elke paar uur</option><option value="continuous">Doorlopend (na elke training opnieuw)</option><option value="off">Uit (alleen met de AI-trader handelen)</option></select></div>
             <div data-ts="times"><label for="ts-hours">Uren (bijv. 3, 15)</label><input id="ts-hours" placeholder="3, 15"></div>
             <div data-ts="interval"><label for="ts-every">Elke … uur</label><input id="ts-every" type="number" min="1" max="168" step="any"></div>
             <div data-ts="continuous"><label for="ts-pause">Pauze tussen trainingen (min)</label><input id="ts-pause" type="number" min="15" max="1440" step="1"></div>
@@ -1770,7 +1770,7 @@ function renderModel() {
   if (admin && t && !t.error) {
     const hist = (t.history ?? []).slice(0, 5);
     parts.push(`<div class="sub-h">Trainer</div>
-      <div class="help" style="margin-top:0">${t.running ? '<span class="badge wait">training loopt…</span> Dit duurt een paar minuten.' : `Volgende training: <b>${esc(String(t.nextRunAt ?? '').replace('T', ' '))}</b>.`}
+      <div class="help" style="margin-top:0">${t.running ? '<span class="badge wait">training loopt…</span> Dit duurt een paar minuten.' : t.nextRunAt ? `Volgende training: <b>${esc(String(t.nextRunAt).replace('T', ' '))}</b>.` : 'Training van dit model staat uit (Trainer → Wanneer trainen).'}
         Instellingen: ${esc(t.config?.timeframe ?? '?')}-candles, doel +${nl(t.config?.targetPct)}% / stop −${nl(t.config?.stopPct)}%, ${t.config?.pairs?.length ? `${t.config.pairs.length} coins` : `top ${t.config?.topN} coins op volume`}.</div>
       ${hist.length ? `<ul class="muted" style="margin:6px 0 0;padding-left:18px;font-size:13px">${hist.map((h) => `<li>${esc(String(h.finishedAt ?? h.startedAt ?? '').replace('T', ' '))}: ${h.published ? `<span class="up">nieuw model gepubliceerd</span> (AUC ${nl(h.metrics?.auc, 3)})` : `<span class="warnc">geen nieuw model</span>: ${esc(h.reason ?? '')}`}</li>`).join('')}</ul>` : ''}`);
   } else if (admin && t?.error) {
@@ -1850,7 +1850,7 @@ function renderTrainer() {
     $('tr-now').innerHTML = `<p style="margin:0 0 4px">${ag?.enabled
         ? (ag.busy ? `<b>AI-trader leert:</b> ${esc(ag.progress?.text ?? '')}.` : `<b>AI-trader:</b> leert doorlopend${ag.nextAt ? `, volgende leerronde ${when(ag.nextAt)}` : ''}${ag.published ? ` · in gebruik: ${esc(ag.published.timeframe)}-candles` : ''}.`)
         : t.search?.searching ? `De strategie-zoeker is bezig: ${esc(t.search.progress?.text ?? '')}.` : '<b>AI-trader:</b> staat uit.'}</p>
-      <p style="margin:0 0 4px"><b>Voorspelmodel voor de AI:</b> volgende training ${when(t.nextRunAt)}.</p>
+      <p style="margin:0 0 4px"><b>Voorspelmodel voor de AI:</b> ${t.config?.schedule?.mode === 'off' ? 'traint niet vanzelf (staat uit bij Wanneer trainen); de AI-trader krijgt die tijd' : `volgende training ${when(t.nextRunAt)}`}.</p>
       ${last ? `<p class="muted" style="margin:0;font-size:13.5px">Laatste training van het voorspelmodel ${when(last.finishedAt ?? last.startedAt)}: ${last.published ? '<span class="up">nieuw model gepubliceerd</span>' : `<span class="warnc">geen nieuw model</span> — ${esc(last.reason ?? '')}`}</p>` : ''}
       <div class="row-actions"><button class="btn primary" type="button" id="tr-train">Voorspelmodel nu trainen met mijn instellingen</button><span class="msg" id="tr-msg"></span></div>`;
     $('tr-train').onclick = async () => {
@@ -1890,7 +1890,7 @@ function renderTrainer() {
     $('ts-max').value = t.config.maxSamples ?? 300000;
     trSchedShow();
   }
-  $('tr-next').textContent = t?.running ? 'training loopt' : t?.nextRunAt ? `volgende: ${String(t.nextRunAt).replace('T', ' ')}` : '';
+  $('tr-next').textContent = t?.running ? 'training loopt' : t?.nextRunAt ? `volgende: ${String(t.nextRunAt).replace('T', ' ')}` : sc?.mode === 'off' ? 'staat uit' : '';
 
   renderAgent(t, nl);
   // Strategie-zoeker
@@ -2478,6 +2478,7 @@ function trSchedShow() {
   $('ts-help').innerHTML = `${days} dagen ${esc(tf)}-candles van ${coins} coins = ± ${candles.toLocaleString('nl-NL')} candles. `
     + `De trainer bewaart de koersen: daarna haalt hij alleen nieuwe candles op, en kies je meer dagen dan haalt hij alleen het ontbrekende oudere stuk. `
     + `Hij gebruikt maximaal ${(Number($('ts-max').value) || 300000).toLocaleString('nl-NL')} voorbeelden, gespreid over de hele periode, zodat trainen niet uren duurt.`
+    + (mode === 'off' ? ' <b>Uit:</b> het oude voorspelmodel traint niet meer vanzelf. Dat model gebruikt de bot alleen zonder AI-trader (bij EMA-kruisingen); met de AI-trader aan krijgt die zo meer leertijd op de leerserver, want die pauzeert zolang deze training loopt. Het laatste model blijft bewaard.' : '')
     + (mode === 'continuous' ? ' <span class="warnc">Doorlopend trainen leert vooral opnieuw van dezelfde data; elke paar uur is meestal genoeg.</span>' : '');
 }
 ['ts-mode', 'ts-hours', 'ts-every', 'ts-pause', 'ts-days', 'ts-max'].forEach((id) => {

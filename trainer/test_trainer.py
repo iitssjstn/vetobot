@@ -738,6 +738,18 @@ class LiveAdmission(unittest.TestCase):
         self.assertEqual(sum(w['trades'] for w in wk), 30)
 
 
+class ScheduleOff(unittest.TestCase):
+    def test_off_means_no_automatic_training(self):
+        import server
+        cur = {'mode': 'times', 'hours': [3], 'everyHours': 6, 'pauseMinutes': 30}
+        off = server.validate_schedule({'mode': 'off'}, cur)
+        self.assertEqual(off['mode'], 'off')
+        self.assertIsNone(server.next_run(schedule=off))
+        self.assertIsNotNone(server.next_run(schedule=cur))
+        with self.assertRaises(ValueError):
+            server.validate_schedule({'mode': 'soms'}, cur)
+
+
 class ExtraRecipes(unittest.TestCase):
     def test_best_other_recipes_go_along(self):
         from unittest import mock
