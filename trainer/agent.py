@@ -450,7 +450,8 @@ def profit_factor(rets):
 def trade_metrics(rets):
     """Extra cijfers over de trade-rendementen (% na kosten, per trade):
     - netReturnPct: SAMENGESTELD rendement, alsof elke trade na elkaar het hele vermogen inzet:
-      (product van (1 + r/100) - 1) x 100. Volgorde maakt voor een product niet uit;
+      (product van (1 + r/100) - 1) x 100. Een theoretisch maximum, NIET haalbaar (trades lopen
+      tegelijk en de bot zet een vaste inzet in); het realistische rendement is portfolio.returnPct;
     - profitFactor: som winst / |som verlies| (None als er geen verlies is);
     - sharpe: gemiddelde / standaardafwijking (steekproef) van de trade-rendementen, per trade en
       niet op jaarbasis (None bij minder dan 2 trades of als alle trades even groot zijn);

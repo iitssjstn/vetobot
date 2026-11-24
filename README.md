@@ -335,7 +335,7 @@ Naast de trend (stijgend / zijwaarts / dalend) herkent vetobot nu de **volatilit
 
 ### 3. Modellen beoordelen
 
-Elke leerronde wordt getest op een periode die het model nooit zag (eindtest), plus walk-forward over meerdere periodes, met echte kosten per coin en portefeuille-terugval. Per model: netto (samengesteld) rendement, winrate, **profit factor**, **Sharpe** (per trade), maximale terugval, aantal trades, gemiddelde winst en gemiddeld verlies per trade, en resultaten **per trend én per volatiliteit**. Baseline: de markt tijdens dezelfde trades ("beter dan meedobberen").
+Elke leerronde wordt getest op een periode die het model nooit zag (eindtest), plus walk-forward over meerdere periodes, met echte kosten per coin en portefeuille-terugval. Per model: rendement van een echte portefeuille in de eindtest (zoveel trades tegelijk als de bot, elk een gelijk deel van het vermogen; niet het theoretische samengestelde rendement alsof elke trade het hele vermogen inzet), winrate, **profit factor**, **Sharpe** (per trade), maximale terugval, aantal trades, gemiddelde winst en gemiddeld verlies per trade, en resultaten **per trend én per volatiliteit**. Baseline: de markt tijdens dezelfde trades ("beter dan meedobberen").
 
 ### 4. Modelversies en promotie
 

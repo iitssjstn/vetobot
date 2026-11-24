@@ -2582,11 +2582,13 @@ function renderLearning() {
   $('ln-model-hint').textContent = r.thresholds ? `promotie bij ≥ ${nl(r.thresholds.promoteMinGainPct ?? 5, 0)}% beter, ≥ ${r.thresholds.promoteMinRounds ?? 2} rondes` : '';
   $('ln-models').innerHTML = !regOk
     ? `<p class="muted" style="margin:0">${esc(r.error ? `Modelversies niet op te halen: ${r.error}. Is de leerserver bijgewerkt?` : r.reason ?? 'Geen leerserver gekoppeld.')}</p>`
-    : `<p class="muted" style="margin:0 0 8px;font-size:13.5px">Alleen een model dat in de eindtest (een periode die het nooit zag) aantoonbaar beter is dan het actieve, wordt gebruikt — en dan eerst in paper. Live blijft altijd jouw eigen akkoord per recept (Trainer → Live). Een hoger rendement alleen is niet genoeg: ook terugval en profit factor tellen.</p>
+    : `<p class="muted" style="margin:0 0 8px;font-size:13.5px">Alleen een model dat in de eindtest (een periode die het nooit zag) aantoonbaar beter is dan het actieve, wordt gebruikt — en dan eerst in paper. Live blijft altijd jouw eigen akkoord per recept (Trainer → Live). Een hoger rendement alleen is niet genoeg: ook terugval en profit factor tellen. <b>Rendement eindtest</b> is een echte portefeuille in de eindtest (zoveel trades tegelijk als de bot, elk een gelijk deel van het vermogen), geen optelsom van alle trades.</p>
       <div class="scroll">${table(promoted, [
         ['Versie', (v) => `<b>v${v.version}</b>${v.active ? ' <span class="badge ok">actief</span>' : ''}${r.pinned === v.version ? ' <span class="badge wait">vast</span>' : ''}`],
         ['Recept', (v) => `<span style="display:inline-block;min-width:150px">${esc(v.recipeText ?? v.recipeKey ?? '–')}${v.publishedKey && v.publishedKey !== v.recipeKey ? `<span class="muted" style="display:block;font-size:12px">in gebruik genomen: ${esc(v.publishedKey)}</span>` : ''}${v.restoredVersion ? `<span class="muted" style="display:block;font-size:12px">terug naar v${v.restoredVersion}</span>` : ''}</span>`],
-        ['Rendement', (v) => pc(m(v).netReturnPct), 'r'],
+        ['Rendement eindtest', (v) => { const pf = m(v).portfolio; const days = v.dataset?.testDays;
+          return pf ? `<span title="Echte portefeuille: zoveel trades tegelijk als de bot, elke trade een gelijk deel van het vermogen; ${pf.taken ?? '?'} trades genomen, ${pf.skipped ?? 0} overgeslagen omdat alles bezet was.">${pc(pf.returnPct)}</span>${days ? `<div class="muted" style="font-size:12px">in ${nl(days, 0)} dagen</div>` : ''}`
+            : '<span class="muted" title="Deze versie is vastgelegd voordat het portefeuille-rendement werd bewaard; de volgende leerrondes hebben het wel.">–</span>'; }, 'r'],
         ['Per trade', (v) => pc(m(v).avgPct), 'r'],
         ['Winrate', (v) => m(v).winRate == null ? '–' : `${nl(m(v).winRate, 0)}%`, 'r'],
         ['Profit factor', (v) => nl(m(v).profitFactor), 'r'],

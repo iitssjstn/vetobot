@@ -1200,7 +1200,7 @@ def promote_thresholds(cfg=None):
 
 STATUS_ORDER = {'betrouwbaar': 3, 'veelbelovend': 2, 'oefenen': 1, 'afgevallen': 0, 'te riskant': -1}
 METRIC_FIELDS = ('trades', 'avgPct', 'totalPct', 'winRate', 'maxDrawdownPct', 'worstPct', 'marketPct', 'edgePct', 'beatMarketRate',
-                 'netReturnPct', 'profitFactor', 'sharpe', 'avgWinPct', 'avgLossPct', 'byRegime', 'byVolatility')
+                 'netReturnPct', 'profitFactor', 'sharpe', 'avgWinPct', 'avgLossPct', 'byRegime', 'byVolatility', 'portfolio')
 COMPARE_FIELDS = ('ratio', 'avg', 'edge', 'testAvg', 'testDrawdown', 'testProfitFactor', 'tested')
 
 
@@ -1527,7 +1527,29 @@ def ensure_baseline(by='VPS'):
 
 
 def registry_info():
-    return registry().summary(200, thresholds=promote_thresholds())
+    out = registry().summary(200, thresholds=promote_thresholds())
+    # Versies vastgelegd vóór het portefeuille-rendement bewaard werd: aanvullen uit de laatste ronde van
+    # dat recept, alleen voor het startpunt (dat is precies die ronde).
+    try:
+        recipes = load_agents().get('recipes') or {}
+        for v in out.get('versions') or []:
+            if not str(v.get('reason') or '').startswith('het model dat al in gebruik was'):
+                continue
+            if v.get('metrics') is None:
+                v['metrics'] = {}
+            m = v['metrics'] if isinstance(v['metrics'], dict) else None
+            if m is None or (isinstance(m.get('test'), dict) and m['test'].get('portfolio') is not None):
+                continue
+            last = ((recipes.get(v.get('recipeKey')) or {}).get('rounds') or [{}])[-1] or {}
+            if not last.get('test'):
+                continue
+            if isinstance(m.get('test'), dict):
+                m['test']['portfolio'] = last['test'].get('portfolio')
+            else:
+                m['test'] = _part_metrics(last['test'])
+    except Exception as e:
+        log(f'Modelregister: aanvullen mislukt: {e}')
+    return out
 
 
 def registry_rollback(body):
