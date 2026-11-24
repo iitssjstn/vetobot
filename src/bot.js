@@ -1186,7 +1186,7 @@ export class Bot {
     this.#trimTranscripts();
     // Voor het leerdagboek: wat de AI zei (niets als de AI-trader zelf besliste), en de kenmerken van nu
     // (#open ruimt die op).
-    const jAi = skipVeto ? null : { provider: veto.provider ?? null, decision: veto.decision === 'approve' ? 'approve' : 'reject', reason: veto.reason ?? null, error: Boolean(veto.error) };
+    const jAi = skipVeto || veto.provider === 'none' ? null : { provider: veto.provider ?? null, decision: veto.decision === 'approve' ? 'approve' : 'reject', reason: veto.reason ?? null, error: Boolean(veto.error) };
     const jBase = { indicators: result.indicators, book, volRegime, ai: jAi, signalReason: result.reason,
       features: lf && Date.now() - lf.at < 30 * 60000 ? lf.features : null };
     if (veto.decision !== 'approve') await this.#journalDecision(pair, { ...jBase, outcome: 'rejected', stage: 'ai-veto', reason: veto.reason });
