@@ -1791,6 +1791,12 @@ class Baseline(GateBase):
         self.assertEqual(reg.active(), rec['version'])
         self.assertEqual(reg.read_snapshot(rec['version'])['entry']['tag'], 'oud')
         self.assertIsNone(s.ensure_baseline(), 'maar één keer')
+        # Het realistische portefeuille-rendement gaat mee naar het register (niet alleen het theoretische samengestelde).
+        data = s.load_agents()
+        data['recipes'][A_key(RA)] = {'key': A_key(RA), 'recipe': RA, 'rounds': [{'test': {'trades': 10, 'portfolio': {'returnPct': 4.2, 'taken': 8, 'skipped': 2}}}]}
+        s.write_json('agents.json', data)
+        v = s.registry_info()['versions'][0]
+        self.assertEqual(v['metrics']['test']['portfolio']['returnPct'], 4.2)
         # Geblokkeerd of geen model: niets vastleggen.
         s2 = tempfile.mkdtemp()
         from unittest import mock
