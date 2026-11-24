@@ -125,3 +125,25 @@ test('live: fee in de coin zelf gaat van de gekochte hoeveelheid af', async () =
   assert.equal(f.costEur, 50);
   assert.ok(Math.abs(f.feeEur - 0.1) < 1e-9);
 });
+
+test('live: Bitvavo-verbinding heeft een operatorId (anders weigert ccxt elke order)', async () => {
+  const { createExchange, OPERATOR_ID } = await import('../src/exchange.js');
+  const ex = createExchange({ get: () => '', onChange: () => {} });
+  assert.ok(OPERATOR_ID > 0);
+  assert.equal(ex.handleOptionAndParams({}, 'createOrder', 'operatorId')[0], OPERATOR_ID);
+  assert.equal(ex.handleOptionAndParams({}, 'cancelOrder', 'operatorId')[0], OPERATOR_ID);
+  // Een echte ccxt-orderaanvraag: zonder operatorId gooide dit 'requires an operatorId'.
+  ex.setMarkets([{ id: 'BTC-EUR', symbol: 'BTC/EUR', base: 'BTC', quote: 'EUR', baseId: 'BTC', quoteId: 'EUR', type: 'spot', spot: true, active: true,
+    precision: { amount: 0.00000001, price: 1 }, limits: { amount: {}, price: {}, cost: {} } }]);
+  const req = ex.createOrderRequest('BTC/EUR', 'limit', 'buy', 0.001, 50000, { postOnly: true });
+  assert.equal(req.operatorId, OPERATOR_ID);
+});
+
+test('live: een echte fout bij een limiet-koop wordt niet verstopt als "niet gevuld"', async () => {
+  const ccxt = (await import('ccxt')).default;
+  const ex = fakeLive({ fillLimit: 'full' });
+  ex.createOrder = async () => { throw new ccxt.ArgumentsRequired('bitvavo createOrder() requires an operatorId'); };
+  await assert.rejects(new LiveBroker(ex).buy('X/EUR', 50, { limit: true, waitSec: 0 }), /operatorId/);
+  ex.createOrder = async () => { throw new ccxt.InvalidOrder('post-only order would take liquidity'); };
+  assert.equal(await new LiveBroker(ex).buy('X/EUR', 50, { limit: true, waitSec: 0 }), null, 'geweigerde post-only: niet gevuld');
+});

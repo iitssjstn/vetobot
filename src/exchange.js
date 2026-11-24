@@ -5,8 +5,13 @@ import ccxt from 'ccxt';
 // De keys komen uit de versleutelde SecretStore en worden bijgewerkt zodra je ze
 // in het dashboard wijzigt.
 
+// Bitvavo (en ccxt) eist bij elke order en elke annulering een operatorId: een nummer dat je zelf
+// kiest om te zien welke bot of persoon de order plaatste. Zonder weigert ccxt ÉLKE order, ook
+// verkopen. Te wijzigen met BITVAVO_OPERATOR_ID.
+export const OPERATOR_ID = Number(process.env.BITVAVO_OPERATOR_ID) > 0 ? Math.floor(Number(process.env.BITVAVO_OPERATOR_ID)) : 1;
+
 export function createExchange(secrets) {
-  const ex = new ccxt.bitvavo({ enableRateLimit: true });
+  const ex = new ccxt.bitvavo({ enableRateLimit: true, options: { operatorId: OPERATOR_ID } });
   const apply = () => {
     ex.apiKey = secrets.get('bitvavoApiKey') || undefined;
     ex.secret = secrets.get('bitvavoApiSecret') || undefined;
@@ -300,8 +305,11 @@ export class LiveBroker {
       try {
         // postOnly: wordt nooit direct tegen de laatprijs uitgevoerd, dus altijd maker-fee.
         order = await this.ex.createOrder(pair, 'limit', 'buy', amount, price, { postOnly: true });
-      } catch {
-        return null; // Bijv. geweigerd omdat de koers net omhoog sprong: aankoop gaat niet door.
+      } catch (err) {
+        // Alleen een geweigerde order (bijv. de koers sprong net omhoog) is "niet gevuld"; een echte
+        // fout (keys, saldo, ontbrekende instelling) moet zichtbaar worden, niet stil verdwijnen.
+        if (err instanceof ccxt.InvalidOrder && !(err instanceof ccxt.InsufficientFunds)) return null;
+        throw err;
       }
       const o = await this.#waitFill(order, pair, opts.waitSec ?? 20);
       if (!o.filled) return null;
