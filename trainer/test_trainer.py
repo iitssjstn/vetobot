@@ -1544,3 +1544,472 @@ class CandleCache(unittest.TestCase):
         fake = {p: market(9000, i, momentum=0.6) for i, p in enumerate(CFG['pairs'])}
         _, report = train.train({**CFG, 'maxSamples': 20_000}, log=lambda *_: None, fetch=lambda p, tf, d: fake[p], markets=lambda n: CFG['pairs'])
         self.assertLessEqual(report['trainSamples'] + report['testSamples'], 3 * 4500)
+
+
+# ---------- Uitgebreidere beoordeling, modelregister, poortwachter, terugzetten, opnieuw trainen ----------
+
+class TradeMetrics(unittest.TestCase):
+    def test_profit_factor_sharpe_and_avg_win_loss(self):
+        import agent
+        m = agent.trade_metrics([2.0, -1.0, 3.0, -1.0])
+        self.assertAlmostEqual(m['profitFactor'], 5.0 / 2.0)
+        self.assertAlmostEqual(m['avgWinPct'], 2.5)
+        self.assertAlmostEqual(m['avgLossPct'], -1.0)
+        mean, sd = 0.75, float(np.std([2.0, -1.0, 3.0, -1.0], ddof=1))
+        self.assertAlmostEqual(m['sharpe'], mean / sd, msg='per trade, niet op jaarbasis')
+        self.assertAlmostEqual(m['netReturnPct'], (1.02 * 0.99 * 1.03 * 0.99 - 1) * 100, msg='samengesteld rendement')
+        self.assertEqual((m['grossWinPct'], m['grossLossPct']), (5.0, 2.0))
+        only_wins = agent.trade_metrics([1.0, 2.0])
+        self.assertIsNone(only_wins['profitFactor'], 'geen verlies: geen winstfactor')
+        self.assertIsNone(only_wins['avgLossPct'])
+        self.assertIsNone(agent.trade_metrics([1.0])['sharpe'], 'minder dan 2 trades')
+        self.assertIsNone(agent.trade_metrics([0.5, 0.5, 0.5])['sharpe'], 'standaardafwijking 0')
+        empty = agent.trade_metrics([])
+        self.assertEqual((empty['netReturnPct'], empty['profitFactor'], empty['sharpe'], empty['avgWinPct']), (0.0, None, None, None))
+
+    def test_volatility_rule(self):
+        import agent
+        atr = [1.0] * 600
+        self.assertEqual(agent.vol_regime(agent.vol_ratio(atr + [1.6], 600)), 'hoog')
+        self.assertEqual(agent.vol_regime(agent.vol_ratio(atr + [0.6], 600)), 'laag')
+        self.assertEqual(agent.vol_regime(agent.vol_ratio(atr + [1.5], 600)), 'normaal', 'precies 1,5 is nog normaal')
+        self.assertEqual(agent.vol_regime(agent.vol_ratio(atr + [0.67], 600)), 'normaal')
+        # Alleen de voorgaande 500 candles: wat daarvoor lag, telt niet.
+        atr2 = [100.0] * 100 + [1.0] * 500 + [1.2]
+        self.assertAlmostEqual(agent.vol_ratio(atr2, 600), 1.2)
+        self.assertIsNone(agent.vol_ratio([1.0] * 99 + [2.0], 99), 'minder dan 100 voorgaande waarden: onbekend')
+        self.assertAlmostEqual(agent.vol_ratio([1.0] * 100 + [2.0], 100), 2.0)
+        self.assertIsNone(agent.vol_ratio([float('nan')] * 600 + [1.0], 600))
+        self.assertIsNone(agent.vol_regime(None))
+
+    def test_volatility_regime_does_not_use_future_candles(self):
+        import agent
+        c = market(1400, 11, momentum=0.3)
+        mk = agent.Market('A/EUR', c, None)
+        i = 900
+        ratio, reg = agent.vol_ratio(agent._atr_series(mk), i), agent.entry_vol_regime(mk, i)
+        self.assertIsNotNone(ratio)
+        # De toekomst wild veranderen (enorme candles na het instapmoment) verandert niets aan instapmoment i.
+        wild = [list(x) for x in c]
+        for x in wild[i + 1:]:
+            x[1:5] = [v * 1.2 for v in x[1:5]]
+        for x in wild[1280:1301]:  # en vlak voor candle 1300 een paar heel onrustige candles
+            x[2], x[3] = x[4] * 1.06, x[4] * 0.94
+        mk2 = agent.Market('A/EUR', wild, None)
+        self.assertEqual(agent.vol_ratio(agent._atr_series(mk2), i), ratio)
+        self.assertEqual(agent.entry_vol_regime(mk2, i), reg)
+        # Maar een later instapmoment ziet die drukte wel.
+        self.assertEqual(agent.entry_vol_regime(mk2, 1300), 'hoog')
+
+    def test_backtest_reports_new_metrics(self):
+        import agent
+        c = market(1500, 5, momentum=0.3)
+        mk = agent.Market('A/EUR', c, None)
+        oc = {800: (1.0, (2.0, 5, 'zelf verkocht')), 900: (1.0, (-1.0, 5, 'zelf verkocht')), 1000: (1.0, (3.0, 5, 'zelf verkocht'))}
+        out = agent.backtest([mk], 2, None, None, None, None, 20, 0.0, 10, (0.0,), cache={('A/EUR', 2): (oc, 700, 1400)})[0.0]
+        self.assertEqual(out['trades'], 3)
+        self.assertAlmostEqual(out['profitFactor'], 5.0)
+        self.assertAlmostEqual(out['avgWinPct'], 2.5)
+        self.assertAlmostEqual(out['avgLossPct'], -1.0)
+        self.assertAlmostEqual(out['netReturnPct'], (1.02 * 0.99 * 1.03 - 1) * 100)
+        self.assertIsNotNone(out['sharpe'])
+        self.assertTrue(set(out['byVolatility']) <= {'hoog', 'normaal', 'laag'})
+        self.assertEqual(sum(x['trades'] for x in out['byVolatility'].values()), 3)
+        for x in out['byVolatility'].values():
+            self.assertEqual(set(x), {'trades', 'avgPct', 'winRate', 'profitFactor'})
+        # De oude velden blijven.
+        for k in ('avgPct', 'totalPct', 'winRate', 'maxDrawdownPct', 'portfolio', 'byRegime', 'exits', 'byPair'):
+            self.assertIn(k, out)
+
+    def test_by_regime_has_win_rate_and_profit_factor(self):
+        import agent
+        by = agent._by_regime([{'reg': 'stijgend', 'ret': 2.0, 'mkt': 1.0}, {'reg': 'stijgend', 'ret': -1.0, 'mkt': None},
+                               {'reg': 'dalend', 'ret': 1.0, 'mkt': 0.0}])
+        self.assertEqual(by['stijgend']['trades'], 2)
+        self.assertAlmostEqual(by['stijgend']['winRate'], 50.0)
+        self.assertAlmostEqual(by['stijgend']['profitFactor'], 2.0)
+        self.assertIsNone(by['dalend']['profitFactor'])
+        self.assertAlmostEqual(by['stijgend']['edgePct'], 1.0)
+
+
+class Registry(unittest.TestCase):
+    def setUp(self):
+        import registry
+        self.R = registry
+        self.dir = tempfile.mkdtemp()
+        self.logs = []
+        self.reg = registry.Registry(self.dir, log=self.logs.append)
+
+    def rec(self, decision, key='15m|1|4|200|5'):
+        return {'by': 'VPS', 'recipeKey': key, 'recipeText': 'tekst', 'dataset': {'pairs': ['A/EUR']}, 'features': ['rsi14'],
+                'settings': {'timeframe': '15m'}, 'metrics': {'test': {'profitFactor': float('inf')}}, 'decision': decision,
+                'reason': 'omdat', 'comparedTo': None}
+
+    def test_versions_snapshots_and_summary(self):
+        r1 = self.reg.record(self.rec('promoted'), snapshot={'recipeKey': 'A', 'entry': 1, 'exit': 2})
+        r2 = self.reg.record(self.rec('rejected'))
+        r3 = self.reg.record(self.rec('kept'))
+        self.assertEqual([r1['version'], r2['version'], r3['version']], [1, 2, 3], 'oplopende versies')
+        self.assertEqual(self.reg.active(), 1, 'alleen een gepubliceerde versie wordt de actieve')
+        self.assertTrue(os.path.exists(os.path.join(self.dir, 'agents', 'versions', 'v1.json')))
+        self.assertFalse(self.reg.has_snapshot(2))
+        s = self.reg.summary(thresholds={'x': 1})
+        self.assertEqual([v['version'] for v in s['versions']], [3, 2, 1], 'nieuwste eerst')
+        self.assertEqual((s['active'], s['pinned'], s['sessions'], s['thresholds']), (1, None, 3, {'x': 1}))
+        self.assertEqual(s['lastSession']['version'], 3)
+        v1 = s['versions'][-1]
+        self.assertTrue(v1['active'] and v1['hasSnapshot'])
+        for k in ('version', 'at', 'by', 'recipeKey', 'recipeText', 'dataset', 'features', 'settings', 'metrics', 'decision', 'reason', 'comparedTo'):
+            self.assertIn(k, v1)
+        self.assertIsNone(v1['metrics']['test']['profitFactor'], 'geen oneindig in JSON')
+        json.dumps(s, allow_nan=False)
+        with self.assertRaises(ValueError):
+            self.reg.record(self.rec('misschien'))
+
+    def test_migration_from_old_schema_is_idempotent(self):
+        import sqlite3
+        f = os.path.join(self.dir, 'registry.db')
+        db = sqlite3.connect(f)
+        db.execute('CREATE TABLE schema_version (version INTEGER NOT NULL)')
+        db.execute('INSERT INTO schema_version VALUES (1)')
+        self.R._m1(db)
+        db.execute("INSERT INTO sessions (version, at, by, recipe_key, recipe_text, decision, reason, body) "
+                   "VALUES (1, '2026-01-01T00:00:00', 'VPS', 'k', 't', 'rejected', 'oud', '{}')")
+        db.commit()
+        db.close()
+        self.assertEqual(self.reg.get(1)['reason'], 'oud', 'oude sessies blijven')
+        self.assertEqual(self.reg.record(self.rec('kept'))['version'], 2)
+        db = sqlite3.connect(f)
+        self.assertEqual(self.R.schema_version(db), self.R.SCHEMA_VERSION)
+        self.assertIn('has_snapshot', {r[1] for r in db.execute('PRAGMA table_info(sessions)')})
+        self.assertEqual(self.R.migrate(db), self.R.SCHEMA_VERSION, 'nog een keer migreren doet niets')
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM schema_version').fetchone()[0], 1)
+        db.close()
+
+    def test_corrupt_database_is_set_aside(self):
+        os.makedirs(os.path.join(self.dir, 'agents', 'versions'))
+        with open(os.path.join(self.dir, 'agents', 'versions', 'v5.json'), 'w') as f:
+            f.write('{"entry": 1, "exit": 2}')
+        with open(os.path.join(self.dir, 'registry.db'), 'wb') as f:
+            f.write(b'dit is geen database' * 100)
+        r = self.reg.record(self.rec('promoted'), snapshot={'entry': 1, 'exit': 2, 'recipeKey': 'B'})
+        self.assertEqual(r['version'], 6, 'een bestaande snapshot wordt nooit overschreven')
+        self.assertTrue(any(n.startswith('registry.db.corrupt-') for n in os.listdir(self.dir)))
+        self.assertTrue(any('onleesbaar' in x for x in self.logs))
+        self.assertEqual(self.reg.read_snapshot(5), {'entry': 1, 'exit': 2})
+        self.assertEqual(self.reg.summary()['sessions'], 1)
+
+    def test_prune_rejected_never_promoted(self):
+        from unittest import mock
+        with mock.patch.object(self.R, 'MAX_SESSIONS', 5):
+            self.reg.record(self.rec('promoted'), snapshot={'entry': 1, 'exit': 2})
+            for _ in range(8):
+                self.reg.record(self.rec('rejected'))
+            self.reg.record(self.rec('rollback'))
+        vs = self.reg.versions()
+        self.assertLessEqual(len(vs), 6)
+        self.assertIn(1, [v['version'] for v in vs], 'gepubliceerde versie blijft')
+        self.assertIn('rollback', [v['decision'] for v in vs])
+        self.assertTrue(self.reg.has_snapshot(1))
+        self.assertEqual(self.reg.summary()['sessions'], 10, 'totaal aantal sessies telt alles')
+
+
+RA = {'timeframe': '15m', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
+RB = {'timeframe': '30m', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
+RC = {'timeframe': '1h', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
+RD = {'timeframe': '2h', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
+RE = {'timeframe': '4h', 'holdDays': 1, 'depth': 4, 'leaf': 200, 'look': 5}
+
+
+def RP(edge=0.2, dd=4.0, tdd=None, win=30.0, loss=12.0, trades=60, avg=0.3):
+    """Rapport van een leerronde voor de poortwachter (terugval dd op de validatie, tdd in de eindtest).
+    Score (ratio) = edge x trades / terugval op de validatie; winstfactor = win / loss."""
+    part = lambda d: {'trades': trades, 'avgPct': avg, 'totalPct': avg * trades, 'winRate': 55, 'edgePct': edge, 'maxDrawdownPct': d,
+                      'grossWinPct': win, 'grossLossPct': loss, 'profitFactor': win / loss if loss else None, 'avgHeld': 4}
+    return {'ok': True, 'validation': part(dd), 'test': part(dd if tdd is None else tdd), 'pairs': ['A/EUR'], 'coins': ['A/EUR'],
+            'periods': {'leren': ['a', 'b'], 'validatie': ['b', 'c'], 'eindtest': ['2026-01-01 00:00', '2026-01-10 00:00']},
+            'testDays': 9.0, 'threshold': 0.2, 'maxHold': 96}
+
+
+def fake_agent(recipe, tag):
+    import agent
+    return {'version': 2, 'kind': 'agent', 'timeframe': recipe['timeframe'], 'threshold': 0.2, 'coins': ['A/EUR'], 'costPct': 0.2,
+            'recipe': recipe, 'entry': {'features': agent.FEATURES, 'trees': [], 'tag': tag},
+            'exit': {'features': agent.FEATURES + agent.POS_FEATURES, 'trees': []}, 'meta': {'report': {'test': {'maxDrawdownPct': 4}}}}
+
+
+def A_key(r):
+    import agent_search
+    return agent_search.key_of(r)
+
+
+def datetime_iso(ts):
+    from datetime import datetime
+    return datetime.fromtimestamp(ts).isoformat(timespec='seconds')
+
+
+class GateBase(unittest.TestCase):
+    """Eigen DATA_DIR per test: het register en agent.json van andere tests tellen niet mee."""
+
+    def setUp(self):
+        from unittest import mock
+        os.environ.setdefault('DATA_DIR', tempfile.mkdtemp())
+        import server
+        self.s = server
+        self.dir = tempfile.mkdtemp()
+        self.said, self.logs = [], []
+        self.patches = [mock.patch.object(server, 'DATA', self.dir),
+                        mock.patch.object(server, 'think', lambda t, kind='info': self.said.append(t)),
+                        mock.patch.object(server, 'log', lambda m: self.logs.append(m))]
+        for p in self.patches:
+            p.start()
+        server.write_json('agents.json', {'version': server.AGENTS_VERSION, 'recipes': {}, 'published': None, 'live': {}, 'round': 0})
+        server.write_json('config.json', {'pairs': ['A/EUR'], 'costPct': 0.2, 'agent': {'enabled': True, 'timeframes': ['15m']}})
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+
+    def finish(self, recipe, tag, report):
+        return self.s.finish_round(recipe, fake_agent(recipe, tag) if tag else None, {**report, 'recipe': recipe, 'timeframe': recipe['timeframe']})
+
+    def published(self):
+        a = self.s.read_json('agent.json', None)
+        return a['recipeKey'], a['entry']['tag']
+
+
+class PromotionGate(GateBase):
+    def test_better_promoted_worse_kept_risky_replaced(self):
+        s, k = self.s, A_key
+        self.assertEqual(self.finish(RA, 'a1', RP())[0], 'promoted', 'eerste model')
+        self.assertEqual(self.finish(RA, 'a2', RP())[0], 'promoted', 'hetzelfde recept, niet slechter: bijwerken')
+        self.assertEqual(self.published(), (k(RA), 'a2'))
+        # Iets beter (2,5%), en eerst maar één ronde getest: niet genoeg.
+        self.assertEqual(self.finish(RB, 'b1', RP(edge=0.205))[0], 'rejected')
+        d, why = self.finish(RB, 'b2', RP(edge=0.205))
+        self.assertEqual(d, 'kept')
+        self.assertIn('niet duidelijk hoger', why)
+        # Veel betere score, maar een diepere terugval in de eindtest dan 1,25x die van het actieve model.
+        self.finish(RC, 'c1', RP(edge=0.35, tdd=10))
+        d, why = self.finish(RC, 'c2', RP(edge=0.35, tdd=10))
+        self.assertEqual(d, 'kept')
+        self.assertIn('terugval', why)
+        # Betere score, maar een lagere winstfactor.
+        self.finish(RD, 'd1', RP(edge=0.36, win=20))
+        d, why = self.finish(RD, 'd2', RP(edge=0.36, win=20))
+        self.assertEqual(d, 'kept')
+        self.assertIn('winstfactor', why)
+        self.assertEqual(self.published(), (k(RA), 'a2'), 'het actieve model bleef staan')
+        # Aantoonbaar beter: pas na twee rondes gepubliceerd.
+        self.assertNotEqual(self.finish(RE, 'e1', RP(edge=0.4))[0], 'promoted', 'eerst één ronde: nog geen bewijs')
+        d, why = self.finish(RE, 'e2', RP(edge=0.4))
+        self.assertEqual(d, 'promoted', why)
+        self.assertIn('aantoonbaar beter', why)
+        self.assertEqual(self.published(), (k(RE), 'e2'))
+        self.assertEqual(s.load_agents()['published']['key'], k(RE))
+        # Hetzelfde recept opnieuw, maar slechter: vorige versie blijft, ook het model in agents/.
+        d, why = self.finish(RE, 'e3', RP(edge=0.1))
+        self.assertEqual(d, 'kept', why)
+        self.assertEqual(self.published(), (k(RE), 'e2'))
+        self.assertEqual(s.read_json(s.agent_file(k(RE)), None)['entry']['tag'], 'e2')
+        # Het actieve recept wordt te riskant: het beste bruikbare recept, zonder de eis (veiligheid).
+        d, why = self.finish(RE, 'e4', RP(dd=30))
+        self.assertEqual(d, 'promoted')
+        self.assertIn('veiligheid', why)
+        self.assertEqual(self.published(), (k(RD), 'd2'))
+        # Alles staat in het register, met vergelijking ten opzichte van het actieve model.
+        reg = s.registry().summary()
+        self.assertEqual(reg['sessions'], 12)
+        decisions = [v['decision'] for v in reversed(reg['versions'])]
+        self.assertEqual(decisions.count('promoted'), 4, decisions)
+        last = reg['versions'][0]
+        self.assertEqual(reg['active'], last['version'])
+        self.assertTrue(last['hasSnapshot'] and last['active'])
+        self.assertTrue(os.path.exists(os.path.join(self.dir, 'agents', 'versions', f"v{last['version']}.json")))
+        kept = next(v for v in reversed(reg['versions']) if v['decision'] == 'kept' and 'winstfactor' in v['reason'])
+        self.assertEqual(kept['comparedTo']['recipeKey'], k(RA))
+        self.assertIn('ratio', kept['comparedTo']['deltas'])
+        self.assertEqual(kept['dataset']['testPeriod'], ['2026-01-01 00:00', '2026-01-10 00:00'])
+        self.assertEqual(kept['settings']['timeframe'], '2h')
+        self.assertIn('rsi14', kept['features'])
+        self.assertIn('profitFactor', kept['metrics']['test'])
+        json.dumps(reg, allow_nan=False)
+
+    def test_thresholds_configurable(self):
+        s = self.s
+        cfg = s.validate_config({'agent': {'promoteMinGainPct': 0, 'promoteMinRounds': 1, 'retestHours': 2}})
+        self.assertEqual((cfg['agent']['promoteMinGainPct'], cfg['agent']['promoteMinRounds'], cfg['agent']['retestHours']), (0.0, 1, 2.0))
+        self.assertEqual(cfg['agent']['promoteMaxDdFactor'], 1.25)
+        with self.assertRaises(ValueError):
+            s.validate_config({'agent': {'promoteMaxDdFactor': 0.5}})
+        s.write_json('config.json', {**s.read_json('config.json', {}), 'agent': {**cfg['agent'], 'timeframes': ['15m']}})
+        self.finish(RA, 'a1', RP())
+        d, why = self.finish(RB, 'b1', RP(edge=0.205))
+        self.assertEqual(d, 'promoted', 'met 0% en 1 ronde is een beetje beter genoeg')
+
+    def test_errors_never_break_publishing(self):
+        from unittest import mock
+        s = self.s
+
+        class Broken:
+            def __getattr__(self, name):
+                def boom(*a, **k):
+                    raise RuntimeError('kapot')
+                return boom
+        with mock.patch.object(s, 'registry', return_value=Broken()):
+            d, _ = self.finish(RA, 'a1', RP())
+        self.assertEqual(d, 'promoted', 'register kapot: toch gepubliceerd')
+        self.assertEqual(self.published(), (A_key(RA), 'a1'))
+        self.assertTrue(any('Modelregister' in m and 'mislukt' in m for m in self.logs))
+        with mock.patch.object(s, 'recipe_metrics', side_effect=RuntimeError('rekenfout')):
+            d, why = self.finish(RB, 'b1', RP(edge=0.4))
+        self.assertEqual(d, 'kept', 'beoordelen mislukt: het actieve model blijft')
+        self.assertEqual(self.published(), (A_key(RA), 'a1'))
+
+    def test_write_json_is_atomic(self):
+        from unittest import mock
+        s = self.s
+        s.write_json('agent.json', {'ok': 1})
+        with mock.patch.object(s.json, 'dump', side_effect=RuntimeError('schijf vol')):
+            with self.assertRaises(RuntimeError):
+                s.write_json('agent.json', {'ok': 2})
+        self.assertEqual(s.read_json('agent.json', None), {'ok': 1}, 'het oude bestand blijft heel')
+        self.assertFalse([n for n in os.listdir(self.dir) if '.tmp' in n], 'geen tijdelijke bestanden achtergelaten')
+
+
+class Rollback(GateBase):
+    def setUp(self):
+        super().setUp()
+        self.httpd = ThreadingHTTPServer(('127.0.0.1', 0), self.s.Handler)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.base = f'http://127.0.0.1:{self.httpd.server_address[1]}'
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        super().tearDown()
+
+    def req(self, method, p, body=None):
+        h = {'Content-Type': 'application/json', 'Authorization': f'Bearer {self.s.token()}'}
+        r = urllib.request.Request(self.base + p, method=method, headers=h, data=json.dumps(body).encode() if body is not None else None)
+        try:
+            with urllib.request.urlopen(r) as res:
+                return res.status, json.loads(res.read() or b'{}')
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read() or b'{}')
+
+    def test_rollback_pin_unpin_and_refuse_risky(self):
+        self.finish(RA, 'a1', RP())
+        self.finish(RA, 'a2', RP())
+        self.finish(RB, 'b1', RP(edge=0.4))
+        self.finish(RB, 'b2', RP(edge=0.4))
+        code, reg = self.req('GET', '/registry')
+        self.assertEqual(code, 200)
+        self.assertEqual(set(reg), {'versions', 'active', 'pinned', 'sessions', 'lastSession', 'thresholds'})
+        self.assertEqual([v['version'] for v in reg['versions']], [4, 3, 2, 1])
+        self.assertEqual([v['decision'] for v in reg['versions']], ['promoted', 'rejected', 'promoted', 'promoted'])
+        self.assertEqual([v['hasSnapshot'] for v in reg['versions']], [True, False, True, True])
+        self.assertEqual((reg['active'], reg['pinned'], reg['sessions']), (4, None, 4))
+        self.assertTrue(reg['versions'][0]['active'])
+        self.assertEqual(reg['lastSession']['version'], 4)
+        self.assertEqual(reg['thresholds']['promoteMinGainPct'], 5)
+        self.assertEqual(self.published(), (A_key(RB), 'b2'))
+        self.assertEqual(self.req('GET', '/registry', None)[0], 200)
+        # Zonder snapshot of onbekend: niet terug te zetten.
+        self.assertEqual(self.req('POST', '/registry/rollback', {'version': 3})[0], 400)
+        self.assertEqual(self.req('POST', '/registry/rollback', {'version': 999})[0], 404)
+        self.assertEqual(self.req('POST', '/registry/rollback', {})[0], 400)
+        # Terug naar v1, en vastgezet.
+        code, out = self.req('POST', '/registry/rollback', {'version': 1})
+        self.assertEqual((code, out.get('pinned')), (200, 1), out)
+        self.assertEqual(self.published(), (A_key(RA), 'a1'))
+        self.assertEqual(self.s.load_agents()['published']['key'], A_key(RA))
+        reg = self.req('GET', '/registry')[1]
+        self.assertEqual((reg['active'], reg['pinned']), (1, 1))
+        self.assertEqual(reg['versions'][0]['decision'], 'rollback')
+        self.assertEqual(reg['versions'][0]['restoredVersion'], 1)
+        self.assertTrue(next(v for v in reg['versions'] if v['version'] == 1)['active'])
+        # Vastgezet: nieuwe sessies worden vastgelegd, maar er wordt niets gepubliceerd.
+        self.finish(RC, 'c1', RP(edge=0.5))
+        d, why = self.finish(RC, 'c2', RP(edge=0.5))
+        self.assertEqual((d, why), ('kept', 'vastgezet op v1'))
+        self.assertEqual(self.published(), (A_key(RA), 'a1'))
+        self.assertEqual(self.req('GET', '/registry')[1]['versions'][0]['reason'], 'vastgezet op v1')
+        # Losmaken: de poortwachter kiest weer (C is aantoonbaar beter dan A).
+        code, out = self.req('POST', '/registry/unpin', {})
+        self.assertEqual((code, out['pinned']), (200, None))
+        self.assertEqual(self.finish(RC, 'c3', RP(edge=0.5))[0], 'promoted')
+        self.assertEqual(self.published(), (A_key(RC), 'c3'))
+        # Recept A wordt te riskant: v1 terugzetten wordt geweigerd.
+        self.finish(RA, 'a3', RP(dd=30))
+        code, out = self.req('POST', '/registry/rollback', {'version': 1})
+        self.assertEqual(code, 400)
+        self.assertIn('te riskant', out['error'])
+        self.assertEqual(self.published(), (A_key(RC), 'c3'))
+        self.assertIsNone(self.req('GET', '/registry')[1]['pinned'])
+
+    def test_pinned_recipe_that_becomes_risky_is_released(self):
+        self.finish(RA, 'a1', RP())
+        self.finish(RB, 'b1', RP())
+        self.assertEqual(self.req('POST', '/registry/rollback', {'version': 1})[0], 200)
+        d, why = self.finish(RA, 'a2', RP(dd=30))
+        self.assertEqual(d, 'promoted', why)
+        self.assertEqual(self.published()[0], A_key(RB))
+        self.assertIsNone(self.s.registry().pinned())
+
+
+class RetestRule(GateBase):
+    def test_too_fresh_is_skipped_and_waits_quietly(self):
+        import agent_search as A
+        s = self.s
+        now = time.time()
+        recipes = {}
+        for r in A.all_recipes(['15m']):
+            e = A.add_round(recipes, r, R(True, {'trades': 60, 'avgPct': 0.3, 'totalPct': 18, 'edgePct': 0.2, 'maxDrawdownPct': 4}))
+            e['rounds'][-1]['ts'] = now - 3600
+        rule = s.retest_rule(s.config(), trades=[])
+        self.assertEqual(A.pick(recipes, ['15m'], rnd=random.Random(1), now=now, may_retest=rule), (None, 'te vers'))
+        # Zonder regel (oude gedrag) zou hij gewoon een recept opnieuw doen.
+        self.assertIsNotNone(A.pick(recipes, ['15m'], rnd=random.Random(1), now=now)[0])
+        # Lang genoeg geleden: dat recept mag weer.
+        old = A.all_recipes(['15m'])[5]
+        recipes[A.key_of(old)]['rounds'][-1]['ts'] = now - 7 * 3600
+        rec, why = A.pick(recipes, ['15m'], rnd=random.Random(1), now=now, may_retest=rule)
+        self.assertEqual(A.key_of(rec), A.key_of(old))
+        recipes[A.key_of(old)]['rounds'][-1]['ts'] = now - 3600
+        # Genoeg nieuwe trades van de bot met een recept: ook dan mag het opnieuw.
+        busy = A.all_recipes(['15m'])[9]
+        rows = [{'recipe': A.key_of(busy), 'at': datetime_iso(now - 600), 'pct': 0.1}] * 20
+        rec, _ = A.pick(recipes, ['15m'], rnd=random.Random(1), now=now, may_retest=s.retest_rule(s.config(), trades=rows))
+        self.assertEqual(A.key_of(rec), A.key_of(busy))
+        rec, _ = A.pick(recipes, ['15m'], rnd=random.Random(1), now=now, may_retest=s.retest_rule(s.config(), trades=rows[:19]))
+        self.assertIsNone(rec, '19 trades is te weinig')
+        old_rows = [{'recipe': A.key_of(busy), 'at': datetime_iso(now - 7200), 'pct': 0.1}] * 20
+        rec, _ = A.pick(recipes, ['15m'], rnd=random.Random(1), now=now, may_retest=s.retest_rule(s.config(), trades=old_rows))
+        self.assertIsNone(rec, 'trades van vóór de vorige test tellen niet')
+        # Nieuwe recepten blijven mogelijk.
+        new = A.all_recipes(['15m'])[3]
+        del recipes[A.key_of(new)]
+        rec, why = A.pick(recipes, ['15m'], rnd=random.Random(1), now=now, may_retest=rule)
+        self.assertEqual(A.key_of(rec), A.key_of(new))
+        e = A.add_round(recipes, new, R(True, {'trades': 60, 'avgPct': 0.3, 'totalPct': 18, 'edgePct': 0.2, 'maxDrawdownPct': 4}))
+        e['rounds'][-1]['ts'] = now - 60
+        # Via choose_recipe: niets gekozen, en maar één regel in de log, hoe vaak hij ook kijkt.
+        s.state['agentWaiting'] = None
+        cfg = s.config()
+        data = {'recipes': recipes, 'round': 1}
+        try:
+            for _ in range(3):
+                self.assertEqual(s.choose_recipe(cfg, data, 'VPS'), (None, 'te vers', None))
+            self.assertEqual(sum('ik wacht' in m for m in self.logs), 1, self.logs)
+            s.write_json('agents.json', {'version': s.AGENTS_VERSION, 'recipes': recipes, 'published': None, 'live': {}, 'round': 1})
+            out = s.helper_claim({'name': 'h', 'protocol': s.HELPER_PROTOCOL})
+            self.assertIsNone(out['job'])
+            self.assertIn('nieuwe data', out['reason'])
+        finally:
+            s.state['agentWaiting'] = None
+        # Een candle-tijd die langer is dan de wachttijd: wachten op een hele candle.
+        rule1 = s.retest_rule({'agent': {'retestHours': 1, 'retestTrades': 20}}, trades=[])
+        e4 = {'key': 'x', 'recipe': {'timeframe': '4h'}, 'rounds': [{'ts': now - 3 * 3600}]}
+        self.assertFalse(rule1(e4, now))
+        self.assertTrue(rule1(e4, now + 3600 + 1))

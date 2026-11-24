@@ -7,10 +7,14 @@
     GET  /health      leeft de trainer?
     GET  /model.json  het laatste goedgekeurde model
     GET  /status      instellingen, laatste trainingen en resultaten
+    GET  /registry    modelregister: alle sessies/versies, actieve en vastgezette versie
+    POST /registry/rollback {version}  een eerdere versie terugzetten (en vastzetten)
+    POST /registry/unpin              weer zelf laten kiezen
     POST /config      nieuwe instellingen
     POST /train       nu trainen
 """
 import resources  # als eerste: begrenst de threads van numpy/scikit-learn (TRAIN_JOBS)
+import copy
 import hashlib
 import hmac
 import json
@@ -28,6 +32,7 @@ import agent as agent_mod
 import agent_search
 import livecheck
 import micro as micro_mod
+import registry as registry_mod
 import search as searcher
 import thoughts
 import train as trainer
@@ -35,6 +40,25 @@ import train as trainer
 DATA = os.environ.get('DATA_DIR', '/data')
 PORT = int(os.environ.get('PORT', '8787'))
 TRAIN_HOUR = int(os.environ.get('TRAIN_HOUR', '3'))  # elke nacht om dit uur (tijdzone via TZ)
+
+
+def _env_num(name, default):
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+# Poortwachter bij publiceren en de regel voor opnieuw trainen (instelbaar via /config -> agent,
+# standaardwaarden ook via de omgeving).
+PROMOTE_DEFAULTS = {
+    'promoteMinGainPct': _env_num('PROMOTE_MIN_GAIN_PCT', 5),      # een ander recept: score minstens zoveel % beter
+    'promoteMinRounds': int(_env_num('PROMOTE_MIN_ROUNDS', 2)),     # en minstens zoveel rondes met eindtest
+    'promoteMaxDdFactor': _env_num('PROMOTE_MAX_DD_FACTOR', 1.25),  # eindtest-terugval hooguit zoveel keer die van het actieve
+    'retrainTolerancePct': _env_num('RETRAIN_TOLERANCE_PCT', 5),    # hetzelfde recept opnieuw: zoveel % slechter mag (ruis)
+    'retestHours': _env_num('RETEST_HOURS', 6),                     # hetzelfde recept pas na zoveel uur opnieuw trainen
+    'retestTrades': int(_env_num('RETEST_TRADES', 20)),             # of na zoveel nieuwe trades van de bot met dat recept
+}
 
 DEFAULTS = {'timeframe': '5m', 'days': 60, 'targetPct': 3.0, 'stopPct': 2.0, 'horizon': 36,
             'costPct': 0.5, 'pairs': [], 'topN': 15, 'maxSamples': 300_000, 'halfLifeDays': 45,
@@ -50,7 +74,10 @@ DEFAULTS = {'timeframe': '5m', 'days': 60, 'targetPct': 3.0, 'stopPct': 2.0, 'ho
             'micro': {'enabled': True}, 'useMicro': False,
             # De AI-trader: leert zelf wanneer kopen en verkopen (zie agent.py). Draait doorlopend.
             'agent': {'enabled': True, 'timeframes': [], 'safetyStopPct': 10, 'pauseMinutes': 1, 'coinPool': 'top', 'maxOpen': 2,
-                      'hours': None}}
+                      'hours': None, **PROMOTE_DEFAULTS}}
+# Grenzen voor de poortwachter en de regel voor opnieuw trainen.
+PROMOTE_LIMITS = {'promoteMinGainPct': (0, 100), 'promoteMinRounds': (1, 6), 'promoteMaxDdFactor': (1, 5),
+                  'retrainTolerancePct': (0, 50), 'retestHours': (0, 168), 'retestTrades': (1, 1000)}
 LIMITS = {'days': (7, 365), 'targetPct': (0.2, 50), 'stopPct': (0.2, 50), 'horizon': (3, 2000),
           'costPct': (0, 5), 'topN': (1, 50), 'maxSamples': (20_000, 2_000_000), 'halfLifeDays': (0, 365)}
 
@@ -73,10 +100,22 @@ def read_json(name, default):
 
 
 def write_json(name, data):
-    tmp = path(name + '.tmp')
-    with open(tmp, 'w') as f:
-        json.dump(data, f)
-    os.replace(tmp, path(name))
+    """Atomair opslaan: eerst naar een eigen tijdelijk bestand (per proces en thread, zodat twee
+    schrijvers elkaar niet in de weg zitten), naar schijf, dan in één keer vervangen. Gaat er iets mis,
+    dan blijft het oude bestand heel."""
+    tmp = path(f'{name}.tmp.{os.getpid()}.{threading.get_ident()}')
+    try:
+        with open(tmp, 'w') as f:
+            json.dump(data, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path(name))
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def token():
@@ -220,6 +259,11 @@ def validate_config(body):
                         'maxOpen': max(1, min(20, int(a.get('maxOpen') or 2))),
                         # Leeruren: alleen op deze uren leren (leeg = doorlopend). None = AGENT_HOURS uit de omgeving.
                         'hours': parse_hours(a['hours']) if a.get('hours') not in (None, '') else (None if a.get('hours') is None else [])}
+        for k, (lo, hi) in PROMOTE_LIMITS.items():
+            v = float(a.get(k) if a.get(k) is not None else PROMOTE_DEFAULTS[k])
+            if not lo <= v <= hi:
+                raise ValueError(f'{k} moet tussen {lo} en {hi} liggen')
+            cfg['agent'][k] = int(v) if isinstance(PROMOTE_DEFAULTS[k], int) else v
     if isinstance(body.get('micro'), dict):
         cfg['micro'] = {'enabled': bool(body['micro'].get('enabled', cfg['micro']['enabled']))}
     # Zelf andere strategie-instellingen gekozen: dan is het niet meer de strategie van de zoeker.
@@ -883,18 +927,63 @@ inflight_lock = threading.Lock()
 publish_lock = threading.Lock()
 
 
+def _iso_ts(v):
+    try:
+        return datetime.fromisoformat(str(v).replace('Z', '+00:00')).timestamp()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def retest_rule(cfg, trades=None):
+    """Mag een al getest recept opnieuw getraind worden? Alleen als er genoeg nieuwe data is:
+    minstens retestHours uur (of één candle van het recept, als die langer duurt) sinds de vorige
+    test, of minstens retestTrades nieuwe trades van de bot met dat recept sinds de vorige test.
+    Geeft een functie (entry, now) -> bool voor agent_search.pick."""
+    a = cfg.get('agent') or {}
+    hours = float(a.get('retestHours') if a.get('retestHours') is not None else PROMOTE_DEFAULTS['retestHours'])
+    need = int(a.get('retestTrades') if a.get('retestTrades') is not None else PROMOTE_DEFAULTS['retestTrades'])
+    rows = read_json('agent_trades.json', []) if trades is None else trades
+    times = {}
+    for t in rows:
+        ts = _iso_ts(t.get('at'))
+        if ts is not None and t.get('recipe'):
+            times.setdefault(t['recipe'], []).append(ts)
+
+    def ok(entry, now):
+        last = agent_search.last_test_ts(entry)
+        if not last:
+            return True
+        wait = max(hours * 3600, agent_mod.TF_MIN.get(entry['recipe'].get('timeframe'), 15) * 60)
+        if now - last >= wait:
+            return True
+        return sum(1 for ts in times.get(entry['key'], ()) if ts > last) >= need
+    return ok
+
+
 def choose_recipe(cfg, data, by):
-    """Kies een recept dat nog niemand traint en zet het op naam van `by`. Geeft (recept, reden)."""
+    """Kies een recept dat nog niemand traint en zet het op naam van `by`. Geeft (recept, reden, id).
+    Een al getest recept alleen als er genoeg nieuwe data is (retest_rule); is alles te vers, dan
+    (None, 'te vers', None): even wachten."""
     tfs = cfg['agent']['timeframes'] or agent_mod.DEFAULT_TIMEFRAMES
+    try:
+        rule = retest_rule(cfg)
+    except Exception as e:  # de regel mag het leren nooit stilleggen
+        log(f'AI-trader: regel voor opnieuw trainen mislukt: {e}')
+        rule = None
     with inflight_lock:
         now = time.time()
         for k in [k for k, v in inflight.items() if now - v['at'] > LEASE_S]:
             log(f"AI-trader: {inflight[k]['by']} kwam niet terug met {k}; het recept is weer vrij")
             del inflight[k]
         recipe, why = agent_search.pick(data['recipes'], tfs, rnd=random.Random(data.get('round', 0) + int(now * 1000) % 100000),
-                                        exclude=frozenset(inflight))
+                                        exclude=frozenset(inflight), may_retest=rule)
         if recipe is None:
-            return None, None, None
+            if why == 'te vers':
+                if not state.get('agentWaiting'):
+                    state['agentWaiting'] = datetime.now().isoformat(timespec='seconds')
+                    log('AI-trader: alle recepten zijn kort geleden getest en er is nog te weinig nieuwe data; ik wacht.')
+            return None, why, None
+        state['agentWaiting'] = None
         job_id = secrets.token_hex(8)
         inflight[agent_search.key_of(recipe)] = {'id': job_id, 'by': by, 'at': now}
     return recipe, why, job_id
@@ -937,7 +1026,8 @@ def helper_claim(body):
     data = load_agents()
     recipe, why, job_id = choose_recipe(cfg, data, name)
     if recipe is None:
-        return {'job': None, 'waitSeconds': 60, 'reason': 'Alle recepten worden al getraind.'}
+        return {'job': None, 'waitSeconds': 60 if why != 'te vers' else 300,
+                'reason': 'Er is nog te weinig nieuwe data om recepten opnieuw te trainen.' if why == 'te vers' else 'Alle recepten worden al getraind.'}
     h['busy'] = {'id': job_id, 'recipe': agent_search.key_of(recipe), 'since': datetime.now().isoformat(timespec='seconds')}
     think(f"Helper {name} traint nu: {agent_mod.recipe_text(recipe)}. Waarom: {WHY_RECIPE.get(why, why)}", kind='doing')
     return {'job': {'id': job_id, 'recipe': recipe, 'why': why, 'protocol': HELPER_PROTOCOL, 'agentsVersion': AGENTS_VERSION,
@@ -1082,57 +1172,259 @@ def finish_round(recipe, agent, report, by='VPS'):
     """Uitkomst van een ronde verwerken (van de VPS zelf of van een helper): bewaren, beoordelen en
     de beste manier van traden kiezen voor de bot."""
     with publish_lock:
-        _finish_round(recipe, agent, report, by)
+        return _finish_round(recipe, agent, report, by)
+
+
+def agent_file(key):
+    return os.path.join('agents', key.replace('|', '_') + '.json')
+
+
+# ---------- Modelversiebeheer (zie registry.py) ----------
+_registries = {}
+
+
+def registry():
+    """Het modelregister in DATA_DIR (één per map, ook als DATA_DIR in tests wisselt)."""
+    r = _registries.get(DATA)
+    if r is None:
+        r = _registries[DATA] = registry_mod.Registry(DATA, log=log)
+    return r
+
+
+def promote_thresholds(cfg=None):
+    a = (cfg or config()).get('agent') or {}
+    out = {k: a.get(k) if a.get(k) is not None else d for k, d in PROMOTE_DEFAULTS.items()}
+    out['dangerDrawdownPct'] = agent_search.DANGER_DRAWDOWN
+    return out
+
+
+STATUS_ORDER = {'betrouwbaar': 3, 'veelbelovend': 2, 'oefenen': 1, 'afgevallen': 0, 'te riskant': -1}
+METRIC_FIELDS = ('trades', 'avgPct', 'totalPct', 'winRate', 'maxDrawdownPct', 'worstPct', 'marketPct', 'edgePct', 'beatMarketRate',
+                 'netReturnPct', 'profitFactor', 'sharpe', 'avgWinPct', 'avgLossPct', 'byRegime', 'byVolatility')
+COMPARE_FIELDS = ('ratio', 'avg', 'edge', 'testAvg', 'testDrawdown', 'testProfitFactor', 'tested')
+
+
+def recipe_metrics(entry):
+    """De cijfers van een recept over al zijn rondes, waarop de poortwachter vergelijkt: de bestaande
+    score (ratio winst/terugval op de validatie), de eindtest-terugval en de winstfactor in de eindtests."""
+    if not entry:
+        return None
+    sc = agent_search.score(entry)
+    st = agent_search.status(entry)
+    pf, known = agent_search.test_profit_factor(entry)
+    return {'status': st, 'order': STATUS_ORDER.get(st, 0), 'ratio': sc['ratio'], 'avg': sc['avg'], 'edge': sc['edge'],
+            'tested': sc['tested'], 'testAvg': sc['test']['avg'], 'testDrawdown': sc['test']['drawdown'],
+            'testProfitFactor': pf, 'pfKnown': known}
+
+
+def _num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def metric_deltas(new, old):
+    """Verschil (nieuw - actief) per cijfer, alleen waar beide bekend zijn."""
+    if not new or not old:
+        return {}
+    return {k: new[k] - old[k] for k in COMPARE_FIELDS if _num(new.get(k)) and _num(old.get(k))}
+
+
+def _f(v, d=2):
+    if v is None:
+        return '–'
+    if isinstance(v, float) and math.isinf(v):
+        return '∞'
+    return f'{v:.{d}f}'.replace('.', ',')
+
+
+def promotion_gate(new, old, th, same=False):
+    """Is `new` aantoonbaar beter dan het actieve model `old` (beide recipe_metrics)? Geeft (ok, reden).
+    Ander recept: minstens promoteMinRounds geteste rondes, score duidelijk hoger (hogere status, of
+    bij gelijke status een ratio minstens promoteMinGainPct % hoger), eindtest-terugval hooguit
+    promoteMaxDdFactor x die van het actieve model, en een winstfactor die niet lager is.
+    Hetzelfde recept opnieuw getraind (same): niet slechter dan ervoor, met retrainTolerancePct % speling."""
+    if old is None:
+        return True, 'er was nog geen actief model om mee te vergelijken'
+    if new is None:
+        return False, 'geen cijfers voor het nieuwe model'
+    factor = float(th['promoteMaxDdFactor'])
+    if same:
+        tol = float(th['retrainTolerancePct']) / 100
+        if new['order'] < old['order']:
+            return False, f"de status zakte van {old['status']} naar {new['status']}"
+        a, b = new['ratio'], old['ratio']
+        if b is not None and (a is None or a < b - abs(b) * tol):
+            return False, f'de score zakte van {_f(b)} naar {_f(a)}'
+    else:
+        need = int(th['promoteMinRounds'])
+        if (new['tested'] or 0) < need:
+            return False, f"nog maar {new['tested'] or 0} geteste ronde{'' if new['tested'] == 1 else 's'}, minstens {need} nodig"
+        gain = float(th['promoteMinGainPct']) / 100
+        if new['order'] < old['order']:
+            return False, f"status {new['status']} is lager dan {old['status']} van het actieve model"
+        if new['order'] == old['order']:
+            a, b = new['ratio'], old['ratio']
+            if a is None or (b is not None and (a <= b or a < b + abs(b) * gain)):
+                return False, f"score {_f(a)} is niet duidelijk hoger dan {_f(b)} (minstens {float(th['promoteMinGainPct']):g}% beter nodig)"
+    a, b = new['testDrawdown'], old['testDrawdown']
+    if b is not None and (a is None or a > factor * max(b, agent_search.MIN_DD)):
+        return False, f'eindtest-terugval {_f(a, 1)}% is meer dan {factor:g}× die van het actieve model ({_f(b, 1)}%)'
+    a, b = new['testProfitFactor'], old['testProfitFactor']
+    if b is not None:
+        lim = b * (1 - float(th['retrainTolerancePct']) / 100) if same else b
+        if a is None or a < lim:
+            return False, f'winstfactor {_f(a)} is lager dan {_f(b)} van het actieve model'
+    return True, ('niet slechter dan de vorige training van dit recept' if same else
+                  f"aantoonbaar beter: score {_f(new['ratio'])} tegen {_f(old['ratio'])}, terugval {_f(new['testDrawdown'], 1)}% "
+                  f"tegen {_f(old['testDrawdown'], 1)}%, winstfactor {_f(new['testProfitFactor'])} tegen {_f(old['testProfitFactor'])}")
+
+
+def publish_agent(main, board, data, prev, report):
+    """Het model van recept `main` publiceren als agent.json (voor paper; live zet alleen de eigenaar
+    aan). Met het plan per marktfase en de extra recepten. Geeft de gepubliceerde agent, of None."""
+    st = agent_search.status(main)
+    a = read_json(agent_file(main['key']), None)
+    if not isinstance(a, dict) or not a.get('entry') or not a.get('exit'):
+        log(f"AI-trader: model van {main['key']} niet leesbaar; agent.json blijft zoals hij was")
+        return None
+    lv = data['live'].get(main['key']) or {}
+    a['liveCheck'] = live_check(main['key'], main, a.get('costPct'))
+    a['stage'] = agent_stage(main, a['liveCheck'])
+    a['recipeKey'] = main['key']
+    a['recipeStatus'] = st
+    a['live'] = lv
+    a['regimes'] = regime_plan(board, main, data)
+    a['extras'] = extra_recipes(board, main, a['regimes'], data)
+    write_json('agent.json', a)
+    plan_now = {reg: p['key'] for reg, p in a['regimes'].items()}
+    plan_before = (prev or {}).get('regimes')
+    data['published'] = {'key': main['key'], 'timeframe': a['timeframe'], 'stage': a['stage'], 'status': st, 'at': report['at'],
+                         'regimes': plan_now}
+    if plan_now != plan_before:
+        think(regime_plan_text(a['regimes'], data['recipes']), kind='insight')
+    if not prev or prev.get('key') != main['key'] or prev.get('stage') != a['stage']:
+        sc = agent_search.score(main)
+        coins = a.get('coins') or []
+        think(f"Mijn beste manier van traden is nu: {agent_mod.recipe_text(main['recipe'])} ({st}; gemiddeld "
+              f"{thoughts.pct(sc['avg'])} per trade op de validatie, eindtest {thoughts.pct(sc['test']['avg'])} over {sc['test']['trades']} trades in {sc['tested']} ronde{'' if sc['tested'] == 1 else 's'}). "
+              f"Ik handel {len(coins)} coin{'' if len(coins) == 1 else 's'}: {', '.join(coins[:8])}{' …' if len(coins) > 8 else ''}. " +
+              {'getest': 'De bot gebruikt hem in paper; live pas als ik alle eisen voor live haal en jij het daarna aanzet.',
+               'bewezen': 'Ik haal alle eisen voor live. Live handel ik pas als jij dat op de pagina Trainer aanzet.',
+               'oefenen': 'Hij maakt in de test nog niet genoeg winst, dus de bot oefent er alleen mee in paper (als je dat toestaat).'}[a['stage']],
+              kind='result' if a['stage'] != 'oefenen' else 'insight')
+    return a
+
+
+def _safe(fn, what, default=None):
+    """Registerwerk mag een leerronde of het publiceren nooit laten mislukken."""
+    try:
+        return fn()
+    except Exception as e:
+        log(f'Modelregister: {what} mislukt: {e}')
+        return default
 
 
 def _finish_round(recipe, agent, report, by):
+    """Uitkomst verwerken en beslissen wat de bot krijgt. Publiceren gebeurt alleen bij een aantoonbare
+    verbetering (promotion_gate), of uit veiligheid als het actieve recept te riskant werd of verdween.
+    Anders blijft agent.json precies zoals hij was. Elke sessie komt in het modelregister.
+    Geeft (beslissing, reden)."""
     data = load_agents()
     data['round'] = data.get('round', 0) + 1
     key = agent_search.key_of(recipe)
     report['at'] = datetime.now().isoformat(timespec='seconds')
+    before = copy.deepcopy(data['recipes'].get(key))
     entry = agent_search.add_round(data['recipes'], recipe, report)
     os.makedirs(path('agents'), exist_ok=True)
+    old_file = read_json(agent_file(key), None) if agent else None
     if agent:
-        write_json(os.path.join('agents', key.replace('|', '_') + '.json'), agent)
+        write_json(agent_file(key), agent)
     try:
         think((f'Helper {by}: ' if by != 'VPS' else '') + agent_mod_say(report, entry), kind='result' if report.get('ok') else 'warn')
     except Exception as e:  # een bericht mag een leerronde nooit laten mislukken
         log(f'AI-trader: bericht over de ronde mislukt: {e}')
-    # De beste manier van traden kiezen: hoogste status, dan gemiddelde over de rondes.
+    cfg = config()
+    th = promote_thresholds(cfg)
+    reg = registry()
     # Te riskante recepten (terugval > 25%) nooit gebruiken, ook niet om in paper te oefenen.
     board = [e for e in agent_search.leaderboard(data['recipes'], 50) if agent_search.usable(e)
-             and os.path.exists(path(os.path.join('agents', e['key'].replace('|', '_') + '.json')))]
+             and os.path.exists(path(agent_file(e['key'])))]
     prev = data.get('published')
-    if board:
-        best = board[0]
-        st = agent_search.status(best)
-        a = read_json(os.path.join('agents', best['key'].replace('|', '_') + '.json'), None)
-        lv = data['live'].get(best['key']) or {}
-        a['liveCheck'] = live_check(best['key'], best, a.get('costPct'))
-        a['stage'] = agent_stage(best, a['liveCheck'])
-        a['recipeKey'] = best['key']
-        a['recipeStatus'] = st
-        a['live'] = lv
-        a['regimes'] = regime_plan(board, best, data)
-        a['extras'] = extra_recipes(board, best, a['regimes'], data)
-        write_json('agent.json', a)
-        plan_now = {reg: p['key'] for reg, p in a['regimes'].items()}
-        plan_before = (prev or {}).get('regimes')
-        data['published'] = {'key': best['key'], 'timeframe': a['timeframe'], 'stage': a['stage'], 'status': st, 'at': report['at'],
-                             'regimes': plan_now}
-        if plan_now != plan_before:
-            think(regime_plan_text(a['regimes'], data['recipes']), kind='insight')
-        if not prev or prev.get('key') != best['key'] or prev.get('stage') != a['stage']:
-            sc = agent_search.score(best)
-            coins = a.get('coins') or []
-            think(f"Mijn beste manier van traden is nu: {agent_mod.recipe_text(best['recipe'])} ({st}; gemiddeld "
-                  f"{thoughts.pct(sc['avg'])} per trade op de validatie, eindtest {thoughts.pct(sc['test']['avg'])} over {sc['test']['trades']} trades in {sc['tested']} ronde{'' if sc['tested'] == 1 else 's'}). "
-                  f"Ik handel {len(coins)} coin{'' if len(coins) == 1 else 's'}: {', '.join(coins[:8])}{' …' if len(coins) > 8 else ''}. " +
-                  {'getest': 'De bot gebruikt hem in paper; live pas als ik alle eisen voor live haal en jij het daarna aanzet.',
-                   'bewezen': 'Ik haal alle eisen voor live. Live handel ik pas als jij dat op de pagina Trainer aanzet.',
-                   'oefenen': 'Hij maakt in de test nog niet genoeg winst, dus de bot oefent er alleen mee in paper (als je dat toestaat).'}[a['stage']],
-                  kind='result' if a['stage'] != 'oefenen' else 'insight')
-    elif prev and prev.get('stage') != 'geblokkeerd':
+    active_key = (prev or {}).get('key') if prev and prev.get('stage') != 'geblokkeerd' else None
+    active_entry = data['recipes'].get(active_key) if active_key else None
+    active_ok = bool(active_entry and agent_search.usable(active_entry) and os.path.exists(path(agent_file(active_key))))
+    active_version = _safe(reg.active, 'actieve versie lezen')
+    pinned = _safe(reg.pinned, 'vastgezette versie lezen')
+    if pinned is not None:
+        snap = _safe(lambda: reg.read_snapshot(pinned), 'snapshot lezen') or {}
+        pin_key = snap.get('recipeKey') or (_safe(lambda: reg.get(pinned), 'vastgezette versie lezen') or {}).get('recipeKey')
+        pin_entry = data['recipes'].get(pin_key) if pin_key else None
+        if pin_entry and not agent_search.usable(pin_entry):
+            # Veiligheid gaat voor: een vastgezet recept dat te riskant werd, wordt losgelaten.
+            _safe(lambda: reg.set_pinned(None), 'losmaken')
+            log(f'Modelregister: v{pinned} losgemaakt, het recept is te riskant geworden')
+            think(f'Je had versie v{pinned} vastgezet, maar dat recept zakte meer dan {agent_search.DANGER_DRAWDOWN}% terug. '
+                  'Dat is te riskant: ik maak hem los en kies weer zelf het beste veilige model.', kind='warn')
+            pinned = None
+    mine = _safe(lambda: recipe_metrics(entry), 'cijfers berekenen')
+    act_m = _safe(lambda: recipe_metrics(before if key == active_key else active_entry), 'cijfers berekenen')
+    decision, reason, main, published_key = 'rejected', '', None, None
+    try:
+        if pinned is not None:
+            decision, reason = 'kept', f'vastgezet op v{pinned}'
+        elif not board:
+            decision, reason = 'rejected', 'geen bruikbaar recept (alles te riskant of zonder model)'
+        else:
+            best = board[0]
+            same_retrained = bool(active_ok and key == active_key and agent is not None)
+            same_ok, same_why = True, ''
+            if same_retrained:
+                same_ok, same_why = promotion_gate(recipe_metrics(entry), recipe_metrics(before), th, same=True)
+                if not same_ok and old_file:
+                    # Het vorige model van dit recept blijft (ook in agents/, zodat alles bij elkaar past).
+                    write_json(agent_file(key), old_file)
+            if not active_ok:
+                main, decision = best, 'promoted'
+                reason = ('eerste model van de AI-trader' if not prev else
+                          'het actieve recept is te riskant geworden of verdwenen; veiligheid: het beste bruikbare recept')
+            elif best['key'] == active_key:
+                if same_retrained and same_ok:
+                    main, decision, reason = best, 'promoted', f'hetzelfde recept opnieuw getraind en {same_why}'
+                elif same_retrained:
+                    decision, reason = 'kept', f'hetzelfde recept opnieuw getraind, maar {same_why}; de vorige versie blijft'
+                elif key == active_key:
+                    decision, reason = 'kept', 'deze ronde leverde geen nieuw model; het actieve model blijft'
+                else:
+                    decision, reason = 'rejected', 'niet beter dan het actieve recept; het actieve model blijft'
+            else:
+                ok, why = promotion_gate(recipe_metrics(best), recipe_metrics(active_entry), th)
+                if ok:
+                    main, decision, reason = best, 'promoted', f'{agent_mod.recipe_text(best["recipe"])}: {why}'
+                elif same_retrained and same_ok:
+                    main, decision = active_entry, 'promoted'
+                    reason = (f'hetzelfde recept opnieuw getraind en {same_why}; '
+                              f'{agent_mod.recipe_text(best["recipe"])} is nog niet aantoonbaar beter ({why})')
+                else:
+                    decision = 'kept'
+                    reason = f'kandidaat {agent_mod.recipe_text(best["recipe"])} is niet aantoonbaar beter: {why}; het actieve model blijft'
+                    if same_retrained:
+                        reason += f' (nieuwe training van het actieve recept: {same_why})'
+    except Exception as e:
+        # Beoordelen mislukt: veilig blijven. Is er een actief model, dan blijft dat; anders het beste.
+        log(f'AI-trader: beoordelen voor publiceren mislukt: {e}')
+        traceback.print_exc()
+        main = None
+        if board and not active_ok and pinned is None:
+            main, decision, reason = board[0], 'promoted', f'beoordelen mislukt ({e}); geen actief model, dus het beste bruikbare recept'
+        else:
+            decision, reason = 'kept', f'beoordelen mislukt ({e}); het actieve model blijft'
+    snapshot = None
+    if main is not None:
+        snapshot = publish_agent(main, board, data, prev, report)
+        if snapshot is None:
+            decision, reason = 'kept', 'het model kon niet gelezen worden; het actieve model blijft'
+        else:
+            published_key = main['key']
+    elif not board and prev and prev.get('stage') != 'geblokkeerd':
         # Geen bruikbaar recept meer, en het recept waar de bot mee handelde is te riskant geworden:
         # de bot mag er niet meer mee handelen.
         old = data['recipes'].get(prev.get('key'))
@@ -1142,9 +1434,105 @@ def _finish_round(recipe, agent, report, by):
             a['recipeStatus'] = 'te riskant'
             write_json('agent.json', a)
             data['published'] = {**prev, 'stage': 'geblokkeerd', 'status': 'te riskant', 'at': report['at']}
+            reason += '; het actieve recept is te riskant: de bot handelt er niet meer mee'
+            _safe(lambda: reg.set_pinned(None), 'losmaken')
             think(f"Mijn recept {agent_mod.recipe_text(old['recipe'])} zakte in een test meer dan {agent_search.DANGER_DRAWDOWN}% terug. "
                   'Dat is te riskant: de bot handelt er niet meer mee, ook niet in paper, tot ik een veiliger recept vind.', kind='warn')
     write_json('agents.json', data)
+    if decision == 'kept' and pinned is None and main is None and key != active_key and reason.startswith('kandidaat'):
+        think(f'Ik houd mijn huidige model: {reason}.', kind='insight')
+    rec = _safe(lambda: session_record(recipe, agent, report, by, cfg, entry, mine, act_m, active_version, active_key,
+                                       decision, reason, published_key), 'sessie samenstellen')
+    if rec is not None:
+        saved = _safe(lambda: reg.record(rec, snapshot=snapshot), 'sessie opslaan')
+        if saved:
+            log(f"Modelregister: v{saved['version']} {decision} ({reason})")
+    state['lastDecision'] = {'decision': decision, 'reason': reason, 'at': report['at']}
+    return decision, reason
+
+
+def _part_metrics(part):
+    return {k: part.get(k) for k in METRIC_FIELDS} if isinstance(part, dict) else None
+
+
+def session_record(recipe, agent, report, by, cfg, entry, mine, act_m, active_version, active_key, decision, reason, published_key):
+    """Een leerronde als record voor het modelregister."""
+    rec = {**agent_mod.RECIPE_DEFAULT, **recipe}
+    per = report.get('periods') or {}
+    feats = list(((agent or {}).get('entry') or {}).get('features') or agent_mod.FEATURES)
+    exit_feats = ((agent or {}).get('exit') or {}).get('features') or agent_mod.FEATURES + agent_mod.POS_FEATURES
+    return {
+        'at': report.get('at'), 'by': by, 'recipeKey': agent_search.key_of(recipe), 'recipeText': agent_mod.recipe_text(rec),
+        'dataset': {'pairs': report.get('pairs'), 'coins': report.get('coins'), 'days': int(cfg.get('days') or 0),
+                    'periods': per or None, 'testPeriod': per.get('eindtest'), 'testDays': report.get('testDays')},
+        'features': feats + [f for f in exit_feats if f not in feats],
+        'settings': {**rec, 'threshold': report.get('threshold'), 'maxHoldCandles': report.get('maxHold')},
+        'metrics': {'ok': bool(report.get('ok')), 'reason': report.get('reason'), 'status': agent_search.status(entry) if entry else None,
+                    'test': _part_metrics(report.get('test')), 'validation': _part_metrics(report.get('validation')),
+                    'score': {k: v for k, v in (mine or {}).items() if k != 'order'}},
+        'decision': decision, 'reason': reason, 'publishedKey': published_key,
+        'comparedTo': ({'version': active_version, 'recipeKey': active_key,
+                        'metrics': {k: v for k, v in act_m.items() if k != 'order'},
+                        'deltas': metric_deltas(mine, act_m)} if active_key and act_m else None),
+    }
+
+
+def registry_info():
+    return registry().summary(200, thresholds=promote_thresholds())
+
+
+def registry_rollback(body):
+    """Een eerdere gepubliceerde versie terugzetten en vastzetten. Geeft (status, antwoord)."""
+    try:
+        v = int(body.get('version'))
+    except (TypeError, ValueError, AttributeError):
+        return 400, {'error': 'Geef een versienummer'}
+    reg = registry()
+    with publish_lock:
+        rec = reg.get(v)
+        if not rec:
+            return 404, {'error': f'Versie v{v} bestaat niet'}
+        snap = reg.read_snapshot(v)
+        if not isinstance(snap, dict) or not snap.get('entry') or not snap.get('exit'):
+            return 400, {'error': f'Van v{v} is geen snapshot bewaard (alleen gepubliceerde versies kun je terugzetten)'}
+        key = snap.get('recipeKey') or rec.get('recipeKey')
+        data = load_agents()
+        entry = data['recipes'].get(key)
+        rep = (snap.get('meta') or {}).get('report') or {}
+        dds = [x for x in ((rep.get('test') or {}).get('maxDrawdownPct'), (rep.get('validation') or {}).get('maxDrawdownPct')) if _num(x)]
+        if (entry and not agent_search.usable(entry)) or snap.get('stage') == 'geblokkeerd' or snap.get('recipeStatus') == 'te riskant' \
+                or any(x > agent_search.DANGER_DRAWDOWN for x in dds):
+            return 400, {'error': f'v{v} is te riskant (terugval van meer dan {agent_search.DANGER_DRAWDOWN}%); die zet ik niet terug'}
+        write_json('agent.json', snap)
+        if entry:
+            write_json(agent_file(key), snap)  # het model van dit recept weer gelijk aan wat de bot heeft
+        now = datetime.now().isoformat(timespec='seconds')
+        data['published'] = {'key': key, 'timeframe': snap.get('timeframe'), 'stage': snap.get('stage'),
+                             'status': agent_search.status(entry) if entry else snap.get('recipeStatus'), 'at': now,
+                             'regimes': {r: p.get('key') for r, p in (snap.get('regimes') or {}).items()}}
+        write_json('agents.json', data)
+        reg.set_active(v)
+        reg.set_pinned(v)
+        reason = f'teruggezet naar v{v} door de eigenaar; vastgezet tot je hem losmaakt'
+        _safe(lambda: reg.record({'at': now, 'by': 'eigenaar', 'recipeKey': key, 'recipeText': rec.get('recipeText'),
+                                  'dataset': rec.get('dataset'), 'features': rec.get('features'), 'settings': rec.get('settings'),
+                                  'metrics': rec.get('metrics'), 'decision': 'rollback', 'reason': reason, 'restoredVersion': v,
+                                  'publishedKey': key, 'comparedTo': None}), 'terugzetten vastleggen')
+    log(f'Modelregister: {reason}')
+    think(f'Op jouw verzoek gebruik ik weer versie v{v} ({rec.get("recipeText") or key}). Zolang die vastgezet is, '
+          'publiceer ik zelf geen ander model (ik blijf wel leren en alles vastleggen).', kind='info')
+    return 200, {'ok': True, 'active': v, 'pinned': v}
+
+
+def registry_unpin():
+    reg = registry()
+    with publish_lock:
+        was = reg.pinned()
+        reg.set_pinned(None)
+    if was is not None:
+        log(f'Modelregister: v{was} losgemaakt')
+        think(f'Versie v{was} is losgemaakt: ik kies weer zelf, maar alleen een model dat aantoonbaar beter is.', kind='info')
+    return 200, {'ok': True, 'pinned': None, 'was': was}
 
 
 def paper_rows(key=None):
@@ -1411,7 +1799,8 @@ def cleanup_files(now=None):
     d = path('agents')
     if os.path.isdir(d):
         for name in os.listdir(d):
-            if name not in keep:
+            # agents/versions (de snapshots van het modelregister) nooit; tijdelijke bestanden ook niet.
+            if name not in keep and name != 'versions' and '.tmp' not in name and os.path.isfile(os.path.join(d, name)):
                 try:
                     os.remove(os.path.join(d, name))
                     removed += 1
@@ -1487,6 +1876,8 @@ def agent_info():
                       'score': agent_search.score(e), 'byRegime': agent_search.regime_score(e), 'last': last, 'live': data.get('live', {}).get(e['key'])})
     return {'enabled': cfg['agent']['enabled'], 'config': cfg['agent'], 'busy': state.get('agentBusy', False),
             'progress': state.get('agentProgress') if state.get('agentBusy') else None, 'nextAt': state.get('nextAgentAt'),
+            # Sinds wanneer hij wacht op nieuwe data (alle recepten kort geleden getest), en de laatste beslissing.
+            'waitingSince': state.get('agentWaiting'), 'lastDecision': state.get('lastDecision'),
             'recipes': board, 'tried': len(data.get('recipes', {})),
             'possible': len(agent_search.all_recipes(cfg['agent']['timeframes'] or agent_mod.DEFAULT_TIMEFRAMES)),
             'published': data.get('published'), 'coins': (pub or {}).get('coins'),
@@ -1614,6 +2005,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             return self.send(200, data, extra={'ETag': etag})
+        if self.path.split('?')[0] == '/registry':
+            try:
+                return self.send(200, registry_info())
+            except Exception as e:
+                log(f'Modelregister: overzicht mislukt: {e}')
+                return self.send(500, {'error': f'Modelregister niet beschikbaar: {e}'})
         if self.path == '/micro/latest':
             cfg = config()
             return self.send(200, {'useMicro': bool(cfg.get('useMicro')), 'features': micro_mod.latest(MICRO_DIR, cfg.get('pairs') or None)})
@@ -1680,6 +2077,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, helper_claim(body))
         if self.path == '/helper/result':
             code, out = helper_result(body)
+            return self.send(code, out)
+        if self.path in ('/registry/rollback', '/registry/unpin'):
+            try:
+                code, out = registry_rollback(body) if self.path == '/registry/rollback' else registry_unpin()
+            except Exception as e:
+                log(f'Modelregister: {self.path} mislukt: {e}')
+                code, out = 500, {'error': f'Modelregister niet beschikbaar: {e}'}
             return self.send(code, out)
         if self.path == '/train':
             started = run_training('handmatig vanuit vetobot')
