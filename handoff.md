@@ -5,84 +5,75 @@
 De eigenaar wil een AI-trader die hij kan vertrouwen:
 "Ik wil gewoon een AI trader hebben die ik kan vertrouwen dat hij uit eindelijk winst kan maken, ik weet van de kans dat hij ook verlies kan maken maar dat hij dat zodanig het verlies kan limieteren door de juiste trades te maken".
 
-Besluiten in deze chat (7 november 2026):
-- De geparkeerde verbeteringen voor verlies beperken: "Maak de geparkeerde dingen maar alvast dan kunnen we daarna volledig testen". Gebouwd.
-- Een team van agents (Learning, Market, Strategy, Risk, Execution): "Maak het maar". Gebouwd.
-- "En daarna mag je kijken of er bugs, errors of lege code wat we niet meer gebruiken, los de bugs of errors op en haal de lege code weg". Gedaan.
+Laatste grote opdracht (24 november 2026): Vetobot uitbreiden tot een zelflerend systeem met beslissingsdagboek, eerlijke modelvergelijking, modelversiebeheer met terugzetten, en een Learning-pagina. "De belangrijkste maatstaf is of Vetobot na langdurige paper trading aantoonbaar betere, consistentere en risicobewustere handelsbeslissingen neemt dan zijn oorspronkelijke versie." Gebouwd (zie hieronder).
 
-Nu: alles in paper volledig testen. Niets nieuws bouwen tot de eigenaar het vraagt.
+Besluiten van de eigenaar in deze chat:
+- Live op eigen risico met eigen inzet en een verliesgrens die hij zelf kiest: "Verliesgrens moet ingesteld kunnen worden zodat ik dat zelf kan bepalen". Gebouwd.
+- De AI-trader kiest zelf de inzet tussen inzet en max. inzet, ook live: "Bouw het maar, en ik wil direct in de live testen. Ja ik weet hier de risico van". Gebouwd.
+- De oude training van het voorspelmodel mag uit: "als ik hem nu al niet gebruikt hoef hij ook niet te trainer". Schema "Uit" gebouwd; de eigenaar zet het zelf uit.
+
+## Werkafspraak: PR's, niet meer direct naar `main`
+
+**Nieuw en bindend:** "we zouden met PR's gaan werken niet meer direct naar de main pushen".
+- Werk op de branch `claude/fervent-bohr-ezx52v` (of een nieuwe branch), push daarheen en open een PR naar `main`. Niet zelf samenvoegen; de eigenaar voegt samen.
+- CI bouwt de images pas bij een push naar `main` (dus na het samenvoegen). Geef na het samenvoegen de update-commando's.
+- De skill `/hervat` zegt nog "direct op `main`": deze afspraak gaat voor.
+- De laatste push direct naar `main` (`ec698c5`) mocht blijven staan: "Laat maar staan".
 
 ## Staat van de code
 
-- Branch: `main` (direct op `main`, geen PR's).
-- Laatste codecommit: `4516df4` "AI-trader: leren gebruikt veel minder geheugen (leerserver liep vol)".
-- CI: geslaagd voor `4516df4`; beide images gebouwd.
-- VPS (`vetobot-trainer`): bijgewerkt naar `4516df4`, de eigenaar bevestigde dat de geheugenfout weg is.
-- Thuisserver (`vetobot`): niet bevestigd dat die na `82fdcec` (het team) is bijgewerkt. Bij twijfel: `docker compose pull vetobot && docker compose up -d vetobot`.
+- Branch: `main`; werkbranch `claude/fervent-bohr-ezx52v` staat gelijk aan `main`.
+- Laatste codecommit: `ec698c5` "Integratie leersysteem: extra recepten ververst bij 'niet beter', Learning-pagina op de echte registervorm, README".
+- CI van `ec698c5`: zie de laatste run van `docker.yml` (liep nog bij het schrijven).
+- Beide servers moeten na deze build bijgewerkt worden (bot én leerserver). Niet bevestigd dat dat gebeurd is.
+- Belangrijke eerdere fix: `c006295` operatorId bij Bitvavo-orders (zonder die waarde weigerde ccxt elke live order, ook verkopen). Zorg dat de thuisserver minstens die versie draait.
 
 ## Active files
 
-- `trainer/agent.py`: AI-trader leren en backtest; marktvergelijking (`market_move`, `edgePct`), resultaat per marktfase (`byRegime`), geheugenplafonds (`MAX_EXIT_ROWS`, `MAX_ENTRY_ROWS`).
-- `trainer/agent_search.py`: recepten; score (winst/terugval `ratio`, `edge`), status incl. "te riskant", Strategy Agent (`regime_score`, `choose_per_regime`).
-- `trainer/market.py`: Market Agent; marktfase per coin op 1h-candles (`RegimeLookup`).
-- `trainer/server.py`: publiceert `agent.json` met `regimes` (recept per fase), `agent_stage`, `regime_plan`, blokkeren van een te riskant recept.
-- `src/agents.js`: Strategy/Risk/Execution Agent in de bot (pure functies, getest in `test/agents.test.js`).
-- `src/bot.js`: `#marketRegime`, `#agentSignal` → `#agentBuy`, verkopen met het recept dat kocht, `#execution`, `agentTeam()`.
-- `src/manager.js`: valideert ook de recepten per fase uit `agent.json`.
-- `public/index.html`: pagina Trainer: blok "Het team van de AI-trader", kolommen "Per marktfase", "Beter dan de markt", "Winst / terugval".
-- `README.md`: sectie "Het team van de AI-trader" en de regels voor verlies beperken.
+- `src/journal.js`: beslissingsdagboek (SQLite `learning.db` per gebruiker), labels na 1/4/24 uur zonder lekken, trades met kosten en MFE/MAE, `stats()` voor Learning.
+- `src/bot.js`: hooks naar het dagboek (`#journalDecision`, `#journalAgent`, `#journalTrade`), guard tegen dubbele orders (`this.ordering`), live niet kopen zonder orderboek, eigen risico (`agentRiskyActive`, `agentRiskyLoss`), eigen inzet (`sizeStake`), `sizingSummary`, `learningStats`.
+- `src/agents.js`: `sizeStake`, `activeAgent`/`allAgentParts` (extra recepten alleen actief als live gezet).
+- `src/exchange.js`: `OPERATOR_ID` (BITVAVO_OPERATOR_ID), fees in live costEur, echte fouten bij limiet-koop niet verstoppen; candle-cachesleutel met `since`.
+- `src/manager.js`: `refreshAgent` vraagt live gezette recepten mee (`?keep=`), `learningRegistry()`, sluit het dagboek bij stoppen.
+- `src/server.js`: `/api/agent/live` (ook eigen risico), `/api/learning`, `/api/admin/learning/rollback|unpin`.
+- `trainer/registry.py`: modelregister `registry.db`, snapshots `agents/versions/v<n>.json`, migraties, corrupt-herstel.
+- `trainer/server.py`: poortwachter `promotion_gate`, `publish_agent`, `_finish_round`, `extra_recipes`, `add_kept`, `/registry`, rollback/unpin, schema "Uit" voor het oude model.
+- `trainer/agent.py`: metrics (netReturnPct, profitFactor, sharpe, avgWin/LossPct, byVolatility).
+- `trainer/agent_search.py`: opnieuw trainen alleen bij nieuwe data (`retestHours`, `retestTrades`).
+- `public/index.html`: pagina Learning; Trainer → Live (Nu live, eigen risico, extra recepten); instellingen eigen inzet en kleinste live-start.
+- `README.md`: sectie "Learning: hoe vetobot leert en zich verbetert" (architectuur, database/herstel, instellingen).
 
 ## Veranderingen gemaakt
 
-1. Verlies beperken (`1f6b86f`):
-   - recepten gerangschikt op winst ten opzichte van de grootste terugval;
-   - elke testtrade vergeleken met wat alle coins samen in dezelfde tijd deden: alleen het voordeel boven de markt telt, voor "goed" en "betrouwbaar";
-   - een terugval van meer dan 25% maakt een recept voor altijd "te riskant", ook niet in paper. Is er dan geen ander recept, dan staat de AI-trader op "geblokkeerd" en koopt de bot niets.
-2. Het team (`82fdcec`):
-   - Market Agent: marktfase per coin op 1h-candles, in de leerserver en de bot met dezelfde berekening.
-   - Strategy Agent: per fase het recept dat het meest beter deed dan de markt (minstens 20 trades in die fase, status betrouwbaar of veelbelovend). Verloor het hoofdrecept in een fase van de markt, dan "niet handelen" in die fase. Zonder bewijs: het hoofdrecept.
-   - Risk Agent: 6 uur pauze na 3 verliezen op rij; halve inzet (nooit onder € 5) bij weinig bewijs voor de fase; geen aankoop in een coin waar de laatste 3 orders gemiddeld meer dan 0,5% slechter uitvielen.
-   - Execution Agent: meet de prijsafwijking bij elke order en waarschuwt boven 0,3%.
-   - Een bug gerepareerd: verkopen gebeurde altijd met het actuele recept; nu met het recept dat kocht.
-3. Opruimen (`205fb27`):
-   - weg: `askVeto` (vervangen door `askVetoChain`), `isDiscordWebhook` (dubbel met `secrets.js`), `max_hold_candles`, ongebruikte imports en variabelen;
-   - gecontroleerd: ESLint, pyflakes en vulture schoon; alle dashboard-velden, API-routes en trainer-endpoints kloppen.
-4. Geheugen (`97fedee`, `4516df4`): de leerserver liep vol (6,5 GB) en werd steeds door het systeem gestopt, met HTTP 502 in het dashboard.
-   - Oorzaak: leervoorbeelden als Python-lijsten. Dit zat er al vóór de updates van deze chat.
-   - Nu: numpy-blokken, plafonds op het aantal voorbeelden en `market_move` met numpy-zoeken.
-   - Gemeten met 24 coins op 5m: 60 dagen van 2,0 naar 0,66 GB; 180 dagen 1,2 GB. De voorbeelden zijn aantoonbaar identiek.
+1. Live op eigen risico: per recept, eigen inzet, verliesgrens in €; stopt vanzelf met melding. Kleinste live-start is een instelling.
+2. Live-bugs opgelost: fees telden live niet mee; vrij saldo binnen een ronde; operatorId voor Bitvavo (alle live orders faalden); ander recept gebruiken als het fase-recept niet live mag; live gezette recepten vallen niet meer weg.
+3. Extra recepten (top 6, getest/betrouwbaar) om live te zetten; "Nu live"-overzicht, ook op mobiel.
+4. AI-trader kiest zelf de inzet (tussen inzet en max. inzet) naar vertrouwen; harde grens op max. inzet.
+5. Dagoverzicht: "gekocht N" naast goedgekeurd, redenen als kopen mislukt; geen "testfase"-verwarring meer.
+6. Web-app-manifest en icoon (dashboard als app op de telefoon).
+7. Leersysteem (met twee agents parallel gebouwd en daarna samengevoegd): beslissingsdagboek, volatiliteit als marktomstandigheid, profit factor/Sharpe/gem. winst en verlies, modelversiebeheer met poortwachter, terugzetten en vastzetten, trainen alleen bij nieuwe data, Learning-pagina, live-beveiligingen (orderboek verplicht, geen dubbele orders, harde limieten vlak voor elke order).
 
-Tests bij `4516df4`: `npm test` 150/150 geslaagd; `cd trainer && python3 -m unittest test_trainer` 43 tests OK.
+Tests bij `ec698c5`: `npm test` 199 van 199 geslaagd; `cd trainer && python -m unittest test_trainer` 96 tests OK. Rooktest: bot start met lege datamap, `/healthz` ok.
 
 ## Failed attempts
 
-- Eerst dacht ik dat alleen de nieuwe tijd → candle-tabel (dict, ongeveer 8 MB per coin) de leerserver liet vollopen. Dat was het niet alleen. Meten met `resource.getrusage` op een oude en een nieuwe worktree liet zien dat `learn_exit` met Python-lijsten de echte oorzaak was. Altijd eerst meten met realistische aantallen (24 coins, 60+ dagen 5m).
-- HTTP 502 in het dashboard betekent: Nginx Proxy Manager bereikt de leerserver niet. Diagnose:
-  - `docker compose ps` (Created tegenover Up);
-  - `docker inspect vetobot-trainer --format '{{.RestartCount}}'`;
-  - `dmesg | grep -i "out of memory"`.
-  `OOMKilled` stond op false terwijl het systeem het proces wel had gestopt; dmesg was de echte bron.
-- `gh pr list` werkt niet (GraphQL geblokkeerd); gebruik `gh api repos/iitssjstn/vetobot/pulls?state=open`.
-- Lokaal testen: na `npm install` een `package-lock.json` en na de Python-tests `trainer/__pycache__` weggooien, niet committen.
-- Uit eerdere chats: een test mag niet naar `/data` schrijven; draai `python3 -c "import thoughts"` vóór een push; gebruik in het dashboard `whenAt` buiten `renderTrainer`.
+- Limietorders "niet gevuld": was geen vulprobleem maar ccxt die zonder operatorId elke order weigerde; de bot verstopte die fout. Opgelost, en echte fouten worden nu gemeld.
+- Schermafbeeldingen van het dashboard via `file://` werken niet (de pagina wil de API bereiken en vervangt de inhoud): serveer `public/` met een kleine HTTP-server en vang `/api/**` af in Playwright.
+- Telefoon als volledige leerserver: te traag; als helper naast de VPS werkt het (Fold4 ±351 s per ronde met 2 kernen).
 
 ## Specific next steps
 
-0. **Plan richting live staat in `PLAN.md`** (5 stappen: validatie en eindtest scheiden, drawdown op een echte portefeuille, werkelijke kosten in het leren, strengere live-toelating, daarna lange paper-test; plus stap 6: het overleg van de AI-trader terug te lezen op de pagina AI-chat, bij voorkeur vóór stap 5). Vastgelegd op verzoek van de eigenaar: "Kunnen we dit als plan neerzetten". Nog niets van gebouwd; per stap wachten op zijn akkoord.
-1. Niets bouwen tot de eigenaar het vraagt; hij test nu alles in paper.
-2. Wat de eigenaar in paper moet zien:
-   - eerst koopt de AI-trader met het hoofdrecept en de halve inzet ("weinig bewijs");
-   - na een paar leerrondes verschijnen cijfers in "Per marktfase" en kiest de Strategy Agent per fase (bericht "Strategy Agent: ..." bij "Wat denkt het model?").
-3. Als de eigenaar resultaten deelt, let op:
-   - halen recepten een 2e/3e ronde met een positieve "Beter dan de markt"?
-   - wordt er een recept "te riskant"?
-   - hoe groot is de afwijking in "Execution Agent" (in paper vult hij tegen het echte orderboek)?
-   - komt de Risk Agent-pauze vaak voor?
-4. Mogelijke vervolgstappen, alleen op verzoek:
-   - Market Agent uitbreiden met een fase "onrustig" (beweeglijkheid). Daarvoor moet een kenmerk in zowel `src/mlmodel.js` als `trainer/features.py` erbij.
-   - De werkelijke uitvoeringskosten uit de Execution Agent terugsturen naar de leerserver, zodat `costPct` klopt.
-   - De Risk Agent instelbaar maken in het dashboard (nu vaste waarden in `RISK` in `src/agents.js`).
-5. Eerder genoemd maar niet gekozen:
-   - de namen opschonen (AI-trader, AI-controleur, Winstkans-model, Leerserver);
-   - het taalmodel laten antwoorden op vragen over de AI-trader.
-6. Na 14 dagen orderboek-opname draait het experiment vanzelf; de uitslag staat op de pagina Trainer.
+1. Na een geslaagde build: eigenaar laten bijwerken.
+   - VPS: `docker compose pull vetobot-trainer && docker compose up -d vetobot-trainer`
+   - Thuisserver: `docker compose pull vetobot && docker compose up -d vetobot`
+2. Eigenaar laten controleren:
+   - pagina **Learning** laadt; na de eerste leerronde verschijnen versies (v1 = "eerste model van de AI-trader");
+   - na een paar uur zijn er beslissingen met uitkomsten na 1/4/24 uur;
+   - Trainer → Wanneer trainen → Schema **Uit** (oude voorspelmodel), als hij dat wil.
+3. Live: controleren dat aankopen nu "Gekocht: € …" geven (operatorId-fix) en dat het eigen-risico-recept bij "Nu live" staat.
+4. Aandachtspunten:
+   - het plan per marktfase (`regimes` in `agent.json`) verandert alleen bij een promotie; de extra recepten worden wel elke ronde bijgewerkt;
+   - oude recepten zonder `grossWin/LossPct` hebben een onbekende eindtest-profit factor; de PF-eis laat dan door;
+   - de Strategy-pauze-hook in het dagboek is vrijwel onbereikbaar (chooseForRegime geeft altijd een recept).
+5. Mogelijke vervolgstappen, alleen op verzoek: gelabelde afgewezen beslissingen ook naar de leerserver sturen voor kalibratie; volatiliteit ook gebruiken in de Strategy Agent (recept per trend én volatiliteit); de Risk Agent instelbaar maken.
+6. Werk via PR's (zie boven).
