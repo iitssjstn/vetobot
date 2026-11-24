@@ -1778,6 +1778,29 @@ class GateBase(unittest.TestCase):
         return a['recipeKey'], a['entry']['tag']
 
 
+class Baseline(GateBase):
+    def test_existing_model_becomes_first_version(self):
+        s = self.s
+        # Een model dat al in gebruik was voordat het register bestond.
+        a = {**fake_agent(RA, 'oud'), 'recipeKey': A_key(RA), 'stage': 'getest'}
+        s.write_json('agent.json', a)
+        rec = s.ensure_baseline()
+        self.assertEqual(rec['decision'], 'promoted')
+        self.assertTrue(rec['hasSnapshot'])
+        reg = s.registry()
+        self.assertEqual(reg.active(), rec['version'])
+        self.assertEqual(reg.read_snapshot(rec['version'])['entry']['tag'], 'oud')
+        self.assertIsNone(s.ensure_baseline(), 'maar één keer')
+        # Geblokkeerd of geen model: niets vastleggen.
+        s2 = tempfile.mkdtemp()
+        from unittest import mock
+        with mock.patch.object(s, 'DATA', s2):
+            s.write_json('agents.json', {'version': s.AGENTS_VERSION, 'recipes': {}, 'published': None, 'live': {}, 'round': 0})
+            self.assertIsNone(s.ensure_baseline())
+            s.write_json('agent.json', {**a, 'stage': 'geblokkeerd'})
+            self.assertIsNone(s.ensure_baseline())
+
+
 class PromotionGate(GateBase):
     def test_better_promoted_worse_kept_risky_replaced(self):
         s, k = self.s, A_key

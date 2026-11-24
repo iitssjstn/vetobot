@@ -1345,6 +1345,7 @@ def _finish_round(recipe, agent, report, by):
     cfg = config()
     th = promote_thresholds(cfg)
     reg = registry()
+    _safe(ensure_baseline, 'bestaand model vastleggen')
     # Te riskante recepten (terugval > 25%) nooit gebruiken, ook niet om in paper te oefenen.
     board = [e for e in agent_search.leaderboard(data['recipes'], 50) if agent_search.usable(e)
              and os.path.exists(path(agent_file(e['key'])))]
@@ -1487,6 +1488,42 @@ def session_record(recipe, agent, report, by, cfg, entry, mine, act_m, active_ve
                         'metrics': {k: v for k, v in act_m.items() if k != 'order'},
                         'deltas': metric_deltas(mine, act_m)} if active_key and act_m else None),
     }
+
+
+def ensure_baseline(by='VPS'):
+    """Het model dat al in gebruik was voordat het modelregister bestond, vastleggen als eerste gepromote
+    versie (met een kopie als terugvaloptie). Zonder dit staat er 'nog geen gepromoot model' terwijl de
+    bot er wel mee handelt, en kun je er niet naar terug. Doet niets als er al een actieve versie is."""
+    reg = registry()
+    if reg.active() is not None:
+        return None
+    a = read_json('agent.json', None)
+    if not isinstance(a, dict) or not a.get('entry') or not a.get('exit') or a.get('stage') == 'geblokkeerd':
+        return None
+    data = load_agents()
+    key = a.get('recipeKey')
+    entry = (data.get('recipes') or {}).get(key) if key else None
+    recipe = (entry or {}).get('recipe') or a.get('recipe') or {}
+    last = ((entry or {}).get('rounds') or [{}])[-1] or {}
+    per = last.get('periods') or {}
+    rec = {**agent_mod.RECIPE_DEFAULT, **recipe}
+    m = recipe_metrics(entry)
+    record = {
+        'at': (data.get('published') or {}).get('at') or datetime.now().isoformat(timespec='seconds'), 'by': by,
+        'recipeKey': key, 'recipeText': agent_mod.recipe_text(rec),
+        'dataset': {'coins': a.get('coins'), 'days': int(config().get('days') or 0), 'periods': per or None,
+                    'testPeriod': per.get('eindtest'), 'testDays': last.get('testDays')},
+        'features': list((a.get('entry') or {}).get('features') or []),
+        'settings': {**rec, 'threshold': a.get('threshold'), 'maxHoldCandles': a.get('maxHoldCandles')},
+        'metrics': {'ok': bool(last.get('ok')), 'reason': last.get('reason'), 'status': agent_search.status(entry) if entry else None,
+                    'test': _part_metrics(last.get('test')), 'validation': _part_metrics(last.get('val')),
+                    'score': {k: v for k, v in (m or {}).items() if k != 'order'}},
+        'decision': 'promoted', 'reason': 'het model dat al in gebruik was toen het modelregister begon (startpunt en terugvaloptie)',
+        'publishedKey': key, 'comparedTo': None,
+    }
+    rec_saved = reg.record(record, snapshot=a)
+    log(f"Modelregister: bestaand model vastgelegd als v{rec_saved['version']} ({key})")
+    return rec_saved
 
 
 def registry_info():
@@ -2123,6 +2160,7 @@ def main():
     print(f" AI-trader leert: {'doorlopend' if not hours else 'op de uren ' + ', '.join(map(str, hours))}"
           f" · max {resources.TRAIN_JOBS} kernen (TRAIN_JOBS) · voorrang nice {nice}", flush=True)
     print('=' * 70, flush=True)
+    _safe(ensure_baseline, 'bestaand model vastleggen')
     threading.Thread(target=scheduler, daemon=True).start()
     threading.Thread(target=search_worker, daemon=True).start()
     threading.Thread(target=micro_worker, daemon=True).start()
