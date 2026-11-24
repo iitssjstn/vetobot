@@ -2661,7 +2661,7 @@ function renderLearning() {
     <div class="sub-h" style="margin:14px 0 6px">${icon('list')}Waar het besluit viel</div>
     <div class="scroll">${table(j.byStage ?? [], [
       ['Stap', (x) => esc(STAGE_LABEL[x.stage] ?? x.stage)], ['Beslissingen', (x) => `<span class="num">${x.decisions}</span>`, 'r'], ['Beoordeeld', (x) => `<span class="num">${x.labeled}</span>`, 'r'],
-      ['Koers daarna (gem.)', (x) => pc(x.avgRetPct), 'r'], ['Daarna gestegen', (x) => x.positiveShare == null ? '–' : `${Math.round(x.positiveShare * 100)}%`, 'r'],
+      ['Koers daarna (gem.)', (x) => pc(x.avgRetPct), 'r'], ['Daarna gestegen', (x) => x.positiveShare == null ? '–' : `${Math.round(x.positiveShare)}%`, 'r'],
     ], 'Nog geen beslissingen.', 'list')}</div>
     <div class="sub-h" style="margin:14px 0 6px">${icon('history')}Laatste beslissingen</div>
     <div class="scroll">${table(j.recent ?? [], [

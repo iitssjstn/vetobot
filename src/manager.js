@@ -427,6 +427,8 @@ export class BotManager {
     clearTimeout(ctx.watchTimer);
     ctx.stores.paper.save();
     ctx.stores.live.save();
+    // Het leerdagboek (SQLite) netjes dicht, zodat de map veilig verplaatst kan worden.
+    try { ctx.bot._journal?.close?.(); } catch { /* niets aan te doen */ }
     this.contexts.delete(userId);
     this.#wire();
   }
