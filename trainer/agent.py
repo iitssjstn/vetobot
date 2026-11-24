@@ -454,6 +454,8 @@ def trade_metrics(rets):
     - profitFactor: som winst / |som verlies| (None als er geen verlies is);
     - sharpe: gemiddelde / standaardafwijking (steekproef) van de trade-rendementen, per trade en
       niet op jaarbasis (None bij minder dan 2 trades of als alle trades even groot zijn);
+    - stdPct: die standaardafwijking zelf (None bij minder dan 2 trades), voor de statistische toets
+      van de poortwachter;
     - avgWinPct / avgLossPct: gemiddelde winnende en verliezende trade (None als die er niet zijn);
     - grossWinPct / grossLossPct: som winst en |som verlies| (om over rondes op te tellen)."""
     rets = [float(r) for r in rets]
@@ -463,25 +465,28 @@ def trade_metrics(rets):
     growth = 1.0
     for r in rets:
         growth *= max(0.0, 1 + r / 100)
-    sharpe = None
+    sharpe = sd = None
     if n >= 2:
         mean = sum(rets) / n
         sd = math.sqrt(sum((r - mean) ** 2 for r in rets) / (n - 1))
         sharpe = mean / sd if sd > 1e-12 else None
-    return {'netReturnPct': (growth - 1) * 100 if n else 0.0, 'profitFactor': profit_factor(rets), 'sharpe': sharpe,
+    return {'netReturnPct': (growth - 1) * 100 if n else 0.0, 'profitFactor': profit_factor(rets), 'sharpe': sharpe, 'stdPct': sd,
             'avgWinPct': sum(wins) / len(wins) if wins else None, 'avgLossPct': sum(losses) / len(losses) if losses else None,
             'grossWinPct': sum(wins), 'grossLossPct': -sum(losses)}
 
 
 def _by_volatility(trades):
-    """Resultaat per volatiliteit bij het kopen ('hoog' / 'normaal' / 'laag')."""
+    """Resultaat per volatiliteit bij het kopen ('hoog' / 'normaal' / 'laag'), met het voordeel boven
+    de markt (edgePct, None als de marktbeweging van geen enkele trade bekend is)."""
     out = {}
     for reg in VOL_REGIMES:
         ts = [t for t in trades if t.get('vol') == reg]
         if ts:
+            cmp = [t for t in ts if t.get('mkt') is not None]
             out[reg] = {'trades': len(ts), 'avgPct': sum(t['ret'] for t in ts) / len(ts),
                         'winRate': sum(1 for t in ts if t['ret'] > 0) / len(ts) * 100,
-                        'profitFactor': profit_factor([t['ret'] for t in ts])}
+                        'profitFactor': profit_factor([t['ret'] for t in ts]),
+                        'edgePct': sum(t['ret'] - t['mkt'] for t in cmp) / len(cmp) if cmp else None}
     return out
 
 

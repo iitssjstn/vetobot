@@ -7,7 +7,8 @@
     GET  /health      leeft de trainer?
     GET  /model.json  het laatste goedgekeurde model
     GET  /status      instellingen, laatste trainingen en resultaten
-    GET  /registry    modelregister: alle sessies/versies, actieve en vastgezette versie
+    GET  /registry    modelregister: alle sessies/versies, actieve en vastgezette versie, per versie de
+                      proefperiode (probation) en de praktijkresultaten (practice), en de afkoelperiodes
     POST /registry/rollback {version}  een eerdere versie terugzetten (en vastzetten)
     POST /registry/unpin              weer zelf laten kiezen
     POST /config      nieuwe instellingen
@@ -32,7 +33,9 @@ import agent as agent_mod
 import agent_search
 import livecheck
 import micro as micro_mod
+import probation as probation_mod
 import registry as registry_mod
+import stats
 import search as searcher
 import thoughts
 import train as trainer
@@ -58,6 +61,14 @@ PROMOTE_DEFAULTS = {
     'retrainTolerancePct': _env_num('RETRAIN_TOLERANCE_PCT', 5),    # hetzelfde recept opnieuw: zoveel % slechter mag (ruis)
     'retestHours': _env_num('RETEST_HOURS', 6),                     # hetzelfde recept pas na zoveel uur opnieuw trainen
     'retestTrades': int(_env_num('RETEST_TRADES', 20)),             # of na zoveel nieuwe trades van de bot met dat recept
+    # Statistische toets bij een ander recept: met zoveel zekerheid beter per trade in de eindtests
+    # (na correctie voor het aantal geteste recepten, zie promotion_gate).
+    'promoteConfidence': _env_num('PROMOTE_CONFIDENCE', 0.95),
+    # Proefperiode na een promotie (zie probation.py): na zoveel echte trades beoordelen, met deze
+    # zekerheid, en een mislukt recept zoveel uur niet opnieuw promoveren.
+    'probationTrades': int(_env_num('PROBATION_TRADES', 30)),
+    'probationConfidence': _env_num('PROBATION_CONFIDENCE', 0.9),
+    'probationCooldownHours': _env_num('PROBATION_COOLDOWN_HOURS', 72),
 }
 
 DEFAULTS = {'timeframe': '5m', 'days': 60, 'targetPct': 3.0, 'stopPct': 2.0, 'horizon': 36,
@@ -77,7 +88,9 @@ DEFAULTS = {'timeframe': '5m', 'days': 60, 'targetPct': 3.0, 'stopPct': 2.0, 'ho
                       'hours': None, **PROMOTE_DEFAULTS}}
 # Grenzen voor de poortwachter en de regel voor opnieuw trainen.
 PROMOTE_LIMITS = {'promoteMinGainPct': (0, 100), 'promoteMinRounds': (1, 6), 'promoteMaxDdFactor': (1, 5),
-                  'retrainTolerancePct': (0, 50), 'retestHours': (0, 168), 'retestTrades': (1, 1000)}
+                  'retrainTolerancePct': (0, 50), 'retestHours': (0, 168), 'retestTrades': (1, 1000),
+                  'promoteConfidence': (0.5, 0.999), 'probationTrades': (5, 1000), 'probationConfidence': (0.5, 0.999),
+                  'probationCooldownHours': (0, 720)}
 LIMITS = {'days': (7, 365), 'targetPct': (0.2, 50), 'stopPct': (0.2, 50), 'horizon': (3, 2000),
           'costPct': (0, 5), 'topN': (1, 50), 'maxSamples': (20_000, 2_000_000), 'halfLifeDays': (0, 365)}
 
@@ -894,6 +907,11 @@ def add_agent_trades(items):
                   'Of ik live mag, hangt af van alle eisen op de pagina Trainer (en daarna van jouw akkoord).',
                   kind='result' if avg >= livecheck.MIN_AVG else 'warn')
     write_json('agents.json', data)
+    # Licht: alleen als de actieve versie op proef is, worden de trades geteld (zie _check_probation).
+    try:
+        check_probation()
+    except Exception as e:  # de feedback mag nooit mislukken door de proef
+        log(f'Modelregister: proefperiode controleren mislukt: {e}')
     return len(clean)
 
 
@@ -1200,7 +1218,7 @@ def promote_thresholds(cfg=None):
 
 STATUS_ORDER = {'betrouwbaar': 3, 'veelbelovend': 2, 'oefenen': 1, 'afgevallen': 0, 'te riskant': -1}
 METRIC_FIELDS = ('trades', 'avgPct', 'totalPct', 'winRate', 'maxDrawdownPct', 'worstPct', 'marketPct', 'edgePct', 'beatMarketRate',
-                 'netReturnPct', 'profitFactor', 'sharpe', 'avgWinPct', 'avgLossPct', 'byRegime', 'byVolatility')
+                 'netReturnPct', 'profitFactor', 'sharpe', 'stdPct', 'avgWinPct', 'avgLossPct', 'byRegime', 'byVolatility')
 COMPARE_FIELDS = ('ratio', 'avg', 'edge', 'testAvg', 'testDrawdown', 'testProfitFactor', 'tested')
 
 
@@ -1212,9 +1230,12 @@ def recipe_metrics(entry):
     sc = agent_search.score(entry)
     st = agent_search.status(entry)
     pf, known = agent_search.test_profit_factor(entry)
+    ts = agent_search.test_stats(entry)
     return {'status': st, 'order': STATUS_ORDER.get(st, 0), 'ratio': sc['ratio'], 'avg': sc['avg'], 'edge': sc['edge'],
             'tested': sc['tested'], 'testAvg': sc['test']['avg'], 'testDrawdown': sc['test']['drawdown'],
-            'testProfitFactor': pf, 'pfKnown': known}
+            'testProfitFactor': pf, 'pfKnown': known,
+            # Voor de statistische toets: gemiddelde, spreiding en aantal trades over alle eindtests samen.
+            'testMean': ts[0] if ts else None, 'testStd': ts[1] if ts else None, 'testTrades': ts[2] if ts else None}
 
 
 def _num(v):
@@ -1236,17 +1257,48 @@ def _f(v, d=2):
     return f'{v:.{d}f}'.replace('.', ',')
 
 
-def promotion_gate(new, old, th, same=False):
+def _sp(v, d=2):
+    """Een percentage met teken, Nederlands: +0,08% of −0,03%."""
+    return '–' if v is None else f'{v:+.{d}f}%'.replace('.', ',').replace('-', '−')
+
+
+def stat_test(new, old, conf, candidates=1):
+    """Statistische toets op de eindtests: is het gemiddelde rendement per trade van `new` met
+    betrouwbaarheid `conf` hoger dan dat van `old`? Eenzijdige Welch t-toets op (gemiddelde, std,
+    aantal trades) van alle eindtest-rondes samen. Correctie voor selectie (Bonferroni): de beste van
+    `candidates` geteste recepten is vaak toevallig de beste, dus de toets gebruikt 1 - (1 - conf) /
+    candidates als betrouwbaarheid; hoe meer recepten geprobeerd, hoe strenger.
+    Geeft (ok, reden, cijfers) of None als de toets niet kan (oudere rondes zonder spreiding)."""
+    keys = ('testMean', 'testStd', 'testTrades')
+    if not all(_num((new or {}).get(k)) and _num((old or {}).get(k)) for k in keys) or new['testTrades'] < 2 or old['testTrades'] < 2:
+        return None
+    k = max(1, int(candidates or 1))
+    level = 1 - (1 - float(conf)) / k
+    diff, lower, _ = stats.welch_lower((new['testMean'], new['testStd'], new['testTrades']),
+                                       (old['testMean'], old['testStd'], old['testTrades']), level)
+    pc = f'{float(conf) * 100:g}%'
+    corr = f', gecorrigeerd voor {k} geteste recepten' if k > 1 else ''
+    info = {'diffPct': diff, 'lowerPct': lower, 'confidence': float(conf), 'level': level, 'candidates': k}
+    if lower > 0:
+        return True, f'met {pc} zekerheid beter: {_sp(diff)} per trade (ondergrens {_sp(lower)}{corr})', info
+    return False, f'niet zeker genoeg beter: ondergrens {_sp(lower)} per trade ({_sp(diff)} gemiddeld, {pc} zekerheid{corr})', info
+
+
+def promotion_gate(new, old, th, same=False, candidates=1):
     """Is `new` aantoonbaar beter dan het actieve model `old` (beide recipe_metrics)? Geeft (ok, reden).
-    Ander recept: minstens promoteMinRounds geteste rondes, score duidelijk hoger (hogere status, of
-    bij gelijke status een ratio minstens promoteMinGainPct % hoger), eindtest-terugval hooguit
-    promoteMaxDdFactor x die van het actieve model, en een winstfactor die niet lager is.
+    Ander recept: minstens promoteMinRounds geteste rondes, een status die niet lager is, en met
+    promoteConfidence zekerheid een hoger gemiddeld rendement per trade in de eindtests (stat_test, met
+    correctie voor het aantal geteste recepten `candidates`). Kan die toets niet (oudere rondes zonder
+    spreiding), dan de oude eis: hogere status, of bij gelijke status een score (ratio) minstens
+    promoteMinGainPct % hoger. Verder: eindtest-terugval hooguit promoteMaxDdFactor x die van het
+    actieve model, en een winstfactor die niet lager is.
     Hetzelfde recept opnieuw getraind (same): niet slechter dan ervoor, met retrainTolerancePct % speling."""
     if old is None:
         return True, 'er was nog geen actief model om mee te vergelijken'
     if new is None:
         return False, 'geen cijfers voor het nieuwe model'
     factor = float(th['promoteMaxDdFactor'])
+    stat = None
     if same:
         tol = float(th['retrainTolerancePct']) / 100
         if new['order'] < old['order']:
@@ -1261,7 +1313,11 @@ def promotion_gate(new, old, th, same=False):
         gain = float(th['promoteMinGainPct']) / 100
         if new['order'] < old['order']:
             return False, f"status {new['status']} is lager dan {old['status']} van het actieve model"
-        if new['order'] == old['order']:
+        stat = stat_test(new, old, th.get('promoteConfidence', PROMOTE_DEFAULTS['promoteConfidence']), candidates)
+        if stat is not None:
+            if not stat[0]:
+                return False, stat[1]
+        elif new['order'] == old['order']:
             a, b = new['ratio'], old['ratio']
             if a is None or (b is not None and (a <= b or a < b + abs(b) * gain)):
                 return False, f"score {_f(a)} is niet duidelijk hoger dan {_f(b)} (minstens {float(th['promoteMinGainPct']):g}% beter nodig)"
@@ -1274,7 +1330,7 @@ def promotion_gate(new, old, th, same=False):
         if a is None or a < lim:
             return False, f'winstfactor {_f(a)} is lager dan {_f(b)} van het actieve model'
     return True, ('niet slechter dan de vorige training van dit recept' if same else
-                  f"aantoonbaar beter: score {_f(new['ratio'])} tegen {_f(old['ratio'])}, terugval {_f(new['testDrawdown'], 1)}% "
+                  f"aantoonbaar beter{f' ({stat[1]})' if stat else ''}: score {_f(new['ratio'])} tegen {_f(old['ratio'])}, terugval {_f(new['testDrawdown'], 1)}% "
                   f"tegen {_f(old['testDrawdown'], 1)}%, winstfactor {_f(new['testProfitFactor'])} tegen {_f(old['testProfitFactor'])}")
 
 
@@ -1292,8 +1348,14 @@ def publish_agent(main, board, data, prev, report):
     a['recipeKey'] = main['key']
     a['recipeStatus'] = st
     a['live'] = lv
+    a['volStats'] = agent_search.vol_stats(main)
     a['regimes'] = regime_plan(board, main, data)
     a['extras'] = extra_recipes(board, main, a['regimes'], data)
+    # Een melding voor de bot (mislukte proef) blijft een week staan; de bot meldt hem één keer per 'at'.
+    old = read_json('agent.json', None)
+    note = old.get('notice') if isinstance(old, dict) else None
+    if isinstance(note, dict) and (probation_mod.ts_of(note.get('at')) or 0) > time.time() - 7 * 86400:
+        a['notice'] = note
     write_json('agent.json', a)
     plan_now = {reg: p['key'] for reg, p in a['regimes'].items()}
     plan_before = (prev or {}).get('regimes')
@@ -1328,6 +1390,8 @@ def _finish_round(recipe, agent, report, by):
     verbetering (promotion_gate), of uit veiligheid als het actieve recept te riskant werd of verdween.
     Anders blijft agent.json precies zoals hij was. Elke sessie komt in het modelregister.
     Geeft (beslissing, reden)."""
+    # Eerst de proef van het actieve model (kan terugzetten, dus vóór het lezen van agents.json).
+    _safe(_check_probation, 'proefperiode controleren')
     data = load_agents()
     data['round'] = data.get('round', 0) + 1
     key = agent_search.key_of(recipe)
@@ -1368,6 +1432,8 @@ def _finish_round(recipe, agent, report, by):
             pinned = None
     mine = _safe(lambda: recipe_metrics(entry), 'cijfers berekenen')
     act_m = _safe(lambda: recipe_metrics(before if key == active_key else active_entry), 'cijfers berekenen')
+    # Recepten waarvan de proef net mislukte, worden een tijd niet opnieuw gepromoot.
+    cooling = _safe(lambda: active_cooldowns(reg), 'afkoelperiodes lezen', {}) or {}
     decision, reason, main, published_key = 'rejected', '', None, None
     try:
         if pinned is not None:
@@ -1379,11 +1445,16 @@ def _finish_round(recipe, agent, report, by):
             same_retrained = bool(active_ok and key == active_key and agent is not None)
             same_ok, same_why = True, ''
             if same_retrained:
-                same_ok, same_why = promotion_gate(recipe_metrics(entry), recipe_metrics(before), th, same=True)
+                if key in cooling:
+                    same_ok, same_why = False, _cooldown_text(cooling[key])
+                else:
+                    same_ok, same_why = promotion_gate(recipe_metrics(entry), recipe_metrics(before), th, same=True)
                 if not same_ok and old_file:
                     # Het vorige model van dit recept blijft (ook in agents/, zodat alles bij elkaar past).
                     write_json(agent_file(key), old_file)
             if not active_ok:
+                # Veiligheid: het beste bruikbare recept, maar liefst niet een dat net door de proef zakte.
+                best = next((e for e in board if e['key'] not in cooling), best)
                 main, decision = best, 'promoted'
                 reason = ('eerste model van de AI-trader' if not prev else
                           'het actieve recept is te riskant geworden of verdwenen; veiligheid: het beste bruikbare recept')
@@ -1397,7 +1468,12 @@ def _finish_round(recipe, agent, report, by):
                 else:
                     decision, reason = 'rejected', 'niet beter dan het actieve recept; het actieve model blijft'
             else:
-                ok, why = promotion_gate(recipe_metrics(best), recipe_metrics(active_entry), th)
+                if best['key'] in cooling:
+                    ok, why = False, _cooldown_text(cooling[best['key']])
+                else:
+                    # Selectiecorrectie: zoveel recepten met een eindtest dingen mee om de eerste plaats.
+                    tested = sum(1 for e in board if agent_search.score(e)['tested'] >= 1)
+                    ok, why = promotion_gate(recipe_metrics(best), recipe_metrics(active_entry), th, candidates=tested)
                 if ok:
                     main, decision, reason = best, 'promoted', f'{agent_mod.recipe_text(best["recipe"])}: {why}'
                 elif same_retrained and same_ok:
@@ -1456,10 +1532,19 @@ def _finish_round(recipe, agent, report, by):
         think(f'Ik houd mijn huidige model: {reason}.', kind='insight')
     rec = _safe(lambda: session_record(recipe, agent, report, by, cfg, entry, mine, act_m, active_version, active_key,
                                        decision, reason, published_key), 'sessie samenstellen')
+    expected = None
+    if rec is not None and snapshot is not None:
+        # Wat de eindtest belooft voor het gepubliceerde recept: daarmee vergelijkt de proefperiode.
+        expected = (_safe(lambda: recipe_metrics(main), 'cijfers berekenen') or {}).get('testAvg')
+        rec['expectedPct'] = expected
     if rec is not None:
-        saved = _safe(lambda: reg.record(rec, snapshot=snapshot), 'sessie opslaan')
+        snap_clean = {k: x for k, x in snapshot.items() if k != 'notice'} if snapshot is not None else None
+        saved = _safe(lambda: reg.record(rec, snapshot=snap_clean), 'sessie opslaan')
         if saved:
             log(f"Modelregister: v{saved['version']} {decision} ({reason})")
+            if snapshot is not None:
+                _safe(lambda: start_probation(reg, saved['version'], published_key, expected, report['at'],
+                                              active_version, active_key, th), 'proefperiode starten')
     state['lastDecision'] = {'decision': decision, 'reason': reason, 'at': report['at']}
     return decision, reason
 
@@ -1521,13 +1606,84 @@ def ensure_baseline(by='VPS'):
         'decision': 'promoted', 'reason': 'het model dat al in gebruik was toen het modelregister begon (startpunt en terugvaloptie)',
         'publishedKey': key, 'comparedTo': None,
     }
-    rec_saved = reg.record(record, snapshot=a)
+    record['expectedPct'] = (m or {}).get('testAvg')
+    rec_saved = reg.record(record, snapshot={k: x for k, x in a.items() if k != 'notice'})
     log(f"Modelregister: bestaand model vastgelegd als v{rec_saved['version']} ({key})")
+    _safe(lambda: start_probation(reg, rec_saved['version'], key, record['expectedPct'], rec_saved['at']), 'proefperiode starten')
     return rec_saved
 
 
+def _expected_of(v):
+    """Wat de eindtest beloofde voor de versie (gemiddeld % per trade), zo goed als bekend."""
+    for x in ((v.get('probation') or {}).get('expectedPct'), v.get('expectedPct')):
+        if _num(x):
+            return x
+    if v.get('publishedKey') and v.get('publishedKey') == v.get('recipeKey'):
+        x = (((v.get('metrics') or {}).get('score')) or {}).get('testAvg')
+        return x if _num(x) else None
+    return None
+
+
+def registry_practice(reg, versions, trades=None):
+    """Praktijkresultaten per gepromote (en de actieve) versie: de echte trades met het recept van die
+    versie, zolang die versie de actieve was (van promotie of terugzetten tot de volgende). Voegt
+    'practice' toe aan die versies (zie probation.practice)."""
+    by_recipe = probation_mod.real_trades(read_json('agent_trades.json', []) if trades is None else trades)
+    acts = reg.activations()
+    windows = {}
+    for i, (at, v, key, _) in enumerate(acts):
+        end = probation_mod.ts_of(acts[i + 1][0]) if i + 1 < len(acts) else None
+        windows.setdefault(v, []).append((probation_mod.ts_of(at), end, key))
+    for v in versions:
+        if (v['decision'] == 'promoted' and v.get('hasSnapshot')) or v.get('active'):
+            v['practice'] = probation_mod.practice(by_recipe, windows.get(v['version'], []), _expected_of(v))
+    return versions
+
+
 def registry_info():
-    return registry().summary(200, thresholds=promote_thresholds())
+    reg = registry()
+    out = reg.summary(200, thresholds=promote_thresholds())
+    _safe(lambda: registry_practice(reg, out['versions']), 'praktijkresultaten berekenen')
+    out['cooldowns'] = _safe(lambda: active_cooldowns(reg), 'afkoelperiodes lezen', {}) or {}
+    return out
+
+
+def _risky_snapshot(snap, entry):
+    """Is een bewaarde versie te riskant om terug te zetten (recept te riskant, geblokkeerd, of een
+    terugval van meer dan DANGER_DRAWDOWN% in de test van die versie)?"""
+    rep = (snap.get('meta') or {}).get('report') or {}
+    dds = [x for x in ((rep.get('test') or {}).get('maxDrawdownPct'), (rep.get('validation') or {}).get('maxDrawdownPct')) if _num(x)]
+    return bool((entry and not agent_search.usable(entry)) or snap.get('stage') == 'geblokkeerd' or snap.get('recipeStatus') == 'te riskant'
+                or any(x > agent_search.DANGER_DRAWDOWN for x in dds))
+
+
+def _valid_snapshot(snap):
+    return isinstance(snap, dict) and bool(snap.get('entry')) and bool(snap.get('exit'))
+
+
+def _restore_version(reg, v, rec, snap, data, pin, by, reason, extra=None, notice=None):
+    """Versie v (met snapshot) weer actief maken: agent.json, het model van het recept en
+    agents.json gelijk aan die versie, en een record 'rollback'. Met pin ook vastzetten (alleen als de
+    eigenaar het vraagt). Met notice een melding voor de bot in agent.json. Geeft de recept-sleutel."""
+    key = snap.get('recipeKey') or rec.get('recipeKey')
+    entry = data['recipes'].get(key)
+    snap = {k: x for k, x in snap.items() if k != 'notice'}
+    write_json('agent.json', {**snap, 'notice': notice} if notice else snap)
+    if entry:
+        write_json(agent_file(key), snap)  # het model van dit recept weer gelijk aan wat de bot heeft
+    now = datetime.now().isoformat(timespec='seconds')
+    data['published'] = {'key': key, 'timeframe': snap.get('timeframe'), 'stage': snap.get('stage'),
+                         'status': agent_search.status(entry) if entry else snap.get('recipeStatus'), 'at': now,
+                         'regimes': {r: p.get('key') for r, p in (snap.get('regimes') or {}).items()}}
+    write_json('agents.json', data)
+    reg.set_active(v)
+    if pin:
+        reg.set_pinned(v)
+    _safe(lambda: reg.record({'at': now, 'by': by, 'recipeKey': key, 'recipeText': rec.get('recipeText'),
+                              'dataset': rec.get('dataset'), 'features': rec.get('features'), 'settings': rec.get('settings'),
+                              'metrics': rec.get('metrics'), 'decision': 'rollback', 'reason': reason, 'restoredVersion': v,
+                              'publishedKey': key, 'comparedTo': None, **(extra or {})}), 'terugzetten vastleggen')
+    return key
 
 
 def registry_rollback(body):
@@ -1542,35 +1698,157 @@ def registry_rollback(body):
         if not rec:
             return 404, {'error': f'Versie v{v} bestaat niet'}
         snap = reg.read_snapshot(v)
-        if not isinstance(snap, dict) or not snap.get('entry') or not snap.get('exit'):
+        if not _valid_snapshot(snap):
             return 400, {'error': f'Van v{v} is geen snapshot bewaard (alleen gepubliceerde versies kun je terugzetten)'}
         key = snap.get('recipeKey') or rec.get('recipeKey')
         data = load_agents()
-        entry = data['recipes'].get(key)
-        rep = (snap.get('meta') or {}).get('report') or {}
-        dds = [x for x in ((rep.get('test') or {}).get('maxDrawdownPct'), (rep.get('validation') or {}).get('maxDrawdownPct')) if _num(x)]
-        if (entry and not agent_search.usable(entry)) or snap.get('stage') == 'geblokkeerd' or snap.get('recipeStatus') == 'te riskant' \
-                or any(x > agent_search.DANGER_DRAWDOWN for x in dds):
+        if _risky_snapshot(snap, data['recipes'].get(key)):
             return 400, {'error': f'v{v} is te riskant (terugval van meer dan {agent_search.DANGER_DRAWDOWN}%); die zet ik niet terug'}
-        write_json('agent.json', snap)
-        if entry:
-            write_json(agent_file(key), snap)  # het model van dit recept weer gelijk aan wat de bot heeft
-        now = datetime.now().isoformat(timespec='seconds')
-        data['published'] = {'key': key, 'timeframe': snap.get('timeframe'), 'stage': snap.get('stage'),
-                             'status': agent_search.status(entry) if entry else snap.get('recipeStatus'), 'at': now,
-                             'regimes': {r: p.get('key') for r, p in (snap.get('regimes') or {}).items()}}
-        write_json('agents.json', data)
-        reg.set_active(v)
-        reg.set_pinned(v)
         reason = f'teruggezet naar v{v} door de eigenaar; vastgezet tot je hem losmaakt'
-        _safe(lambda: reg.record({'at': now, 'by': 'eigenaar', 'recipeKey': key, 'recipeText': rec.get('recipeText'),
-                                  'dataset': rec.get('dataset'), 'features': rec.get('features'), 'settings': rec.get('settings'),
-                                  'metrics': rec.get('metrics'), 'decision': 'rollback', 'reason': reason, 'restoredVersion': v,
-                                  'publishedKey': key, 'comparedTo': None}), 'terugzetten vastleggen')
+        _restore_version(reg, v, rec, snap, data, True, 'eigenaar', reason)
     log(f'Modelregister: {reason}')
     think(f'Op jouw verzoek gebruik ik weer versie v{v} ({rec.get("recipeText") or key}). Zolang die vastgezet is, '
           'publiceer ik zelf geen ander model (ik blijf wel leren en alles vastleggen).', kind='info')
     return 200, {'ok': True, 'active': v, 'pinned': v}
+
+
+# ---------- Proefperiode na een promotie (zie probation.py) ----------
+
+def active_cooldowns(reg=None, now=None):
+    """Recepten in de afkoelperiode na een mislukte proef: {recept: tot wanneer (ISO)}."""
+    cd = (reg or registry()).meta('cooldowns', {}) or {}
+    now = now or time.time()
+    return {k: u for k, u in cd.items() if (probation_mod.ts_of(u) or 0) > now}
+
+
+def _cooldown_text(until):
+    try:
+        when = datetime.fromisoformat(until).strftime('%d-%m %H:%M')
+    except (TypeError, ValueError):
+        when = str(until)
+    return f'dit recept is in de afkoelperiode na een mislukte proefperiode (tot {when}); niet opnieuw gepromoot'
+
+
+def start_probation(reg, version, key, expected, since, prev_version=None, prev_key=None, th=None):
+    """Een net gepromote versie op proef zetten. Hetzelfde recept opnieuw getraind: de lopende (of
+    geslaagde) proef van de vorige versie loopt door, anders zou een recept dat vaak opnieuw getraind
+    wordt nooit genoeg trades halen. Een vorige versie die nog op proef was, is vervangen."""
+    th = th or promote_thresholds()
+    need = int(th['probationTrades'])
+    prev = reg.get(prev_version) if prev_version is not None and prev_version != version else None
+    pp = (prev or {}).get('probation') or {}
+    if prev and prev_key == key and pp.get('status') in ('proef', 'geslaagd'):
+        p = {**pp, 'inheritedFrom': prev_version}
+        reg.set_probation(version, p)
+        if pp.get('status') == 'proef':
+            reg.set_probation(prev_version, {**pp, 'status': None, 'reason': f'de proef loopt door in v{version} (hetzelfde recept opnieuw getraind)'})
+        return p
+    p = {'status': 'proef', 'trades': 0, 'avgPct': None, 'expectedPct': expected, 'upperPct': None, 'since': since, 'decidedAt': None,
+         'reason': f'op proef: na {need} echte trades vergelijk ik de praktijk met de eindtest', 'recipeKey': key,
+         'startVersion': version, 'need': need}
+    reg.set_probation(version, p)
+    if prev and pp.get('status') == 'proef':
+        reg.set_probation(prev_version, {**pp, 'status': None, 'decidedAt': since,
+                                         'reason': f'vervangen door v{version} voordat de proef klaar was'})
+    return p
+
+
+def _rollback_target(reg, before, failed_key, data):
+    """De nieuwste eerdere gepromote versie (van vóór de proef) die nog bruikbaar is: met snapshot,
+    niet te riskant, niet zelf door een proef gezakt en niet van het mislukte recept.
+    Geeft (versie, record, snapshot) of None."""
+    for r in reg.versions(2000):
+        if r['version'] >= before or r['decision'] != 'promoted' or not r['hasSnapshot']:
+            continue
+        if (r.get('probation') or {}).get('status') == 'mislukt':
+            continue
+        snap = reg.read_snapshot(r['version'])
+        if not _valid_snapshot(snap):
+            continue
+        key = snap.get('recipeKey') or r.get('publishedKey') or r.get('recipeKey')
+        if key == failed_key or _risky_snapshot(snap, data['recipes'].get(key)):
+            continue
+        return r['version'], r, snap
+    return None
+
+
+def _check_probation(now=None):
+    """Loopt de proef van de actieve versie, en zijn er genoeg echte trades? Dan beslissen: geslaagd,
+    of mislukt (automatisch terug naar de vorige bruikbare versie, niet vastgezet, met een melding
+    voor de bot en een afkoelperiode voor het recept). Licht: zonder lopende proef alleen twee
+    registerlezingen. Aanroepen met publish_lock (zie check_probation)."""
+    reg = registry()
+    act = reg.active()
+    if act is None:
+        return None
+    rec = reg.get(act)
+    p = (rec or {}).get('probation')
+    if not p or p.get('status') != 'proef':
+        return None
+    th = promote_thresholds()
+    need, conf = int(th['probationTrades']), float(th['probationConfidence'])
+    now = now or time.time()
+    since = probation_mod.ts_of(p.get('since'))
+    key = p.get('recipeKey')
+    rows = probation_mod.trades_in(probation_mod.real_trades(read_json('agent_trades.json', [])), key, since or 0)
+    ev = probation_mod.evaluate([t['pct'] for t in rows], p.get('expectedPct'), need, conf, since, now)
+    upd = {**p, 'trades': ev['trades'], 'avgPct': ev['avgPct'], 'upperPct': ev['upperPct'], 'need': need}
+    if not ev['decided']:
+        upd['reason'] = ev['reason']
+        if upd != p:
+            reg.set_probation(act, upd)
+        return upd
+    stamp = datetime.now().isoformat(timespec='seconds')
+    upd.update(status=ev['status'], decidedAt=stamp, reason=ev['reason'])
+    text = rec.get('recipeText') or key
+    if ev['status'] == 'geslaagd':
+        reg.set_probation(act, upd)
+        log(f'Modelregister: proef van v{act} geslaagd ({ev["reason"]})')
+        think(f'De proef van versie v{act} ({text}) is geslaagd: {ev["reason"]}.', kind='result')
+        return upd
+    pinned = reg.pinned()
+    if pinned is not None:
+        upd['reason'] += f'; v{pinned} is vastgezet door de eigenaar, dus ik zet niets terug'
+        reg.set_probation(act, upd)
+        log(f'Modelregister: proef van v{act} mislukt, maar vastgezet ({ev["reason"]})')
+        think(f'De proef van versie v{act} ({text}) is mislukt: {ev["reason"]}. Je hebt v{pinned} vastgezet, dus ik verander niets.', kind='warn')
+        return upd
+    data = load_agents()
+    target = _rollback_target(reg, p.get('startVersion') or act, key, data)
+    if target is None:
+        upd['reason'] += '; er is geen eerdere bruikbare versie om naar terug te gaan, dit model blijft'
+        reg.set_probation(act, upd)
+        log(f'Modelregister: proef van v{act} mislukt, geen eerdere versie ({ev["reason"]})')
+        think(f'De proef van versie v{act} ({text}) is mislukt: {ev["reason"]}. Er is geen eerdere bruikbare versie, dus dit model blijft.',
+              kind='warn')
+        return upd
+    v, trec, snap = target
+    upd['reason'] += f'; teruggezet naar v{v}'
+    upd['restoredVersion'] = v
+    reg.set_probation(act, upd)
+    reason = f'proefperiode mislukt: {ev["reason"]}'
+    notice = {'kind': 'probation-failed', 'version': act, 'restoredVersion': v, 'reason': reason, 'at': stamp}
+    _restore_version(reg, v, trec, snap, data, False, 'trainer', f'{reason}; automatisch teruggezet naar v{v} (niet vastgezet)',
+                     extra={'failedVersion': act}, notice=notice)
+    hours = float(th['probationCooldownHours'])
+    cd = active_cooldowns(reg)
+    cd[key] = (datetime.now() + timedelta(hours=hours)).isoformat(timespec='seconds')
+    reg.set_meta('cooldowns', cd)
+    log(f'Modelregister: proef van v{act} mislukt; automatisch teruggezet naar v{v}')
+    think(f'De proef van versie v{act} ({text}) is mislukt: {ev["reason"]}. Ik ga terug naar v{v} '
+          f'({trec.get("recipeText") or snap.get("recipeKey")}) en promoveer dit recept de komende {hours:g} uur niet opnieuw.', kind='warn')
+    return upd
+
+
+def check_probation(timeout=5):
+    """De proef controleren vanuit de feedback (HTTP): nooit laten crashen, en niet blijven wachten als
+    er net een leerronde publiceert (dan doet die het)."""
+    if not publish_lock.acquire(timeout=timeout):
+        return None
+    try:
+        return _safe(_check_probation, 'proefperiode controleren')
+    finally:
+        publish_lock.release()
 
 
 def registry_unpin():
@@ -1663,7 +1941,8 @@ def regime_plan(board, best, data):
                 lv = data['live'].get(p['key']) or {}
                 lc = live_check(p['key'], entry, sub.get('costPct'))
                 item['agent'] = {**{k: sub[k] for k in AGENT_PART_KEYS if k in sub}, 'recipeKey': p['key'],
-                                 'recipeStatus': agent_search.status(entry), 'stage': agent_stage(entry, lc), 'live': lv, 'liveCheck': lc}
+                                 'recipeStatus': agent_search.status(entry), 'stage': agent_stage(entry, lc), 'live': lv, 'liveCheck': lc,
+                                 'volStats': agent_search.vol_stats(entry)}
         out[reg] = item
     return out
 
@@ -1695,7 +1974,8 @@ def recipe_part(key, entry, sub, data):
     """Een recept zoals de bot het als (extra) onderdeel van de AI-trader krijgt."""
     lc = live_check(key, entry, sub.get('costPct'))
     return {**{k: sub[k] for k in AGENT_PART_KEYS if k in sub}, 'recipeKey': key, 'recipeStatus': agent_search.status(entry),
-            'stage': agent_stage(entry, lc), 'live': (data.get('live') or {}).get(key) or {}, 'liveCheck': lc, 'extra': True}
+            'stage': agent_stage(entry, lc), 'live': (data.get('live') or {}).get(key) or {}, 'liveCheck': lc, 'extra': True,
+            'volStats': agent_search.vol_stats(entry)}
 
 
 def add_kept(a, keys, data):
@@ -2046,6 +2326,9 @@ class Handler(BaseHTTPRequestHandler):
                 if entry and part.get('stage') != 'geblokkeerd':
                     part['liveCheck'] = live_check(part['recipeKey'], entry, part.get('costPct'))
                     part['stage'] = agent_stage(entry, part['liveCheck'])
+                if entry:
+                    # Resultaat per volatiliteit (eindtests): de bot handelt niet waar het recept verliest.
+                    part['volStats'] = agent_search.vol_stats(entry)
             data = json.dumps(a).encode()
             etag = '"' + hashlib.sha1(data).hexdigest()[:16] + '"'
             if self.headers.get('If-None-Match') == etag:

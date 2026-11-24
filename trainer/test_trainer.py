@@ -1616,7 +1616,7 @@ class TradeMetrics(unittest.TestCase):
         self.assertTrue(set(out['byVolatility']) <= {'hoog', 'normaal', 'laag'})
         self.assertEqual(sum(x['trades'] for x in out['byVolatility'].values()), 3)
         for x in out['byVolatility'].values():
-            self.assertEqual(set(x), {'trades', 'avgPct', 'winRate', 'profitFactor'})
+            self.assertEqual(set(x), {'trades', 'avgPct', 'winRate', 'profitFactor', 'edgePct'})
         # De oude velden blijven.
         for k in ('avgPct', 'totalPct', 'winRate', 'maxDrawdownPct', 'portfolio', 'byRegime', 'exits', 'byPair'):
             self.assertIn(k, out)
@@ -1682,6 +1682,8 @@ class Registry(unittest.TestCase):
         db = sqlite3.connect(f)
         self.assertEqual(self.R.schema_version(db), self.R.SCHEMA_VERSION)
         self.assertIn('has_snapshot', {r[1] for r in db.execute('PRAGMA table_info(sessions)')})
+        self.assertIn('probation', {r[1] for r in db.execute('PRAGMA table_info(sessions)')}, 'proefperiode per versie')
+        self.assertIsNone(self.reg.get(1)['probation'])
         self.assertEqual(self.R.migrate(db), self.R.SCHEMA_VERSION, 'nog een keer migreren doet niets')
         self.assertEqual(db.execute('SELECT COUNT(*) FROM schema_version').fetchone()[0], 1)
         db.close()
@@ -1900,7 +1902,9 @@ class PromotionGate(GateBase):
         self.assertFalse([n for n in os.listdir(self.dir) if '.tmp' in n], 'geen tijdelijke bestanden achtergelaten')
 
 
-class Rollback(GateBase):
+class HttpGate(GateBase):
+    """GateBase met een draaiende HTTP-server (de echte Handler)."""
+
     def setUp(self):
         super().setUp()
         self.httpd = ThreadingHTTPServer(('127.0.0.1', 0), self.s.Handler)
@@ -1921,6 +1925,8 @@ class Rollback(GateBase):
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read() or b'{}')
 
+
+class Rollback(HttpGate):
     def test_rollback_pin_unpin_and_refuse_risky(self):
         self.finish(RA, 'a1', RP())
         self.finish(RA, 'a2', RP())
@@ -1928,7 +1934,7 @@ class Rollback(GateBase):
         self.finish(RB, 'b2', RP(edge=0.4))
         code, reg = self.req('GET', '/registry')
         self.assertEqual(code, 200)
-        self.assertEqual(set(reg), {'versions', 'active', 'pinned', 'sessions', 'lastSession', 'thresholds'})
+        self.assertEqual(set(reg), {'versions', 'active', 'pinned', 'sessions', 'lastSession', 'thresholds', 'cooldowns'})
         self.assertEqual([v['version'] for v in reg['versions']], [4, 3, 2, 1])
         self.assertEqual([v['decision'] for v in reg['versions']], ['promoted', 'rejected', 'promoted', 'promoted'])
         self.assertEqual([v['hasSnapshot'] for v in reg['versions']], [True, False, True, True])
@@ -2036,3 +2042,364 @@ class RetestRule(GateBase):
         e4 = {'key': 'x', 'recipe': {'timeframe': '4h'}, 'rounds': [{'ts': now - 3 * 3600}]}
         self.assertFalse(rule1(e4, now))
         self.assertTrue(rule1(e4, now + 3600 + 1))
+
+
+def RPS(avg=0.3, std=1.0, edge=0.2, trades=60, vol=None, **kw):
+    """RP met de spreiding van de trade-rendementen (stdPct), zodat de statistische toets kan; met vol
+    ook het resultaat per volatiliteit in de eindtest."""
+    r = RP(edge=edge, trades=trades, avg=avg, **kw)
+    for part in ('validation', 'test'):
+        r[part] = {**r[part], 'stdPct': std}
+    if vol is not None:
+        r['test']['byVolatility'] = vol
+    return r
+
+
+def AT(recipe, pct, mode='paper', explore=False, virtual=False, offset=60):
+    """Een gesloten trade van de AI-trader zoals de bot hem terugstuurt (na het promotiemoment)."""
+    t0 = time.time() + offset
+    return {'kind': 'agentTrade', 'timeframe': recipe['timeframe'], 'recipe': A_key(recipe), 'pct': pct, 'mode': mode,
+            'explore': explore, 'virtual': virtual, 'openedAt': datetime_iso(t0), 'closedAt': datetime_iso(t0 + 600)}
+
+
+def trades_around(recipe, mean, n=30, spread=0.05, **kw):
+    return [AT(recipe, mean + (spread if i % 2 else -spread), offset=60 + i, **kw) for i in range(n)]
+
+
+class Probation(GateBase):
+    """Proefperiode na een promotie: geslaagd, mislukt (terugzetten, melding, afkoeling), te weinig
+    trades, vastgezet en geen vorige versie."""
+
+    def promote_two(self):
+        # v1, v2: recept A (de proef van v1 loopt door in v2), v3: B één ronde, v4: B gepromoot (op proef).
+        self.finish(RA, 'a1', RP())
+        self.finish(RA, 'a2', RP())
+        self.finish(RB, 'b1', RP(edge=0.4))
+        d, why = self.finish(RB, 'b2', RP(edge=0.4))
+        self.assertEqual(d, 'promoted', why)
+        reg = self.s.registry()
+        self.assertEqual(reg.active(), 4)
+        return reg
+
+    def test_new_version_is_on_probation_and_same_recipe_continues(self):
+        reg = self.promote_two()
+        p4 = reg.get(4)['probation']
+        self.assertEqual(p4['status'], 'proef')
+        self.assertEqual((p4['startVersion'], p4['recipeKey'], p4['trades']), (4, A_key(RB), 0))
+        self.assertAlmostEqual(p4['expectedPct'], 0.3)
+        for k in ('status', 'trades', 'avgPct', 'expectedPct', 'upperPct', 'since', 'decidedAt', 'reason'):
+            self.assertIn(k, p4)
+        self.assertIsNone(reg.get(1)['probation']['status'], 'de proef van v1 liep door in v2')
+        self.assertEqual(reg.get(2)['probation']['startVersion'], 1)
+        self.assertIn('vervangen door v4', reg.get(2)['probation']['reason'])
+
+    def test_passed(self):
+        reg = self.promote_two()
+        self.s.add_agent_trades(trades_around(RB, 0.2))
+        p = reg.get(4)['probation']
+        self.assertEqual(p['status'], 'geslaagd', p)
+        self.assertEqual(p['trades'], 30)
+        self.assertAlmostEqual(p['avgPct'], 0.2)
+        self.assertIsNotNone(p['decidedAt'])
+        self.assertEqual(reg.active(), 4)
+        self.assertNotIn('notice', self.s.read_json('agent.json', {}))
+
+    def test_failed_rolls_back_with_notice_and_cooldown(self):
+        s = self.s
+        reg = self.promote_two()
+        # Verkenner, virtuele trades en trades van andere recepten tellen niet mee.
+        s.add_agent_trades([AT(RB, -5, explore=True), AT(RB, -5, virtual=True), AT(RA, -5)] + trades_around(RB, -0.3, n=29))
+        self.assertEqual(reg.get(4)['probation']['status'], 'proef', '29 echte trades: nog niet')
+        self.assertEqual(reg.get(4)['probation']['trades'], 29)
+        s.add_agent_trades([AT(RB, -0.3, offset=200)])
+        p = reg.get(4)['probation']
+        self.assertEqual(p['status'], 'mislukt', p)
+        self.assertLess(p['upperPct'], p['expectedPct'])
+        self.assertEqual(p['restoredVersion'], 2)
+        self.assertEqual((reg.active(), reg.pinned()), (2, None), 'teruggezet naar de vorige versie, niet vastgezet')
+        self.assertEqual(self.published(), (A_key(RA), 'a2'))
+        self.assertEqual(s.load_agents()['published']['key'], A_key(RA))
+        last = reg.versions(1)[0]
+        self.assertEqual((last['decision'], last['restoredVersion'], last['failedVersion']), ('rollback', 2, 4))
+        self.assertTrue(last['reason'].startswith('proefperiode mislukt: '), last['reason'])
+        note = s.read_json('agent.json', {})['notice']
+        self.assertEqual((note['kind'], note['version'], note['restoredVersion']), ('probation-failed', 4, 2))
+        self.assertTrue(note['reason'].startswith('proefperiode mislukt') and note['at'])
+        self.assertNotIn('notice', reg.read_snapshot(2), 'de snapshot zelf blijft schoon')
+        # Afkoelperiode: recept B wordt (ook als het beste) niet meteen weer gepromoot.
+        self.assertIn(A_key(RB), s.active_cooldowns(reg))
+        d, why = self.finish(RB, 'b3', RP(edge=0.4))
+        self.assertEqual(d, 'kept', why)
+        self.assertIn('afkoelperiode', why)
+        self.assertEqual(self.published(), (A_key(RA), 'a2'))
+        self.assertEqual(s.read_json('agent.json', {})['notice']['version'], 4, 'de melding blijft staan')
+        # Na de afkoelperiode mag het weer.
+        reg.set_meta('cooldowns', {A_key(RB): '2000-01-01T00:00:00'})
+        self.assertEqual(s.active_cooldowns(reg), {})
+        self.assertEqual(self.finish(RB, 'b4', RP(edge=0.4))[0], 'promoted')
+
+    def test_bad_luck_is_not_failure(self):
+        import probation
+        # Gemiddeld iets verlies, maar zo'n grote spreiding dat het pech kan zijn.
+        pcts = [-0.05 + (3 if i % 2 else -3) for i in range(30)]
+        ev = probation.evaluate(pcts, 0.3, 30, 0.9, time.time(), time.time())
+        self.assertEqual(ev['status'], 'geslaagd', ev)
+        self.assertGreater(ev['upperPct'], 0.3)
+        self.assertIn('pech', ev['reason'])
+        bad = probation.evaluate([-0.3] * 15 + [-0.2] * 15, 0.3, 30, 0.9, time.time(), time.time())
+        self.assertEqual(bad['status'], 'mislukt')
+        self.assertIn('−0,25%', bad['reason'])
+
+    def test_too_few_trades_does_nothing(self):
+        s = self.s
+        reg = self.promote_two()
+        s.add_agent_trades(trades_around(RB, -1.0, n=10))
+        p = reg.get(4)['probation']
+        self.assertEqual((p['status'], p['trades']), ('proef', 10))
+        self.assertIn('10 van 30', p['reason'])
+        self.assertEqual(reg.active(), 4)
+        # Na veertien dagen nog te weinig: de proef loopt door, met uitleg, zonder actie.
+        with s.publish_lock:
+            p = s._check_probation(now=time.time() + 15 * 86400)
+        self.assertEqual(p['status'], 'proef')
+        self.assertIn('na 15 dagen', p['reason'])
+        self.assertEqual(reg.get(4)['probation']['reason'], p['reason'])
+        self.assertEqual(reg.active(), 4)
+        self.assertNotIn('notice', s.read_json('agent.json', {}))
+
+    def test_pinned_is_not_rolled_back(self):
+        s = self.s
+        reg = self.promote_two()
+        reg.set_pinned(4)
+        s.add_agent_trades(trades_around(RB, -0.3))
+        p = reg.get(4)['probation']
+        self.assertEqual(p['status'], 'mislukt')
+        self.assertIn('vastgezet', p['reason'])
+        self.assertEqual((reg.active(), reg.pinned()), (4, 4))
+        self.assertEqual(self.published()[0], A_key(RB))
+        self.assertNotIn('notice', s.read_json('agent.json', {}))
+        self.assertNotEqual(reg.versions(1)[0]['decision'], 'rollback')
+
+    def test_no_previous_version_keeps_model(self):
+        s = self.s
+        self.finish(RA, 'a1', RP())
+        reg = s.registry()
+        s.add_agent_trades(trades_around(RA, -0.3))
+        p = reg.get(1)['probation']
+        self.assertEqual(p['status'], 'mislukt')
+        self.assertIn('geen eerdere bruikbare versie', p['reason'])
+        self.assertEqual(reg.active(), 1)
+        self.assertEqual(self.published(), (A_key(RA), 'a1'))
+        self.assertNotIn('notice', s.read_json('agent.json', {}))
+        # Daarna niets meer: de proef is beslist.
+        s.add_agent_trades(trades_around(RA, -0.3, n=5))
+        self.assertEqual(reg.get(1)['probation']['trades'], 30)
+
+    def test_errors_never_break_feedback_or_rounds(self):
+        from unittest import mock
+        s = self.s
+        self.promote_two()
+        with mock.patch.object(s.probation_mod, 'evaluate', side_effect=RuntimeError('kapot')):
+            self.assertEqual(s.add_agent_trades(trades_around(RB, -0.3)), 30)
+            self.assertEqual(self.finish(RB, 'b3', RP(edge=0.4))[0], 'promoted')
+        self.assertTrue(any('proefperiode' in m and 'mislukt' in m for m in self.logs))
+
+    def test_config_keys(self):
+        s = self.s
+        th = s.promote_thresholds()
+        self.assertEqual((th['promoteConfidence'], th['probationTrades'], th['probationConfidence'], th['probationCooldownHours']),
+                         (0.95, 30, 0.9, 72))
+        cfg = s.validate_config({'agent': {'probationTrades': 12, 'promoteConfidence': 0.9, 'probationCooldownHours': 24}})
+        self.assertEqual((cfg['agent']['probationTrades'], cfg['agent']['promoteConfidence'], cfg['agent']['probationCooldownHours']),
+                         (12, 0.9, 24.0))
+        for bad in ({'probationTrades': 1}, {'promoteConfidence': 1.5}, {'probationConfidence': 0.1}, {'probationCooldownHours': -1}):
+            with self.assertRaises(ValueError):
+                s.validate_config({'agent': bad})
+
+
+class StatGate(GateBase):
+    """De statistische promotietoets op de eindtests."""
+
+    def M(self, mean, std=1.0, n=300, order=2, ratio=10.0):
+        return {'status': 'veelbelovend', 'order': order, 'ratio': ratio, 'tested': 2, 'testAvg': mean, 'testDrawdown': 4.0,
+                'testProfitFactor': 2.0, 'testMean': mean, 'testStd': std, 'testTrades': n}
+
+    def test_clearly_better_noise_and_selection_correction(self):
+        s = self.s
+        th = s.promote_thresholds()
+        ok, why = s.promotion_gate(self.M(0.5), self.M(0.1), th)
+        self.assertTrue(ok, why)
+        self.assertIn('met 95% zekerheid beter: +0,40% per trade (ondergrens +0,', why)
+        # Ruis: een klein verschil bij deze spreiding is niet genoeg, ook al is de score veel hoger.
+        ok, why = s.promotion_gate(self.M(0.15, ratio=50), self.M(0.1), th)
+        self.assertFalse(ok)
+        self.assertTrue(why.startswith('niet zeker genoeg beter: ondergrens −0,'), why)
+        # Selectiecorrectie: met één recept net genoeg, met honderd geteste recepten niet meer.
+        self.assertTrue(s.promotion_gate(self.M(0.3), self.M(0.1), th, candidates=1)[0])
+        ok, why = s.promotion_gate(self.M(0.3), self.M(0.1), th, candidates=100)
+        self.assertFalse(ok)
+        self.assertIn('gecorrigeerd voor 100 geteste recepten', why)
+        # De bestaande eisen blijven: terugval en winstfactor.
+        ok, why = s.promotion_gate({**self.M(0.5), 'testDrawdown': 10.0}, self.M(0.1), th)
+        self.assertFalse(ok)
+        self.assertIn('terugval', why)
+        ok, why = s.promotion_gate({**self.M(0.5), 'testProfitFactor': 1.0}, self.M(0.1), th)
+        self.assertFalse(ok)
+        self.assertIn('winstfactor', why)
+        # Strenger instellen kan.
+        self.assertFalse(s.promotion_gate(self.M(0.3), self.M(0.1), {**th, 'promoteConfidence': 0.999})[0])
+
+    def test_old_rounds_without_spread_fall_back_to_score(self):
+        s = self.s
+        th = s.promote_thresholds()
+        old = {**self.M(0.1), 'testStd': None, 'testTrades': None}
+        ok, why = s.promotion_gate(self.M(0.15, ratio=10.2), old, th)
+        self.assertFalse(ok)
+        self.assertIn('niet duidelijk hoger', why, 'terugval op de score-eis')
+        ok, why = s.promotion_gate(self.M(0.15, ratio=20), old, th)
+        self.assertTrue(ok, why)
+        self.assertNotIn('zekerheid', why)
+
+    def test_spread_from_stored_std_or_sharpe(self):
+        import agent_search as A
+        e = {'rounds': [{'test': {'trades': 10, 'avgPct': 0.3, 'stdPct': 1.0}}, {'test': {'trades': 30, 'avgPct': 0.1, 'stdPct': 2.0}}]}
+        mean, sd, n = A.test_stats(e)
+        both = [0.3 + (1.0 if i % 2 else -1.0) * math.sqrt(9 / 10) for i in range(10)] + \
+               [0.1 + (2.0 if i % 2 else -2.0) * math.sqrt(29 / 30) for i in range(30)]
+        self.assertEqual(n, 40)
+        self.assertAlmostEqual(mean, float(np.mean(both)))
+        self.assertAlmostEqual(sd, float(np.std(both, ddof=1)))
+        # Oude ronde zonder stdPct maar met sharpe: std = gemiddelde / sharpe.
+        old = {'rounds': [{'test': {'trades': 20, 'avgPct': 0.3, 'sharpe': 0.5, 'stdPct': None}}]}
+        self.assertAlmostEqual(A.test_stats(old)[1], 0.6)
+        self.assertIsNone(A.test_stats({'rounds': [{'test': {'trades': 20, 'avgPct': 0.3, 'sharpe': None}}]}))
+        import agent
+        self.assertAlmostEqual(agent.trade_metrics([2.0, -1.0, 3.0, -1.0])['stdPct'], float(np.std([2.0, -1.0, 3.0, -1.0], ddof=1)))
+        self.assertIn('stdPct', A.PART_FIELDS)
+
+    def test_t_quantile(self):
+        import stats
+        for df, p, want in ((5, 0.95, 2.015), (29, 0.9, 1.3114), (100, 0.95, 1.6602), (2, 0.95, 2.92), (1e9, 0.95, 1.6449)):
+            self.assertAlmostEqual(stats.t_quantile(p, df), want, places=3)
+
+    def test_in_a_round(self):
+        s = self.s
+        self.finish(RA, 'a1', RPS(avg=0.3))
+        # Veel hogere score (edge), maar per trade in de eindtest nauwelijks beter: niet promoveren.
+        self.finish(RB, 'b1', RPS(avg=0.31, edge=0.4))
+        d, why = self.finish(RB, 'b2', RPS(avg=0.31, edge=0.4))
+        self.assertEqual(d, 'kept', why)
+        self.assertIn('niet zeker genoeg beter', why)
+        self.finish(RC, 'c1', RPS(avg=1.0, edge=0.5))
+        d, why = self.finish(RC, 'c2', RPS(avg=1.0, edge=0.5))
+        self.assertEqual(d, 'promoted', why)
+        self.assertIn('aantoonbaar beter (met 95% zekerheid beter', why)
+        self.assertIn('gecorrigeerd voor 3 geteste recepten', why)
+        rec = s.registry().versions(1)[0]
+        self.assertEqual(rec['reason'][:len(agent_text(RC))], agent_text(RC))
+        self.assertAlmostEqual(rec['metrics']['test']['stdPct'], 1.0)
+
+
+def agent_text(r):
+    import agent
+    return agent.recipe_text({**agent.RECIPE_DEFAULT, **r})
+
+
+VOL = {'hoog': {'trades': 10, 'avgPct': -0.5, 'winRate': 30, 'profitFactor': 0.5, 'edgePct': -0.6},
+       'normaal': {'trades': 40, 'avgPct': 0.4, 'winRate': 60, 'profitFactor': 2.0, 'edgePct': 0.3},
+       'laag': {'trades': 10, 'avgPct': 0.2, 'winRate': 50, 'profitFactor': 1.5, 'edgePct': None}}
+VOL2 = {'hoog': {'trades': 30, 'avgPct': 0.1, 'winRate': 50, 'profitFactor': 1.2, 'edgePct': 0.0},
+        'normaal': {'trades': 30, 'avgPct': 0.2, 'winRate': 55, 'profitFactor': 1.5, 'edgePct': 0.1}}
+
+
+class VolStatsAndPractice(HttpGate):
+    def test_vol_stats_summed_over_test_rounds(self):
+        import agent_search as A
+        e = {'rounds': [{'test': {'byVolatility': VOL}}, {'test': {'byVolatility': VOL2}}, {'test': None}]}
+        v = A.vol_stats(e)
+        self.assertEqual(set(v), {'hoog', 'normaal', 'laag'})
+        self.assertEqual(v['hoog']['trades'], 40)
+        self.assertAlmostEqual(v['hoog']['avgPct'], (10 * -0.5 + 30 * 0.1) / 40)
+        self.assertAlmostEqual(v['hoog']['edgePct'], (10 * -0.6 + 30 * 0.0) / 40)
+        self.assertAlmostEqual(v['normaal']['avgPct'], (40 * 0.4 + 30 * 0.2) / 70)
+        self.assertEqual(v['laag']['trades'], 10)
+        self.assertNotIn('edgePct', v['laag'], 'geen marktbeweging bekend: geen voordeel')
+        self.assertEqual(A.vol_stats({'rounds': []})['hoog'], {'trades': 0, 'avgPct': None})
+
+    def test_vol_stats_in_every_part_of_agent_json(self):
+        s = self.s
+        self.finish(RA, 'a1', RPS(vol=VOL))
+        self.finish(RA, 'a2', RPS(vol=VOL2))
+        a = s.read_json('agent.json', None)
+        self.assertEqual(a['volStats']['hoog']['trades'], 40)
+        self.assertAlmostEqual(a['volStats']['normaal']['avgPct'], (40 * 0.4 + 30 * 0.2) / 70)
+        # Extra recepten (recipe_part), het plan per marktfase en recepten die de eigenaar live hield.
+        self.finish(RB, 'b1', RPS(vol=VOL))
+        data = s.load_agents()
+        part = s.recipe_part(A_key(RB), data['recipes'][A_key(RB)], fake_agent(RB, 'b1'), data)
+        self.assertEqual(part['volStats']['hoog']['avgPct'], -0.5)
+        kept = s.add_kept({'recipeKey': A_key(RA), 'regimes': {}, 'extras': []}, [A_key(RB)], data)
+        self.assertEqual(kept['extras'][-1]['volStats']['normaal']['trades'], 40)
+        board = [data['recipes'][A_key(RA)], data['recipes'][A_key(RB)]]
+        from unittest import mock
+        with mock.patch.object(s.agent_search, 'choose_per_regime',
+                               return_value={'stijgend': {'key': A_key(RB), 'why': 'best', 'edge': 0.3, 'trades': 40}}):
+            plan = s.regime_plan(board, data['recipes'][A_key(RA)], data)
+        self.assertEqual(plan['stijgend']['agent']['volStats']['laag']['trades'], 10)
+        # GET /agent.json werkt het bij, ook voor ?keep=.
+        a = s.read_json('agent.json', None)
+        a.pop('volStats')
+        s.write_json('agent.json', a)
+        code, got = self.req('GET', f'/agent.json?keep={A_key(RB)}')
+        self.assertEqual(code, 200)
+        self.assertEqual(got['volStats']['hoog']['trades'], 40)
+        self.assertEqual(next(x for x in got['extras'] if x['recipeKey'] == A_key(RB))['volStats']['hoog']['trades'], 10)
+
+    def test_practice_per_version(self):
+        import probation
+        s = self.s
+        reg = s.registry()
+        snap = lambda r, tag: {**fake_agent(r, tag), 'recipeKey': A_key(r)}
+        base = {'by': 'VPS', 'recipeText': 't', 'metrics': {}, 'comparedTo': None}
+        reg.record({**base, 'at': '2026-01-01T00:00:00', 'recipeKey': A_key(RA), 'publishedKey': A_key(RA), 'decision': 'promoted',
+                    'reason': 'x', 'expectedPct': 0.3}, snapshot=snap(RA, 'a1'))
+        reg.record({**base, 'at': '2026-01-05T00:00:00', 'recipeKey': A_key(RC), 'decision': 'rejected', 'reason': 'x'})
+        reg.record({**base, 'at': '2026-01-10T00:00:00', 'recipeKey': A_key(RB), 'publishedKey': A_key(RB), 'decision': 'promoted',
+                    'reason': 'x', 'expectedPct': 0.2}, snapshot=snap(RB, 'b1'))
+        reg.record({**base, 'at': '2026-01-20T00:00:00', 'recipeKey': A_key(RA), 'publishedKey': A_key(RA), 'decision': 'rollback',
+                    'reason': 'x', 'restoredVersion': 1})
+        reg.set_active(1)
+
+        def t(r, day, pct, mode='paper', **kw):
+            return {'recipe': A_key(r), 'pct': pct, 'mode': mode, 'openedAt': f'2026-01-{day:02d}T12:00:00',
+                    'closedAt': f'2026-01-{day:02d}T13:00:00', **kw}
+        rows = [t(RA, 2, 1.0), t(RA, 3, -0.5, 'live'), t(RA, 4, 0.5, explore=True), t(RA, 4, 0.5, virtual=True),
+                t(RA, 12, 9.0),                         # recept A terwijl v3 (B) actief was: hoort niet bij v1
+                t(RB, 11, 0.4), t(RB, 12, -0.1, 'live'), t(RB, 21, 5.0),  # de laatste is na het terugzetten
+                t(RA, 22, 2.0, 'live')]                # v1 weer actief na het terugzetten
+        s.write_json('agent_trades.json', rows)
+        code, out = self.req('GET', '/registry')
+        self.assertEqual(code, 200)
+        by = {v['version']: v for v in out['versions']}
+        self.assertNotIn('practice', by[2], 'alleen gepromote en de actieve versie')
+        self.assertNotIn('practice', by[4])
+        p1, p3 = by[1]['practice'], by[3]['practice']
+        self.assertEqual((p1['trades'], p1['sumPct'], p1['expectedPct']), (3, 2.5, 0.3))
+        self.assertAlmostEqual(p1['avgPct'], 2.5 / 3)
+        self.assertEqual(p1['byMode']['paper'], {'trades': 1, 'avgPct': 1.0})
+        self.assertEqual(p1['byMode']['live']['trades'], 2)
+        self.assertAlmostEqual(p1['byMode']['live']['avgPct'], 0.75)
+        self.assertEqual([x['cumPct'] for x in p1['series']], [1.0, 0.5, 2.5])
+        self.assertEqual([x['mode'] for x in p1['series']], ['paper', 'live', 'live'])
+        self.assertEqual(p1['series'][0]['at'], '2026-01-02T13:00:00')
+        self.assertEqual((p3['trades'], p3['expectedPct']), (2, 0.2))
+        self.assertAlmostEqual(p3['sumPct'], 0.3)
+        self.assertEqual(p3['byMode']['live'], {'trades': 1, 'avgPct': -0.1})
+        json.dumps(out, allow_nan=False)
+        # Duizenden trades: hooguit 300 punten, eerste en laatste blijven, het eindtotaal klopt.
+        many = [t(RA, 2, 0.01 * (i % 7 - 3)) for i in range(5000)]
+        pr = probation.practice(probation.real_trades(many), [(0, None, A_key(RA))])
+        self.assertEqual(len(pr['series']), 300)
+        self.assertEqual(pr['trades'], 5000)
+        self.assertAlmostEqual(pr['series'][-1]['cumPct'], pr['sumPct'], places=3)
+        self.assertAlmostEqual(pr['series'][0]['cumPct'], -0.03)
