@@ -390,14 +390,113 @@ def _value(p, now):
 
 
 def _by_regime(trades):
-    """Resultaat per marktfase bij het kopen (voor de Strategy Agent)."""
+    """Resultaat per marktfase bij het kopen (voor de Strategy Agent): aantal trades, gemiddeld
+    resultaat, voordeel boven de markt, aandeel met winst en de winstfactor."""
     out = {}
     for reg in {t['reg'] for t in trades if t.get('reg')}:
         ts = [t for t in trades if t.get('reg') == reg]
         cmp = [t for t in ts if t['mkt'] is not None]
         out[reg] = {'trades': len(ts), 'avgPct': sum(t['ret'] for t in ts) / len(ts),
-                    'edgePct': sum(t['ret'] - t['mkt'] for t in cmp) / len(cmp) if cmp else None}
+                    'edgePct': sum(t['ret'] - t['mkt'] for t in cmp) / len(cmp) if cmp else None,
+                    'winRate': sum(1 for t in ts if t['ret'] > 0) / len(ts) * 100,
+                    'profitFactor': profit_factor([t['ret'] for t in ts])}
     return out
+
+
+# ---------- Uitgebreidere beoordeling van de trades ----------
+# Volatiliteit bij het instappen (moet precies zo als in de bot): de ATR in % op het instapmoment
+# gedeeld door de mediaan van de ATR in % van dezelfde coin over de VOORGAANDE VOL_WINDOW candles
+# (alleen verleden: het instapcandle zelf telt niet mee in de mediaan, latere candles nooit).
+# Verhouding > VOL_HIGH: 'hoog', < VOL_LOW: 'laag', anders 'normaal'. Met minder dan VOL_MIN_CANDLES
+# bekende waarden in dat venster is de volatiliteit onbekend (de trade telt dan niet mee per fase).
+VOL_WINDOW = 500
+VOL_HIGH = 1.5
+VOL_LOW = 0.67
+VOL_MIN_CANDLES = 100
+VOL_REGIMES = ['hoog', 'normaal', 'laag']
+ATR_COL = FEATURES.index('atrPct')
+
+
+def vol_ratio(atr, i, window=VOL_WINDOW, min_n=VOL_MIN_CANDLES):
+    """ATR% op candle i gedeeld door de mediaan van ATR% over candles [i - window, i - 1].
+    atr: reeks ATR% per candle (NaN/None = onbekend). Gebruikt niets van na candle i.
+    None als onbekend (te weinig geschiedenis, geen ATR op i, mediaan 0)."""
+    if i is None or i < 0 or i >= len(atr):
+        return None
+    now = atr[i]
+    if now is None or not math.isfinite(float(now)):
+        return None
+    past = np.asarray(atr[max(0, i - window):i], dtype=float)
+    past = past[np.isfinite(past)]
+    if len(past) < min_n:
+        return None
+    med = float(np.median(past))
+    return float(now) / med if med > 0 else None
+
+
+def vol_regime(ratio):
+    """'hoog' / 'normaal' / 'laag' bij een volatiliteitsverhouding, None als die onbekend is."""
+    if ratio is None:
+        return None
+    return 'hoog' if ratio > VOL_HIGH else 'laag' if ratio < VOL_LOW else 'normaal'
+
+
+def profit_factor(rets):
+    """Som van de winsten gedeeld door de som van de verliezen (absoluut). None zonder verlies."""
+    loss = -sum(r for r in rets if r < 0)
+    return sum(r for r in rets if r > 0) / loss if loss > 0 else None
+
+
+def trade_metrics(rets):
+    """Extra cijfers over de trade-rendementen (% na kosten, per trade):
+    - netReturnPct: SAMENGESTELD rendement, alsof elke trade na elkaar het hele vermogen inzet:
+      (product van (1 + r/100) - 1) x 100. Volgorde maakt voor een product niet uit;
+    - profitFactor: som winst / |som verlies| (None als er geen verlies is);
+    - sharpe: gemiddelde / standaardafwijking (steekproef) van de trade-rendementen, per trade en
+      niet op jaarbasis (None bij minder dan 2 trades of als alle trades even groot zijn);
+    - avgWinPct / avgLossPct: gemiddelde winnende en verliezende trade (None als die er niet zijn);
+    - grossWinPct / grossLossPct: som winst en |som verlies| (om over rondes op te tellen)."""
+    rets = [float(r) for r in rets]
+    n = len(rets)
+    wins = [r for r in rets if r > 0]
+    losses = [r for r in rets if r < 0]
+    growth = 1.0
+    for r in rets:
+        growth *= max(0.0, 1 + r / 100)
+    sharpe = None
+    if n >= 2:
+        mean = sum(rets) / n
+        sd = math.sqrt(sum((r - mean) ** 2 for r in rets) / (n - 1))
+        sharpe = mean / sd if sd > 1e-12 else None
+    return {'netReturnPct': (growth - 1) * 100 if n else 0.0, 'profitFactor': profit_factor(rets), 'sharpe': sharpe,
+            'avgWinPct': sum(wins) / len(wins) if wins else None, 'avgLossPct': sum(losses) / len(losses) if losses else None,
+            'grossWinPct': sum(wins), 'grossLossPct': -sum(losses)}
+
+
+def _by_volatility(trades):
+    """Resultaat per volatiliteit bij het kopen ('hoog' / 'normaal' / 'laag')."""
+    out = {}
+    for reg in VOL_REGIMES:
+        ts = [t for t in trades if t.get('vol') == reg]
+        if ts:
+            out[reg] = {'trades': len(ts), 'avgPct': sum(t['ret'] for t in ts) / len(ts),
+                        'winRate': sum(1 for t in ts if t['ret'] > 0) / len(ts) * 100,
+                        'profitFactor': profit_factor([t['ret'] for t in ts])}
+    return out
+
+
+def _atr_series(mk):
+    """ATR% per candle van een coin (uit de kenmerken), of None als die er niet zijn."""
+    X = getattr(mk, 'X', None)
+    if X is None or getattr(X, 'ndim', 0) != 2 or X.shape[1] <= ATR_COL:
+        return None
+    return X[:, ATR_COL]
+
+
+def entry_vol_regime(mk, i):
+    """Volatiliteit van coin mk bij instappen op candle i (zie vol_ratio)."""
+    atr = _atr_series(mk)
+    return vol_regime(vol_ratio(atr, i)) if atr is not None else None
 
 
 def backtest(markets, part, entry_model, entry_med, exit_model, exit_med, H, cost, safety_stop, thresholds, cache=None, bench=None, regimes=None, slots=2, pol=(1, 0.0)):
@@ -429,7 +528,8 @@ def backtest(markets, part, entry_model, entry_med, exit_model, exit_med, H, cos
                     end = min(i + held, len(mk.c) - 1)
                     mkt = market_move(bench, int(mk.c[i][0]), int(mk.c[end][0]))
                     reg = regimes.at(mk.pair, int(mk.c[i][0]) + mk.tf_ms) if regimes else None
-                    trades.append({'pair': mk.pair, 'i': i, 'ret': ret - c_mk, 'held': held, 'why': why, 'mkt': mkt, 'reg': reg})
+                    trades.append({'pair': mk.pair, 'i': i, 'ret': ret - c_mk, 'held': held, 'why': why, 'mkt': mkt, 'reg': reg,
+                                   'vol': entry_vol_regime(mk, i)})
                     i += max(1, held)
                 else:
                     i += 1
@@ -452,6 +552,9 @@ def backtest(markets, part, entry_model, entry_med, exit_model, exit_med, H, cos
             'buyHoldPct': sum(bh) / len(bh) if bh else None,
             'exits': {k: sum(1 for t in trades if t['why'] == k) for k in ('zelf verkocht', 'veiligheidsstop', 'maximale duur', 'einde data')},
             'byRegime': _by_regime(trades),
+            # Uitgebreidere beoordeling (zie trade_metrics) en het resultaat per volatiliteit.
+            **trade_metrics([t['ret'] for t in trades]),
+            'byVolatility': _by_volatility(trades),
             'byPair': {p: {'trades': sum(1 for t in trades if t['pair'] == p), 'totalPct': sum(t['ret'] for t in trades if t['pair'] == p)}
                        for p in {t['pair'] for t in trades}},
         }

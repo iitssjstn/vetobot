@@ -68,7 +68,8 @@ def neighbours(r, allowed):
 
 
 PART_FIELDS = ('trades', 'avgPct', 'totalPct', 'winRate', 'avgHeld', 'buyHoldPct', 'maxDrawdownPct', 'worstPct', 'marketPct',
-               'edgePct', 'beatMarketRate', 'byRegime', 'portfolio')
+               'edgePct', 'beatMarketRate', 'byRegime', 'portfolio',
+               'netReturnPct', 'profitFactor', 'sharpe', 'avgWinPct', 'avgLossPct', 'grossWinPct', 'grossLossPct', 'byVolatility')
 
 
 def _agg(rounds, part):
@@ -118,6 +119,21 @@ def score(entry):
             'tested': t['rounds'], 'positive': t['positive'], 'drawdown': max(dds) if dds else None, 'safe': v['ratio'],
             'test': {'avg': t['avg'], 'edge': t['edge'], 'trades': t['trades'], 'drawdown': t['drawdown']},
             'periods': {'n': fn, 'positive': fp, 'share': cons}}
+
+
+def test_profit_factor(entry):
+    """Winstfactor in de eindtests over alle rondes samen: som winst / |som verlies|.
+    Geeft (waarde, bekend): bekend is False als geen enkele ronde die cijfers heeft (oudere rondes);
+    zonder verlies maar met winst is de waarde oneindig (float('inf'), niet in JSON zetten)."""
+    rows = [x['test'] for x in entry.get('rounds', []) if (x.get('test') or {}).get('trades')
+            and x['test'].get('grossWinPct') is not None and x['test'].get('grossLossPct') is not None]
+    if not rows:
+        return None, False
+    win = sum(r['grossWinPct'] for r in rows)
+    loss = sum(r['grossLossPct'] for r in rows)
+    if loss > 0:
+        return win / loss, True
+    return (float('inf') if win > 0 else None), True
 
 
 def status(entry):
@@ -220,12 +236,27 @@ def tf_weight(recipes, tf):
     return max(0.2, min(3.0, 1.0 + avg * 5))
 
 
-def pick(recipes, timeframes, rnd=None, now=None, exclude=frozenset()):
+def last_test_ts(entry):
+    """Wanneer dit recept voor het laatst getest is (unix-tijd), 0 als nooit."""
+    return (entry.get('rounds') or [{}])[-1].get('ts') or 0 if entry else 0
+
+
+def pick(recipes, timeframes, rnd=None, now=None, exclude=frozenset(), may_retest=None):
     """Welk recept deze ronde, en waarom. Geeft (recept, reden).
-    exclude: sleutels van recepten die nu al door de VPS of een helper getraind worden."""
+    exclude: sleutels van recepten die nu al door de VPS of een helper getraind worden.
+    may_retest(entry, now): mag een al getest recept nu opnieuw (genoeg nieuwe data)? Nieuwe recepten
+    mogen altijd. Is er niets dat mag, dan (None, 'te vers'): even wachten op nieuwe data."""
     rnd = rnd or random.Random()
     now = now or time.time()
     allowed = {key_of(r): r for r in all_recipes(timeframes) if key_of(r) not in exclude}
+    # Verder bouwen mag ook op een beste recept dat zelf nog te vers is om opnieuw te trainen.
+    base_board = [e for e in leaderboard(recipes, 5) if key_of(e['recipe']) in allowed and status(e) not in ('afgevallen', 'te riskant')]
+    if may_retest is not None:
+        # Al geteste recepten zonder genoeg nieuwe data vallen af; ongeteste blijven gewoon mogelijk.
+        stale = {k for k in allowed if k in recipes and not may_retest(recipes[k], now)}
+        allowed = {k: r for k, r in allowed.items() if k not in stale}
+        if not allowed:
+            return None, ('te vers' if stale else None)
     board = [e for e in leaderboard(recipes, 5) if key_of(e['recipe']) in allowed and status(e) not in ('afgevallen', 'te riskant')]
     # 1. De beste opnieuw als die nog geen bewijs over meerdere rondes heeft, of al even niet getest is.
     if board:
@@ -236,8 +267,8 @@ def pick(recipes, timeframes, rnd=None, now=None, exclude=frozenset()):
         if now - last > 6 * 3600:
             return best['recipe'], 'retest'
     # 2. Verder bouwen op wat werkt (ongeveer de helft van de rondes).
-    if board and rnd.random() < 0.55:
-        base = [e for e in board[:3] if (score(e)['avg'] or 0) > 0] or board[:1]
+    if base_board and rnd.random() < 0.55:
+        base = [e for e in base_board[:3] if (score(e)['avg'] or 0) > 0] or base_board[:1]
         near = [n for e in base for n in neighbours(e['recipe'], allowed) if key_of(n) not in recipes]
         if near:
             return rnd.choice(near), 'near'
