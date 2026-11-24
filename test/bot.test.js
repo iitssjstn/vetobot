@@ -1239,6 +1239,35 @@ test('AI-trader kiest zelf een grotere inzet, live, nooit meer dan er vrij is', 
   assert.equal(off.store.state.positions['BTC/EUR'].costEur, 10, 'uit: jouw inzet');
 });
 
+test('goedgekeurd maar kopen mislukt: reden bewaard en in het dagoverzicht', async () => {
+  const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
+  const { bot, ex } = setup({});
+  const sent = [];
+  bot.notifier = { send: async (event, payload) => { sent.push({ event, ...payload }); return true; }, heartbeat: async () => null };
+  await bot.setRisk({ cooldownMinutes: 0, stakeEur: 10 });
+  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0 });
+  bot.settings.data.mode = 'live';
+  bot.liveBalance = { eurFree: 100 };
+  bot.refreshLiveBalance = async () => {};
+  ex.apiKey = 'k'; ex.secret = 's';
+  Object.assign(bot.brokers.live, { buy: async () => { throw new Error('bitvavo {"errorCode":216,"error":"Insufficient balance"}'); } });
+  const agent = { ...fx.agent, stage: 'getest', recipeKey: 'R', liveCheck: { allMet: false, checks: [] }, entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 },
+    regimes: { stijgend: { key: 'R', why: 'best' }, zijwaarts: { key: 'R', why: 'best' }, dalend: { key: 'R', why: 'best' } } };
+  bot.getAgent = () => agent;
+  bot.settings.setAgentLiveRisky('R', 50);
+  ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+  await bot.tick();
+  assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
+  assert.match(bot.store.state.buyFails[0].why, /Insufficient balance/);
+  assert.match(bot.store.state.agentChats[0].talk.at(-1).text, /Niet gekocht: .*Insufficient balance/);
+  const sum = await bot.dailySummary();
+  assert.equal(sum.signals.echtGekocht, 0);
+  assert.equal(sum.signals.kopenMislukt, 1);
+  const msg = sent.find((x) => x.event === 'dailySummary');
+  assert.ok(msg.fields.some((f) => /Kopen mislukt/.test(f.name) && /Insufficient balance/.test(f.value)));
+  assert.ok(msg.fields.some((f) => f.name === 'Signalen' && /gekocht 0/.test(f.value)));
+});
+
 test('AI-trader live: kleinste start uit te zetten', async () => {
   const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
   const { bot, ex } = setup({});

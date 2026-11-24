@@ -319,6 +319,11 @@ export class Bot {
       return { pair: p.pair, entryPrice: p.entryPrice, price, changePct: price ? ((price - p.entryPrice) / p.entryPrice) * 100 : null };
     });
     const count = (o) => decisions.filter((d) => d.outcome === o).length;
+    // Echt gekocht (niet alleen goedgekeurd), en waarom kopen mislukte.
+    const opened = [...s.trades, ...Object.values(s.positions)].filter((t) => Date.parse(t.openedAt) >= since).length;
+    const fails = (s.buyFails ?? []).filter((f) => Date.parse(f.at) >= since);
+    const failWhy = Object.entries(fails.reduce((m, f) => ({ ...m, [f.why]: (m[f.why] ?? 0) + 1 }), {}))
+      .sort((x, y) => y[1] - x[1]).slice(0, 3);
     const agent = this.strategy.agentMode && !this.following ? this.getAgent?.() : null;
     const data = {
       mode: this.mode,
@@ -328,7 +333,8 @@ export class Bot {
         ...(t.agent ? { recept: t.agent.recipe, marktfase: t.agent.marketRegime } : {}) })),
       resultaatEur: +pnl.toFixed(2),
       openPosities: positions.map((p) => ({ ...p, changePct: p.changePct == null ? null : +p.changePct.toFixed(2) })),
-      signalen: { totaal: decisions.length, goedgekeurd: count('approved'), afgewezenDoorAi: count('vetoed'), geblokkeerd: count('blocked') },
+      signalen: { totaal: decisions.length, goedgekeurd: count('approved'), afgewezenDoorAi: count('vetoed'), geblokkeerd: count('blocked'),
+        echtGekocht: opened, kopenMislukt: fails.length, redenKopenMislukt: failWhy.map(([why, n]) => `${n}× ${why}`) },
       aiRedenenAfwijzing: decisions.filter((d) => d.outcome === 'vetoed').slice(0, 5).map((d) => `${d.pair}: ${d.reason}`),
       markt: this.pairs.map((p) => {
         const ps = this.pairStatus[p] ?? {};
@@ -380,7 +386,7 @@ export class Bot {
     const fields = [
       { name: 'Resultaat 24u', value: `${eur(pnl)} uit ${trades.length} trade${trades.length === 1 ? '' : 's'}` },
       { name: 'Winrate', value: trades.length ? `${Math.round((wins / trades.length) * 100)}%` : '–' },
-      { name: 'Signalen', value: `${data.signalen.totaal} (✓ ${data.signalen.goedgekeurd} · ✗ ${data.signalen.afgewezenDoorAi} · ⏸ ${data.signalen.geblokkeerd})` },
+      { name: 'Signalen', value: `${data.signalen.totaal} (✓ ${data.signalen.goedgekeurd} · ✗ ${data.signalen.afgewezenDoorAi} · ⏸ ${data.signalen.geblokkeerd}) · gekocht ${opened}` },
       {
         name: 'Saldo',
         value: this.mode === 'live'
@@ -388,6 +394,9 @@ export class Bot {
           : `${fmtEur(s.balanceEur)} (paper)`,
       },
     ];
+    if (fails.length) {
+      fields.push({ name: `Kopen mislukt (${fails.length}×)`, value: failWhy.map(([why, n]) => `${n}× ${why}`).join('\n').slice(0, 1000), inline: false });
+    }
     if (positions.length) {
       fields.push({
         name: 'Open posities',
@@ -419,8 +428,18 @@ export class Bot {
       { recept: p.key ?? 'niet handelen', waarom: p.why, voordeelBovenMarktPct: p.edge != null ? +p.edge.toFixed(3) : null, trades: p.trades ?? 0 }]));
     const marktNu = {};
     for (const r of Object.values(team.market)) if (r) marktNu[r] = (marktNu[r] ?? 0) + 1;
+    const STAGE = { getest: 'getest: haalde de backtests (dit is GEEN testfase)', bewezen: 'bewezen: haalt alle eisen voor live',
+      oefenen: 'oefenen: alleen in paper', geblokkeerd: 'te riskant: handelt niet' };
+    const { approved, risky } = this.settings.agentLive;
+    const liveRecepten = this.mode !== 'live' ? 'n.v.t. (paper)' : [
+      ...approved.map((k) => ({ recept: k, hoe: 'door de eigenaar live toegestaan' })),
+      ...Object.entries(risky ?? {}).map(([k, r]) => ({ recept: k, hoe: 'live op eigen risico van de eigenaar', verliesgrensEur: r.maxLossEur,
+        resultaatSindsdienEur: +this.agentRiskyLoss(k).pnlEur.toFixed(2) })),
+    ];
     return {
-      stage: agent.stage, recept: agent.recipeKey ?? null, candleTijd: agent.timeframe, coins: agent.coins ?? [],
+      uitleg: 'In live handelt de AI-trader echt met de recepten in liveRecepten. "status" is de beoordeling van het hoofdrecept, geen testfase.',
+      status: STAGE[agent.stage] ?? agent.stage, liveRecepten,
+      recept: agent.recipeKey ?? null, candleTijd: agent.timeframe, coins: agent.coins ?? [],
       live: agent.live ?? null, receptPerMarktfase: regimes, coinsPerMarktfaseNu: marktNu,
       tegengehoudenDoorRiskAgent: Object.values(this.agentReason ?? {}).filter((r) => /^Risk Agent/.test(r ?? '')).length,
       verliezenOpRij: team.risk.lossStreak,
@@ -1091,7 +1110,24 @@ export class Bot {
       chat = this.#agentChat(pair, exploring ? 'explore' : 'buy', veto.decision === 'approve' ? 'approved' : 'vetoed', [...result.agentTalk, ...ctl]);
     }
     if (veto.decision === 'approve') {
-      const opened = await this.#open(pair, result.reason, result.indicators);
+      // Goedgekeurd is nog niet gekocht: mislukt het kopen, dan bewaren we waarom (dagoverzicht, AI-chat).
+      const fail = (why) => {
+        const list = (this.store.state.buyFails ??= []);
+        list.unshift({ at: new Date().toISOString(), pair, why: String(why).slice(0, 200), agent: Boolean(result.indicators?.agent) });
+        list.length = Math.min(list.length, 200);
+      };
+      let opened;
+      try {
+        opened = await this.#open(pair, result.reason, result.indicators);
+      } catch (err) {
+        fail(err.message);
+        if (chat) {
+          chat.outcome = 'notFilled';
+          chat.talk.push(Bot.say('execution', 'Execution Agent', `Niet gekocht: ${err.message}`, 'reject'));
+        }
+        throw err;
+      }
+      if (opened === false) fail('limietorder niet gevuld binnen de wachttijd');
       if (chat) {
         const pos = opened !== false ? this.store.state.positions[pair] : null;
         const ex = this.store.state.execLog?.[0];
