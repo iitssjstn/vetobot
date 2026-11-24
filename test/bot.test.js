@@ -1205,6 +1205,40 @@ test('AI-trader live: extra recept op eigen risico wordt gebruikt', async () => 
   assert.equal(pos.agent.recipe, 'X');
 });
 
+test('AI-trader kiest zelf een grotere inzet, live, nooit meer dan er vrij is', async () => {
+  const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
+  const run = async (eurFree, sizing = 1) => {
+    const { bot, ex } = setup({});
+    await bot.setRisk({ cooldownMinutes: 0, stakeEur: 10, maxStakeEur: 30 });
+    await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0, agentSizing: sizing });
+    bot.settings.data.mode = 'live';
+    bot.liveBalance = { eurFree };
+    bot.refreshLiveBalance = async () => {};
+    ex.apiKey = 'k'; ex.secret = 's';
+    const pb = new PaperBroker(ex, 0.25);
+    Object.assign(bot.brokers.live, { buy: (...a) => pb.buy(...a), sell: (...a) => pb.sell(...a) });
+    const agent = { ...fx.agent, stage: 'getest', recipeKey: 'R', liveCheck: { allMet: false, checks: [] }, entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 },
+      regimes: { stijgend: { key: 'R', why: 'best' }, zijwaarts: { key: 'R', why: 'best' }, dalend: { key: 'R', why: 'best' } } };
+    bot.getAgent = () => agent;
+    bot.settings.setAgentLiveRisky('R', 100);
+    ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+    await bot.tick();
+    return bot;
+  };
+  const bot = await run(1000);
+  const pos = bot.store.state.positions['BTC/EUR'];
+  assert.ok(pos, bot.pairStatus['BTC/EUR']?.reason);
+  // Nog geen eigen trades: hooguit de helft van de ruimte (10 + 20 × 0,5 = 20).
+  assert.ok(pos.costEur > 10.5 && pos.costEur <= 20.01, `groter ingezet: ${pos.costEur}`);
+  assert.ok(pos.agent.sizeFactor > 0);
+  assert.ok(bot.store.state.agentChats[0].talk.some((m) => m.label === 'Inzet' && /Ik zet € /.test(m.text)));
+  assert.equal(bot.sizingSummary().maxEur, 30);
+  const tight = await run(14);
+  assert.ok(tight.store.state.positions['BTC/EUR'].costEur <= 14 * 0.99 + 1e-9, 'niet meer dan vrij');
+  const off = await run(1000, 0);
+  assert.equal(off.store.state.positions['BTC/EUR'].costEur, 10, 'uit: jouw inzet');
+});
+
 test('AI-trader live: kleinste start uit te zetten', async () => {
   const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
   const { bot, ex } = setup({});

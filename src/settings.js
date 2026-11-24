@@ -58,6 +58,7 @@ export const STRATEGY_LIMITS = {
   agentVeto: [0, 1],
   agentExplore: [0, 1],
   agentLiveSmallStart: [0, 1],
+  agentSizing: [0, 1],
 };
 export const AI_FAIL_MODES = ['reject', 'approve'];
 const NOTIFY_DEFAULTS = {
@@ -97,6 +98,7 @@ const RISK_LABELS = {
   agentVeto: 'AI-controleur bij de AI-trader',
   agentExplore: 'Verkenner (alleen paper)',
   agentLiveSmallStart: 'Live beginnen met de kleinste inzet',
+  agentSizing: 'AI-trader kiest zelf de inzet',
   aiExitMinPct: 'AI winst nemen vanaf',
   aiExitEveryMin: 'AI winstcheck elke',
   reinvestPct: 'Winst herinvesteren',
@@ -147,8 +149,9 @@ export class Settings {
         mode: saved.ai?.mode === 'team' ? 'team' : 'single',
         fallbacks: Array.isArray(saved.ai?.fallbacks) ? saved.ai.fallbacks : [],
       },
-      // Ontbreekt een instelling, dan 0 (uit); alleen de kleinste live-start staat veiligheidshalve aan.
-      strategy: Object.fromEntries(Object.keys(STRATEGY_LIMITS).map((k) => [k, saved.strategy?.[k] ?? defaults.strategy?.[k] ?? (k === 'agentLiveSmallStart' ? 1 : 0)])),
+      // Ontbreekt een instelling, dan 0 (uit); alleen de kleinste live-start en de eigen inzet van de AI-trader (die
+      // alleen werkt als je een maximale inzet instelt) staan standaard aan.
+      strategy: Object.fromEntries(Object.keys(STRATEGY_LIMITS).map((k) => [k, saved.strategy?.[k] ?? defaults.strategy?.[k] ?? (k === 'agentLiveSmallStart' || k === 'agentSizing' ? 1 : 0)])),
       pairs: saved.pairs ?? defaults.pairs,
       timeframe: saved.timeframe ?? defaults.timeframe,
       checkIntervalMinutes: saved.checkIntervalMinutes ?? defaults.checkIntervalMinutes,
@@ -226,7 +229,7 @@ export class Settings {
   }
 
   setStrategy(values) {
-    const next = validated({ ...this.data.strategy, ...values }, STRATEGY_LIMITS, ['emaFast', 'emaSlow', 'rsiPeriod', 'trendEma', 'btcFilter', 'useOpenCandle', 'sellConfirmCandles', 'minHoldCandles', 'aiStrictness', 'mlSkipBadRegime', 'mlBandit', 'mlTrialPaper', 'agentMode', 'agentVeto', 'agentExplore', 'agentLiveSmallStart']);
+    const next = validated({ ...this.data.strategy, ...values }, STRATEGY_LIMITS, ['emaFast', 'emaSlow', 'rsiPeriod', 'trendEma', 'btcFilter', 'useOpenCandle', 'sellConfirmCandles', 'minHoldCandles', 'aiStrictness', 'mlSkipBadRegime', 'mlBandit', 'mlTrialPaper', 'agentMode', 'agentVeto', 'agentExplore', 'agentLiveSmallStart', 'agentSizing']);
     if (next.emaFast >= next.emaSlow) throw new Error('EMA fast moet kleiner zijn dan EMA slow');
     this.data.strategy = next;
     this.#save();

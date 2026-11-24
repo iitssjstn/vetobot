@@ -115,6 +115,42 @@ export function riskStake(stake, factor, rules = RISK) {
   return Math.min(stake, Math.max(rules.minStakeEur, Math.floor(stake * factor * 100) / 100));
 }
 
+// ---------- Inzet: hoeveel zet de AI-trader in? ----------
+// Tussen jouw inzet (minimum) en je maximale inzet. Meer naarmate (1) zijn verwachting verder boven
+// zijn koopdrempel ligt, (2) zijn verwachtingen in de praktijk uitkwamen en (3) het recept in deze
+// marktfase het best was. Na 2 verliezen op rij: jouw inzet.
+export const SIZE = { minTrades: 10, window: 30, lossStreak: 2, otherRegime: 0.6, unproven: 0.5 };
+
+export function sizeStake({ base, max, q, threshold, choiceWhy = null, trades = [], rules = SIZE }) {
+  const notes = [];
+  if (!(max > base) || !(base > 0)) return { stake: base, factor: 0, notes };
+  const pc = (v) => `${v >= 0 ? '+' : ''}${v.toFixed(2).replace('.', ',')}%`;
+  const thr = Number(threshold) || 0;
+  const boost = Math.min(1, Math.max(0, (q - thr) / Math.max(Math.abs(thr), 0.25)));
+  notes.push(`verwachting ${pc(q)} tegen drempel ${pc(thr)}: ${Math.round(boost * 100)}% van de ruimte`);
+  const own = trades.filter((t) => t.agent && !t.agent.explore);
+  const streak = lossStreak(own);
+  if (streak >= rules.lossStreak) {
+    notes.push(`${streak} verliezen op rij: niet groter inzetten`);
+    return { stake: base, factor: 0, notes };
+  }
+  const withExp = own.filter((t) => Number.isFinite(t.agent?.expectedPct)).slice(0, rules.window);
+  let trust = rules.unproven;
+  if (withExp.length >= rules.minTrades) {
+    const act = withExp.reduce((a, t) => a + (t.pnlPct ?? 0), 0) / withExp.length;
+    const exp = withExp.reduce((a, t) => a + t.agent.expectedPct, 0) / withExp.length;
+    trust = act <= 0 ? 0 : exp <= 0 ? 1 : Math.min(1, act / exp);
+    notes.push(`zijn laatste ${withExp.length} trades: verwacht ${pc(exp)}, echt ${pc(act)} → vertrouwen ${Math.round(trust * 100)}%`);
+  } else {
+    notes.push(`nog maar ${withExp.length} trades met een verwachting: halve stap`);
+  }
+  const reg = choiceWhy === 'best' ? 1 : rules.otherRegime;
+  if (reg < 1) notes.push('geen bewezen beste recept voor deze marktfase');
+  const factor = boost * trust * reg;
+  const stake = Math.floor((base + (max - base) * factor) * 100) / 100;
+  return { stake, factor: +factor.toFixed(3), notes };
+}
+
 // ---------- Execution Agent ----------
 // Afwijking van de verwachte prijs in %, positief = slechter dan verwacht.
 export function slippagePct(side, expected, fill) {

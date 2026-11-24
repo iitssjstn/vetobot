@@ -302,7 +302,7 @@ export function createApp({ users, manager, log = console }) {
           recipes: [...new Map(parts.map((p) => [p.recipeKey, { recipe: p.recipeKey, stage: p.stage, extra: Boolean(p.extra), ready: bot.agentLiveReady(p), approved: approved.includes(p.recipeKey),
             riskyAllowed: bot.agentRiskyStage(p),
             risky: risky[p.recipeKey] ? { ...risky[p.recipeKey], lossEur: +bot.agentRiskyLoss(p.recipeKey).pnlEur.toFixed(2), trades: bot.agentRiskyLoss(p.recipeKey).trades } : null,
-            checks: p.liveCheck?.checks ?? [] }])).values()], smallStart: Number(bot.strategy.agentLiveSmallStart ?? 1) === 1 };
+            checks: p.liveCheck?.checks ?? [] }])).values()], smallStart: Number(bot.strategy.agentLiveSmallStart ?? 1) === 1, sizing: bot.sizingSummary() };
       })(),
       serverTime: new Date().toISOString(),
     });

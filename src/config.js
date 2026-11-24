@@ -55,6 +55,7 @@ export const config = {
     // 1 = de verkenner doet in paper ook trades die de AI-trader zelf niet zou doen, om van te leren.
     agentExplore: num('AGENT_EXPLORE', 1),
     agentLiveSmallStart: num('AGENT_LIVE_SMALL_START', 1),
+    agentSizing: num('AGENT_SIZING', 1),
   },
 
   // Harde limieten. De AI kan hier nooit aan komen.

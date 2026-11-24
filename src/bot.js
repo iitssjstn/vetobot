@@ -8,7 +8,7 @@ import { fetchClosedCandles, fetchPrice, hasTradingKeys } from './exchange.js';
 import { checkEntry } from './risk.js';
 import { Bandit } from './bandit.js';
 import { analyzeBook, bookProblem } from './orderbook.js';
-import { MARKET_TF, RISK, LEARN, EXPLORE, explorationOutcome, rewardSummary, onlineCorrection, correctedExpectation, exploreWanted, exploreScore, agentParts, agentForRecipe, allAgentCoins, chooseForRegime, assessRisk, riskStake, slippagePct, execSummary, lossStreak } from './agents.js';
+import { MARKET_TF, RISK, LEARN, EXPLORE, explorationOutcome, rewardSummary, onlineCorrection, correctedExpectation, exploreWanted, exploreScore, agentParts, agentForRecipe, allAgentCoins, chooseForRegime, assessRisk, riskStake, sizeStake, slippagePct, execSummary, lossStreak } from './agents.js';
 import path from 'node:path';
 
 // Bedragen en koersen in Nederlandse notatie voor meldingen (€ 81,31 / € 0,3455 / −€ 0,36).
@@ -958,8 +958,20 @@ export class Bot {
       this.#step(`${pair}: orderboek bekijken`);
       // Met de inzet die deze trade echt krijgt (de Risk Agent en de verkenner kopen kleiner).
       const ga = result.indicators?.agent;
-      const planned = ga ? (ga.explore ? Math.min(this.entryRisk().stakeEur, LIVE_MIN_STAKE_EUR) : riskStake(this.entryRisk().stakeEur, ga.stakeFactor ?? 1)) : this.entryRisk().stakeEur;
-      book = analyzeBook(await this.ex.fetchOrderBook?.(pair, 50), planned);
+      const base = this.entryRisk().stakeEur;
+      const planned = ga ? (ga.explore ? Math.min(base, LIVE_MIN_STAKE_EUR) : riskStake(Math.max(base, ga.sizeEur ?? 0), ga.stakeFactor ?? 1)) : base;
+      const raw = await this.ex.fetchOrderBook?.(pair, 50);
+      book = analyzeBook(raw, planned);
+      // Te dun voor de grotere inzet van de AI-trader? Dan met jouw gewone inzet.
+      if (ga?.sizeEur && bookProblem(book, { maxSpreadPct: risk.maxSpreadPct ?? 0, maxBookCostPct: risk.maxBookCostPct ?? 0 })) {
+        const small = analyzeBook(raw, riskStake(base, ga.stakeFactor ?? 1));
+        if (!bookProblem(small, { maxSpreadPct: risk.maxSpreadPct ?? 0, maxBookCostPct: risk.maxBookCostPct ?? 0 })) {
+          result.agentTalk?.push(Bot.say('risk', 'Orderboek-check', `Voor ${fmtEur(ga.sizeEur)} is het orderboek te dun; ik zet ${fmtEur(base)} in.`));
+          delete ga.sizeEur;
+          delete ga.sizeFactor;
+          book = small;
+        }
+      }
     } catch {
       book = null; // geen boek: niet blokkeren
     }
@@ -1127,6 +1139,16 @@ export class Bot {
 
   agentLiveReady(agent) {
     return Boolean(agent?.liveCheck?.allMet) && agent.stage !== 'geblokkeerd';
+  }
+
+  // Kiest de AI-trader zelf de inzet, en leveren zijn grotere inzetten meer op dan jouw gewone inzet?
+  sizingSummary() {
+    const r = this.entryRisk();
+    const own = this.store.state.trades.filter((t) => t.agent && !t.agent.explore).slice(0, 300);
+    const group = (list) => ({ trades: list.length, avgPct: list.length ? +(list.reduce((a, t) => a + (t.pnlPct ?? 0), 0) / list.length).toFixed(3) : null,
+      pnlEur: +list.reduce((a, t) => a + (t.pnlEur ?? 0), 0).toFixed(2) });
+    return { on: Number(this.strategy.agentSizing ?? 1) === 1, baseEur: r.stakeEur, maxEur: r.maxStakeEur ?? 0, mode: this.mode,
+      bigger: group(own.filter((t) => (t.agent.sizeFactor ?? 0) > 0)), normal: group(own.filter((t) => !((t.agent.sizeFactor ?? 0) > 0))) };
   }
 
   // Live op eigen risico mag alleen voor recepten die de backtests haalden (getest of betrouwbaar).
@@ -1503,6 +1525,14 @@ export class Bot {
     this.#whyNot('wil kopen', q, agent.threshold);
     talk.push(Bot.say('risk', 'Risk Agent', `Akkoord. ${risk.notes.length ? `${risk.notes.join('; ')}. ` : 'Volle inzet. '}` +
       `${lossStreak(this.store.state.trades)} verlies(zen) op rij van de AI-trader; geen pauze nodig.`, 'approve'));
+    // Hoeveel zet hij in? Tussen jouw inzet en je maximale inzet, naar vertrouwen.
+    const er = this.entryRisk();
+    const size = Number(this.strategy.agentSizing ?? 1) === 1 && er.maxStakeEur > er.stakeEur && (risk.stakeFactor ?? 1) >= 1
+      ? sizeStake({ base: er.stakeEur, max: er.maxStakeEur, q, threshold: agent.threshold, choiceWhy: choice?.why, trades: this.store.state.trades })
+      : null;
+    if (size) {
+      talk.push(Bot.say('risk', 'Inzet', `Ik zet ${fmtEur(size.stake)} in (jouw inzet ${fmtEur(er.stakeEur)}, maximaal ${fmtEur(er.maxStakeEur)}): ${size.notes.join('; ')}.`));
+    }
     this.lastFeatures[pair] = { ts: x.ts, timeframe: tf, features: x.f, prob: null, at: Date.now() };
     const phase = regime ? ` Markt: ${REGIME_LABEL[regime]}${choice?.why === 'best' ? ', en dit recept doet het daar het best' : ''}.` : '';
     this.think(`Ik koop ${pair}: ik verwacht ${nl(q)}% na kosten${adjTxt} (ik koop vanaf ${nl(agent.threshold)}%).${whyTxt}${phase}` +
@@ -1511,7 +1541,8 @@ export class Bot {
       buy: true, why, regime: regime ?? regimeOf(x.f), talk,
       reason: `AI-trader (${tf}): verwacht ${nl(q)}% na kosten (drempel ${nl(agent.threshold)}%)`,
       plan: { timeframe: tf, recipe: agent.recipeKey ?? null, expectedPct: +(x.qModel ?? q).toFixed(3), adjustedPct: +q.toFixed(3), version: agent.meta?.trainedAt ?? null, safetyStopPct: agent.safetyStopPct,
-        maxHoldMinutes: agent.maxHoldCandles * tfMs / 60000, entryClose: x.close, marketRegime: regime, stakeFactor: risk.stakeFactor },
+        maxHoldMinutes: agent.maxHoldCandles * tfMs / 60000, entryClose: x.close, marketRegime: regime, stakeFactor: risk.stakeFactor,
+        ...(size && size.stake > er.stakeEur ? { sizeEur: size.stake, sizeFactor: size.factor } : {}) },
     };
   }
 
@@ -1775,7 +1806,16 @@ export class Bot {
     this.#step(`${pair}: kopen`);
     const stakeInfo = this.stakeInfo();
     // Risk Agent: bij weinig bewijs een kleinere inzet.
-    let stake = riskStake(stakeInfo.effective, indicators?.agent?.stakeFactor ?? 1);
+    const sized = indicators?.agent?.sizeEur > stakeInfo.effective ? indicators.agent.sizeEur : 0;
+    let stake = riskStake(Math.max(stakeInfo.effective, sized), indicators?.agent?.stakeFactor ?? 1);
+    // Een grotere inzet van de AI-trader nooit boven wat er vrij is (saldo en budgetplafond).
+    if (sized) {
+      const r = this.risk;
+      const free = this.broker.mode === 'live' ? (this.liveBalance?.eurFree ?? stake) * 0.99 : this.store.state.balanceEur;
+      const inUse = Object.values(this.store.state.positions).reduce((x, p) => x + (p.costEur ?? 0), 0);
+      const budget = this.broker.mode === 'live' && r.liveBudgetEur > 0 ? r.liveBudgetEur - inUse : Infinity;
+      stake = Math.max(Math.min(stake, stakeInfo.effective), Math.floor(Math.min(stake, free, budget) * 100) / 100);
+    }
     // De verkenner koopt altijd met de kleinste inzet.
     if (indicators?.agent?.explore) stake = Math.min(stake, LIVE_MIN_STAKE_EUR);
     // Live begint de AI-trader met de kleinste inzet, tot hij live 20 trades met gemiddeld winst heeft.
@@ -1816,7 +1856,7 @@ export class Bot {
     if (indicators?.agent) {
       const g = indicators.agent;
       this.store.state.positions[pair].agent = { timeframe: g.timeframe, version: g.version, expectedPct: g.expectedPct, recipe: g.recipe ?? null,
-        marketRegime: g.marketRegime ?? null, ...(g.explore ? { explore: true, exploreWhy: g.exploreWhy ?? null } : {}) };
+        marketRegime: g.marketRegime ?? null, ...(g.sizeFactor != null ? { sizeFactor: g.sizeFactor } : {}), ...(g.explore ? { explore: true, exploreWhy: g.exploreWhy ?? null } : {}) };
       if (g.explore) this.store.state.positions[pair].explore = true;
       this.store.state.positions[pair].plan = { key: null, stopLossPct: g.safetyStopPct, takeProfitPct: 0, maxHoldMinutes: g.maxHoldMinutes };
     }
@@ -2075,6 +2115,7 @@ export class Bot {
       exitReason: reason,
       costPct: tradeCost,
       ...(pos.agent ? { agent: { recipe: pos.agent.recipe ?? null, marketRegime: pos.agent.marketRegime ?? null, expectedPct: pos.agent.expectedPct ?? null,
+        ...(pos.agent.sizeFactor != null ? { sizeFactor: pos.agent.sizeFactor } : {}),
         ...(pos.agent.explore ? { explore: true, exploreWhy: pos.agent.exploreWhy ?? null } : {}) } } : {}),
     });
     const how = fill.limitFallback ? (fill.limit ? ', limietorder deels gevuld, rest market' : ', limietorder niet gevuld, market') : fill.limit ? ', limietorder' : '';

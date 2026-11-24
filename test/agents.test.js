@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { explorationOutcome, rewardSummary, exploreScore, EXPLORE, onlineCorrection, correctedExpectation, LEARN, agentForRecipe, allAgentCoins, agentParts, allAgentParts, activeAgent, chooseForRegime, assessRisk, riskStake, slippagePct, execSummary, lossStreak, RISK } from '../src/agents.js';
+import { explorationOutcome, rewardSummary, exploreScore, EXPLORE, onlineCorrection, correctedExpectation, LEARN, agentForRecipe, allAgentCoins, agentParts, allAgentParts, activeAgent, chooseForRegime, assessRisk, riskStake, sizeStake, SIZE, slippagePct, execSummary, lossStreak, RISK } from '../src/agents.js';
 
 const main = { recipeKey: 'A', coins: ['BTC/EUR'], regimes: {
   stijgend: { key: 'B', why: 'best', edge: 0.3, trades: 40, agent: { recipeKey: 'B', coins: ['ETH/EUR'] } },
@@ -159,4 +159,27 @@ test('extra recepten: alleen actief als ze live mogen', () => {
   assert.equal(agentForRecipe(on, 'Y').recipeKey, 'Y', 'verkopen met het recept dat kocht');
   assert.deepEqual(allAgentParts(on).map((p) => p.recipeKey), ['A', 'Y', 'X']);
   assert.equal(activeAgent(null, () => true), null);
+});
+
+test('inzet: tussen jouw inzet en je maximum, naar vertrouwen', () => {
+  const good = Array.from({ length: 20 }, () => ({ agent: { expectedPct: 0.5 }, pnlPct: 0.6, pnlEur: 0.1 }));
+  // Ver boven de drempel, verwachtingen kwamen uit, beste recept voor de fase: maximaal.
+  const top = sizeStake({ base: 10, max: 30, q: 1.0, threshold: 0.3, choiceWhy: 'best', trades: good });
+  assert.equal(top.stake, 30);
+  assert.ok(top.notes.some((n) => /vertrouwen 100%/.test(n)));
+  // Net boven de drempel: weinig extra.
+  assert.ok(sizeStake({ base: 10, max: 30, q: 0.35, threshold: 0.3, choiceWhy: 'best', trades: good }).stake < 15);
+  // Andere marktfase: minder.
+  assert.equal(sizeStake({ base: 10, max: 30, q: 1.0, threshold: 0.3, choiceWhy: 'weinig bewijs', trades: good }).stake, 10 + 20 * SIZE.otherRegime);
+  // Weinig bewijs: hooguit de helft van de ruimte.
+  assert.equal(sizeStake({ base: 10, max: 30, q: 1.0, threshold: 0.3, choiceWhy: 'best', trades: good.slice(0, 3) }).stake, 20);
+  // Verwachtingen kwamen half uit: half vertrouwen.
+  const half = good.map((t) => ({ ...t, pnlPct: 0.25 }));
+  assert.equal(sizeStake({ base: 10, max: 30, q: 1.0, threshold: 0.3, choiceWhy: 'best', trades: half }).stake, 20);
+  // Trades maakten verlies, of 2 verliezen op rij: jouw inzet.
+  assert.equal(sizeStake({ base: 10, max: 30, q: 1.0, threshold: 0.3, choiceWhy: 'best', trades: good.map((t) => ({ ...t, pnlPct: -0.1 })) }).stake, 10);
+  const streak = [{ agent: { expectedPct: 0.5 }, pnlPct: -1, pnlEur: -1 }, { agent: { expectedPct: 0.5 }, pnlPct: -1, pnlEur: -1 }, ...good];
+  assert.equal(sizeStake({ base: 10, max: 30, q: 1.0, threshold: 0.3, choiceWhy: 'best', trades: streak }).stake, 10);
+  // Verkenner telt niet mee; geen ruimte zonder maximum.
+  assert.equal(sizeStake({ base: 10, max: 0, q: 1.0, threshold: 0.3, trades: good }).stake, 10);
 });
