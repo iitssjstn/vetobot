@@ -6,7 +6,10 @@ de beslissing met een leesbare reden:
   promoted  het model van deze sessie is gepubliceerd (voor paper; live blijft altijd de eigenaar);
   rejected  het recept van deze sessie is niet het beste, of de ronde leverde geen bruikbaar model;
   kept      er was een kandidaat, maar die is niet aantoonbaar beter: het actieve model blijft;
-  rollback  de eigenaar zette een eerdere versie terug.
+  rollback  de eigenaar zette een eerdere versie terug, of de trainer deed dat zelf omdat de proef-
+            periode van het nieuwe model mislukte (zie probation.py).
+Elke gepromote versie heeft een proefperiode (kolom probation, JSON): {status: 'proef' | 'geslaagd' |
+'mislukt' | None, trades, avgPct, expectedPct, upperPct, since, decidedAt, reason, ...}.
 Van elke gepubliceerde versie wordt agent.json bewaard in agents/versions/v<n>.json: dat is de
 terugvaloptie. Die snapshots worden nooit opgeruimd; oude afgewezen en behouden sessies wel (boven
 MAX_SESSIONS).
@@ -23,7 +26,7 @@ from datetime import datetime
 
 DB_NAME = 'registry.db'
 MAX_SESSIONS = 2000      # boven zoveel sessies worden de oudste afgewezen/behouden sessies opgeruimd
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DECISIONS = ('promoted', 'rejected', 'kept', 'rollback')
 
 
@@ -63,7 +66,14 @@ def _m2(db):
     db.execute('CREATE INDEX IF NOT EXISTS sessions_decision ON sessions (decision)')
 
 
-MIGRATIONS = {1: _m1, 2: _m2}
+def _m3(db):
+    # De proefperiode per versie (JSON), los van de rest zodat hij bijgewerkt kan worden.
+    cols = {r[1] for r in db.execute('PRAGMA table_info(sessions)')}
+    if 'probation' not in cols:
+        db.execute('ALTER TABLE sessions ADD COLUMN probation TEXT')
+
+
+MIGRATIONS = {1: _m1, 2: _m2, 3: _m3}
 
 
 def schema_version(db):
@@ -208,6 +218,37 @@ class Registry:
     def set_pinned(self, version):
         self._run(lambda db: self._put(db, 'pinned', version))
 
+    def meta(self, key, default=None):
+        return self._run(lambda db: self._get(db, key, default))
+
+    def set_meta(self, key, value):
+        self._run(lambda db: self._put(db, key, _clean(value)))
+
+    def set_probation(self, version, probation):
+        """De proefperiode van een versie vastleggen (None wist hem)."""
+        txt = None if probation is None else json.dumps(_clean(probation))
+        self._run(lambda db: db.execute('UPDATE sessions SET probation = ? WHERE version = ?', (txt, int(version))))
+
+    def activations(self):
+        """Wanneer welke versie de actieve werd, oud -> nieuw: [(at, versie, recept, beslissing)].
+        Een gepubliceerde versie (met snapshot) wordt actief op haar eigen tijdstip; bij een
+        terugzetting wordt de teruggezette versie weer actief."""
+        def go(db):
+            rows = db.execute("SELECT version, at, recipe_key, decision, body, has_snapshot FROM sessions "
+                              "WHERE decision IN ('promoted', 'rollback') ORDER BY version").fetchall()
+            out = []
+            for v, at, key, decision, body, snap in rows:
+                try:
+                    extra = json.loads(body)
+                except ValueError:
+                    extra = {}
+                if decision == 'promoted' and snap:
+                    out.append((at, v, extra.get('publishedKey') or key, decision))
+                elif decision == 'rollback' and extra.get('restoredVersion') is not None:
+                    out.append((at, int(extra['restoredVersion']), extra.get('publishedKey') or key, decision))
+            return out
+        return self._run(go)
+
     # ----- sessies -----
 
     def snapshot_path(self, version):
@@ -277,7 +318,7 @@ class Registry:
                        'AND has_snapshot = 0 ORDER BY version LIMIT ?)', (extra,))
 
     def _row(self, r, active=None):
-        version, at, by, key, text, decision, reason, body, snap = r
+        version, at, by, key, text, decision, reason, body, snap, prob = r
         try:
             extra = json.loads(body)
         except ValueError:
@@ -288,9 +329,13 @@ class Registry:
         out.update({k: x for k, x in extra.items() if k not in out})
         out['active'] = active is not None and version == active
         out['hasSnapshot'] = bool(snap) and self.has_snapshot(version)
+        try:
+            out['probation'] = json.loads(prob) if prob else None
+        except ValueError:
+            out['probation'] = None
         return out
 
-    _COLS = 'version, at, by, recipe_key, recipe_text, decision, reason, body, has_snapshot'
+    _COLS = 'version, at, by, recipe_key, recipe_text, decision, reason, body, has_snapshot, probation'
 
     def get(self, version):
         def go(db):
