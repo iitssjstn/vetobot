@@ -1151,6 +1151,16 @@ export class Bot {
     return { pnlEur: pnl, trades: closed.length };
   }
 
+  // Waarom mag dit recept live niet handelen? Met de naam van het recept, zodat je ziet welk recept het is.
+  #liveBlockedWhy(agent) {
+    const key = agent.recipeKey ?? '–';
+    const r = this.settings.agentLive.risky?.[agent.recipeKey];
+    if (r && !this.agentRiskyStage(agent)) return `recept ${key} staat op "${agent.stage}"; op eigen risico mag alleen een getest of betrouwbaar recept`;
+    if (r) return `recept ${key} heeft de verliesgrens van € ${r.maxLossEur.toFixed(2)} bereikt`;
+    if (this.agentLiveReady(agent)) return `live handel ik met recept ${key} pas als je het zelf live toestaat (pagina Trainer)`;
+    return `live handel ik met recept ${key} pas als het alle eisen voor live haalt, of als je het op eigen risico live zet (pagina Trainer)`;
+  }
+
   agentRiskyActive(agent) {
     const r = this.settings.agentLive.risky?.[agent?.recipeKey];
     if (!r || !this.agentRiskyStage(agent)) return false;
@@ -1278,7 +1288,19 @@ export class Bot {
       }
       return { buy: false, reason };
     }
-    return this.#agentBuy(pair, choice.agent, regime, choice, talk);
+    // Live: mag het recept voor deze fase niet live handelen, maar een ander recept wel (door jou
+    // toegestaan of op eigen risico), dan gebruikt hij dat recept (het hoofdrecept als dat mag).
+    let agent = choice.agent;
+    if (this.mode === 'live' && !this.agentAllowed(agent)) {
+      const alt = agentParts(main).find((p) => p !== agent && p.recipeKey !== agent.recipeKey && this.agentAllowed(p));
+      if (alt) {
+        talk.push(Bot.say('strategy', 'Strategy Agent', `Recept ${agent.recipeKey ?? '–'} mag live niet handelen; ik gebruik recept ${alt.recipeKey} dat live mag` +
+          `${this.settings.agentLive.risky?.[alt.recipeKey] ? ' (op eigen risico)' : ''}.`));
+        agent = alt;
+        this.agentChoice[pair] = { ...this.agentChoice[pair], recipe: alt.recipeKey, why: 'live' };
+      }
+    }
+    return this.#agentBuy(pair, agent, regime, choice, talk);
   }
 
   // Waarom koopt de AI-trader (niet)? Per beoordeelde candle één reden, de laatste 24 uur.
@@ -1452,7 +1474,7 @@ export class Bot {
     if (!this.agentAllowed(agent)) {
       const blocked = agent.stage === 'geblokkeerd';
       const why = blocked ? 'mijn recept is te riskant (te diepe terugval in de test), daar handel ik niet mee'
-        : this.mode === 'live' ? (this.agentLiveReady(agent) ? 'live handel ik pas als je dit recept zelf live toestaat (pagina Trainer)' : 'live handel ik pas als ik alle eisen voor live haal')
+        : this.mode === 'live' ? this.#liveBlockedWhy(agent)
           : 'oefenen in paper staat uit';
       this.#whyNot('toelating', q, agent.threshold);
       const reason = `AI-trader (${tf}): ik zie een kans (${nl(q)}% verwacht), maar ${why}`;

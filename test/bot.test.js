@@ -1055,10 +1055,10 @@ test('AI-trader: koopt en verkoopt zelf, uitkomst naar de trainer; live pas na b
   // Live: alleen als alle eisen gehaald zijn én de eigenaar het recept zelf live toestond
   const live = await run({ ...mkAgent('getest', false), recipeKey: 'R' }, 'live');
   assert.equal(live.bot.store.state.positions['BTC/EUR'], undefined);
-  assert.match(live.bot.pairStatus['BTC/EUR'].reason, /live handel ik pas als ik alle eisen voor live haal/);
+  assert.match(live.bot.pairStatus['BTC/EUR'].reason, /live handel ik met recept R pas als het alle eisen voor live haalt, of als je het op eigen risico/);
   const ready = { ...mkAgent('bewezen', false), recipeKey: 'R', liveCheck: { allMet: true, checks: [] } };
   const notYet = await run(ready, 'live');
-  assert.match(notYet.bot.pairStatus['BTC/EUR'].reason, /als je dit recept zelf live toestaat/);
+  assert.match(notYet.bot.pairStatus['BTC/EUR'].reason, /pas als je het zelf live toestaat/);
   assert.equal(notYet.bot.agentAllowed(ready), false, 'eisen gehaald, maar nog geen akkoord');
   notYet.bot.settings.setAgentLive('R', true);
   assert.equal(notYet.bot.agentAllowed(ready), true);
@@ -1156,6 +1156,31 @@ test('live: vrij saldo wordt binnen een ronde bijgehouden na kopen en verkopen',
   assert.ok(Math.abs(bot.liveBalance.eurFree - (100 - pos.costEur)) < 1e-9, `na kopen: ${bot.liveBalance.eurFree}`);
   await bot.closeManual('BTC/EUR');
   assert.ok(bot.liveBalance.eurFree > 99 && bot.liveBalance.eurFree < 100, `na verkopen: ${bot.liveBalance.eurFree}`);
+});
+
+test('AI-trader live: recept voor deze fase mag niet live, ander recept op eigen risico wel → dat recept', async () => {
+  const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
+  const { bot, ex } = setup({});
+  await bot.setRisk({ cooldownMinutes: 0, stakeEur: 20 });
+  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0 });
+  bot.settings.data.mode = 'live';
+  bot.liveBalance = { eurFree: 1000 };
+  ex.apiKey = 'k'; ex.secret = 's';
+  const pb = new PaperBroker(ex, 0.25);
+  Object.assign(bot.brokers.live, { buy: (...a) => pb.buy(...a), sell: (...a) => pb.sell(...a) });
+  const base = { ...fx.agent, liveCheck: { allMet: false, checks: [] }, entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 } };
+  const other = { ...base, stage: 'getest', recipeKey: 'B' };
+  // Hoofdrecept A is voor elke fase gekozen, maar alleen B staat op eigen risico.
+  const agent = { ...base, stage: 'getest', recipeKey: 'A',
+    regimes: { stijgend: { key: 'B', why: 'best', agent: other }, zijwaarts: { key: 'A', why: 'best' }, dalend: { key: 'A', why: 'best' } } };
+  bot.getAgent = () => agent;
+  bot.settings.setAgentLiveRisky('B', 50);
+  ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+  await bot.tick();
+  const pos = bot.store.state.positions['BTC/EUR'];
+  assert.ok(pos, bot.pairStatus['BTC/EUR']?.reason);
+  assert.equal(pos.agent.recipe, 'B');
+  assert.ok(pos.costEur > 15, 'eigen inzet');
 });
 
 test('AI-trader live: kleinste start uit te zetten', async () => {
