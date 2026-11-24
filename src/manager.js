@@ -176,6 +176,16 @@ export class BotManager {
     }
   }
 
+  // Modelversies van de leerserver voor de pagina Learning (één minuut bewaard).
+  async learningRegistry() {
+    if (!this.trainerAccess()) return { available: false, reason: 'Geen leerserver gekoppeld' };
+    if (this.learningCache && Date.now() - this.learningCache.at < 60000) return this.learningCache.data;
+    const r = await this.trainerRequest('/registry');
+    const data = { available: true, ...r.data };
+    this.learningCache = { at: Date.now(), data };
+    return data;
+  }
+
   async refreshMicro() {
     if (!this.ml.model?.meta?.micro || !this.trainerAccess()) return;
     const r = await this.trainerRequest('/micro/latest').catch(() => null);

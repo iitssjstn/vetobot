@@ -460,6 +460,7 @@
     <button class="nav" data-view="positions"><svg class="i"><use href="#i-brief"/></svg>Posities<span class="count" id="c-positions"></span></button>
     <button class="nav" data-view="signals"><svg class="i"><use href="#i-pulse"/></svg>AI-signalen<span class="count" id="c-signals"></span></button>
     <button class="nav" data-view="aichat"><svg class="i"><use href="#i-chat"/></svg>AI-chat</button>
+    <button class="nav" data-view="learning"><svg class="i"><use href="#i-target"/></svg>Learning</button>
     <button class="nav" data-view="trades"><svg class="i"><use href="#i-history"/></svg>Trades<span class="count" id="c-trades"></span></button>
     <button class="nav" data-view="activity"><svg class="i"><use href="#i-list"/></svg>Activiteit</button>
     <button class="nav" data-view="settings"><svg class="i"><use href="#i-gear"/></svg>Instellingen</button>
@@ -542,6 +543,20 @@
       </div>
     </section>
 
+    <section data-section="learning" hidden>
+      <div class="row-actions" style="margin:0 0 14px;flex-wrap:wrap">
+        <select id="ln-mode" aria-label="Modus" style="width:auto"><option value="">Huidige modus</option><option value="paper">Paper</option><option value="live">Live</option></select>
+        <select id="ln-days" aria-label="Periode" style="width:auto"><option value="7">7 dagen</option><option value="30" selected>30 dagen</option><option value="90">90 dagen</option><option value="365">1 jaar</option></select>
+        <button class="btn sm" type="button" id="ln-refresh">Vernieuwen</button><span class="msg" id="ln-msg"></span>
+      </div>
+      <div class="grid tiles gap" id="ln-tiles"></div>
+      <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Modelprestaties</h2><span class="hint" id="ln-model-hint"></span></div>
+        <div class="panel-b" id="ln-models"></div></div>
+      <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-history"/></svg>Trainingsgeschiedenis</h2><span class="hint" id="ln-hist-hint"></span></div>
+        <div class="panel-b" id="ln-history"></div></div>
+      <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-pulse"/></svg>Beslissingsanalyse</h2><span class="hint" id="ln-dec-hint"></span></div>
+        <div class="panel-b" id="ln-decisions"></div></div>
+    </section>
     <section data-section="trainer" hidden>
       <div class="row-actions trtabs" role="tablist" style="margin:0 0 14px">
         <button class="btn primary" type="button" data-trtab="overzicht">Overzicht</button>
@@ -1170,7 +1185,7 @@ function table(rows, cols, empty, emptyIcon = 'list', rowAttr) {
 
 // ---------- Views ----------
 let pollTimer, state, me, lastNums = {};
-const titles = { dashboard: 'Dashboard', market: 'Markt', positions: 'Posities', signals: 'AI-signalen', aichat: 'AI-chat', trainer: 'Trainer',
+const titles = { dashboard: 'Dashboard', market: 'Markt', positions: 'Posities', signals: 'AI-signalen', aichat: 'AI-chat', trainer: 'Trainer', learning: 'Learning',
   trades: 'Trades', activity: 'Activiteit', settings: 'Instellingen', users: 'Gebruikers' };
 const isOn = (section) => !document.querySelector(`[data-section="${section}"]`).hidden;
 
@@ -1217,6 +1232,7 @@ function go(section, anchor) {
   if (section === 'settings') { renderSettings(); loadMarkets(); loadKeys(); loadModel(); }
   if (section === 'users') loadUsers();
   if (section === 'trainer') loadTrainer();
+  if (section === 'learning') loadLearning();
   if (section === 'aichat' && Date.now() - (chatsLoadedAt ?? 0) > 1000) loadChats();
   else if (section === 'aichat') renderChats();
   if (anchor) {
@@ -2505,6 +2521,176 @@ document.addEventListener('click', (e) => {
   if (!a) return;
   e.preventDefault();
   go(a.dataset.go);
+});
+
+// ---------- Learning ----------
+// Wat leert de bot? Modelversies van de leerserver (alleen aantoonbaar betere worden gebruikt) en het
+// beslissingsdagboek: goede en slechte beslissingen, gemiste kansen en onterechte afwijzingen.
+let lnData = null;
+async function loadLearning() {
+  const q = new URLSearchParams({ days: $('ln-days').value, ...($('ln-mode').value ? { mode: $('ln-mode').value } : {}) });
+  $('ln-msg').textContent = 'laden…';
+  try {
+    lnData = await api(`api/learning?${q}`);
+    $('ln-msg').textContent = '';
+    renderLearning();
+  } catch (err) {
+    $('ln-msg').className = 'msg err';
+    $('ln-msg').textContent = err.message;
+  }
+}
+['ln-mode', 'ln-days'].forEach((id) => $(id).addEventListener('change', loadLearning));
+$('ln-refresh').onclick = loadLearning;
+
+function renderLearning() {
+  const d = lnData;
+  if (!d) return;
+  const j = d.journal ?? {};
+  const r = d.registry ?? {};
+  const nl = (v, dd = 2) => v == null || !Number.isFinite(Number(v)) ? '–' : Number(v).toFixed(dd).replace('.', ',');
+  const pc = (v, dd = 2) => v == null || !Number.isFinite(Number(v)) ? '–' : `<span class="${v > 0 ? 'up' : v < 0 ? 'down' : ''}">${v > 0 ? '+' : ''}${nl(v, dd)}%</span>`;
+  const n = (v) => v == null ? '–' : String(v);
+  const when = (iso) => iso ? esc(String(iso).replace('T', ' ').slice(0, 16)) : '–';
+  const versions = r.versions ?? [];
+  const active = versions.find((v) => v.active) ?? versions.find((v) => v.version === r.active) ?? null;
+  const last = r.lastSession ?? versions[0] ?? null;
+  const c = j.counts ?? {};
+  const o = j.outcomes ?? {};
+  const DEC = { promoted: ['ok', 'gepromoot'], rejected: ['bad', 'afgewezen'], kept: ['soft', 'niet beter'], rollback: ['wait', 'teruggezet'] };
+  const badge = (dec) => { const b = DEC[dec] ?? ['soft', dec ?? '–']; return `<span class="badge ${b[0]}">${esc(b[1])}</span>`; };
+  const regOk = r.available !== false && !r.error;
+
+  // 1. Overzicht
+  const tiles = [
+    ['Modelversie', active ? `v${active.version}` : '–', active ? `${esc(active.recipeText ?? active.recipeKey ?? '')}${r.pinned ? ' · vastgezet' : ''}` : (regOk ? 'nog geen gepromoot model' : 'leerserver niet bereikbaar'), 'var(--accent)', 'target'],
+    ['Laatste training', last ? when(last.at) : '–', last ? `${DEC[last.decision]?.[1] ?? esc(last.decision ?? '')}` : '–', 'var(--info)', 'history'],
+    ['Trainingssessies', n(r.sessions ?? (versions.length || null)), regOk ? 'leerrondes geregistreerd' : esc(r.error ?? r.reason ?? 'geen leerserver'), 'var(--info)', 'cpu'],
+    ['Datapunten', n(c.decisions), `${n(c.labeled)} beoordeeld · ${n(c.pending)} wachten`, 'var(--accent)', 'list'],
+    ['Geaccepteerd / afgewezen', `${n(c.accepted)} / ${n(c.rejected)}`, `${n(c.trades)} trades gekoppeld`, 'var(--up)', 'pulse'],
+    ['Laatste evaluatie', last?.metrics ? pc(last.metrics.avgPct ?? last.metrics.netReturnPct) : '–', last?.metrics ? `PF ${nl(last.metrics.profitFactor)} · terugval ${nl(last.metrics.maxDrawdownPct, 1)}%` : 'nog geen', 'var(--warn)', 'chart'],
+  ];
+  $('ln-tiles').innerHTML = tiles.map(([k, v, sub, col, ic]) => `<div class="panel tile" style="--c:${col}"><div class="k">${k}${icon(ic)}</div><div class="v num">${v}</div><div class="s">${sub}</div></div>`).join('');
+
+  // 2. Modelprestaties: de gepromote versies naast elkaar (nieuwste eerst).
+  const promoted = versions.filter((v) => v.decision === 'promoted' || v.decision === 'rollback' || v.active).slice(0, 15);
+  const m = (v) => v.metrics ?? {};
+  const regimes = (v) => {
+    const br = m(v).byRegime ?? {};
+    return Object.entries(br).filter(([, x]) => x && x.trades).map(([k, x]) => `<span style="white-space:nowrap" title="${esc(k)}: ${x.trades} trades, ${x.winRate != null ? Math.round(x.winRate) + '% met winst' : ''}">${esc(k)} ${pc(x.avgPct)}</span>`).join(' · ') || '<span class="muted">–</span>';
+  };
+  $('ln-model-hint').textContent = r.thresholds ? `promotie bij ≥ ${nl((r.thresholds.minScoreGain ?? 0.05) * 100, 0)}% beter` : '';
+  $('ln-models').innerHTML = !regOk
+    ? `<p class="muted" style="margin:0">${esc(r.error ? `Modelversies niet op te halen: ${r.error}. Is de leerserver bijgewerkt?` : r.reason ?? 'Geen leerserver gekoppeld.')}</p>`
+    : `<p class="muted" style="margin:0 0 8px;font-size:13.5px">Alleen een model dat in de eindtest (een periode die het nooit zag) aantoonbaar beter is dan het actieve, wordt gebruikt — en dan eerst in paper. Live blijft altijd jouw eigen akkoord per recept (Trainer → Live). Een hoger rendement alleen is niet genoeg: ook terugval en profit factor tellen.</p>
+      <div class="scroll">${table(promoted, [
+        ['Versie', (v) => `<b>v${v.version}</b>${v.active ? ' <span class="badge ok">actief</span>' : ''}${r.pinned === v.version ? ' <span class="badge wait">vast</span>' : ''}`],
+        ['Recept', (v) => `<span style="display:inline-block;min-width:150px">${esc(v.recipeText ?? v.recipeKey ?? '–')}</span>`],
+        ['Rendement', (v) => pc(m(v).netReturnPct), 'r'],
+        ['Per trade', (v) => pc(m(v).avgPct), 'r'],
+        ['Winrate', (v) => m(v).winRate == null ? '–' : `${nl(m(v).winRate, 0)}%`, 'r'],
+        ['Profit factor', (v) => nl(m(v).profitFactor), 'r'],
+        ['Sharpe', (v) => nl(m(v).sharpe), 'r'],
+        ['Max. terugval', (v) => m(v).maxDrawdownPct == null ? '–' : `<span class="num">${nl(-m(v).maxDrawdownPct, 1)}%</span>`, 'r'],
+        ['Trades', (v) => `<span class="num">${n(m(v).trades)}</span>`, 'r'],
+        ['Gem. winst / verlies', (v) => `${pc(m(v).avgWinPct)} / ${pc(m(v).avgLossPct)}`, 'r'],
+        ['Per marktomstandigheid', regimes],
+      ], 'Nog geen gepromote modelversies.', 'target')}</div>`;
+
+  // 3. Trainingsgeschiedenis: elke leerronde, met de beslissing en de reden.
+  $('ln-hist-hint').textContent = versions.length ? `laatste ${versions.length}` : '';
+  const delta = (v) => {
+    const ct = v.comparedTo;
+    if (!ct?.version) return '<span class="muted">–</span>';
+    const dl = ct.deltas ?? {};
+    const parts = [['avgPct', 'per trade', 2, '%'], ['profitFactor', 'PF', 2, ''], ['maxDrawdownPct', 'terugval', 1, '%']]
+      .filter(([k]) => dl[k] != null).map(([k, l, dd, u]) => `${l} ${dl[k] > 0 ? '+' : ''}${nl(dl[k], dd)}${u}`);
+    return `t.o.v. v${ct.version}${parts.length ? `: ${parts.join(', ')}` : ''}`;
+  };
+  $('ln-history').innerHTML = !regOk ? '<p class="muted" style="margin:0">Niet beschikbaar.</p>'
+    : `${r.pinned ? `<div class="alert" style="margin:0 0 10px">${icon('target')}<div>Vastgezet op <b>v${r.pinned}</b>: nieuwe leerrondes worden nog wel getest en geregistreerd, maar niet in gebruik genomen. ${d.isAdmin ? '<button class="btn sm" type="button" id="ln-unpin">Vastzetten opheffen</button>' : ''}</div></div>` : ''}
+      <div class="scroll">${table(versions.slice(0, 60), [
+        ['Wanneer', (v) => `${when(v.at)}<div class="muted" style="font-size:12px">${esc(v.by ?? '')}</div>`],
+        ['Versie', (v) => `v${v.version}`],
+        ['Recept', (v) => `<span style="display:inline-block;min-width:150px">${esc(v.recipeText ?? v.recipeKey ?? '–')}</span>`],
+        ['Data', (v) => { const ds = v.dataset ?? {}; return `<span class="muted" style="font-size:12.5px">${ds.pairs?.length ? `${ds.pairs.length} coins` : ''}${ds.days ? ` · ${ds.days} dagen` : ''}${ds.periods?.eindtest ? ` · eindtest ${esc(ds.periods.eindtest.join(' – '))}` : ''}</span>`; }],
+        ['Uitkomst', (v) => `${badge(v.decision)}<div style="font-size:12.5px;margin-top:3px">${esc(v.reason ?? '')}</div>`],
+        ['Vergeleken', (v) => `<span style="font-size:12.5px">${delta(v)}</span>`],
+        ['', (v) => d.isAdmin && v.hasSnapshot && !v.active ? `<button class="btn sm" type="button" data-ln-rollback="${v.version}">Terugzetten</button>` : ''],
+      ], 'Nog geen leerrondes geregistreerd.', 'history')}</div>
+      ${d.isAdmin ? '<div class="row-actions"><input id="ln-pass" type="password" placeholder="Je wachtwoord (voor terugzetten)" autocomplete="current-password" style="max-width:260px"><span class="msg" id="ln-act-msg"></span></div><div class="help">Terugzetten zet het gepubliceerde model terug naar die versie en zet het vast. Dat geldt voor paper en voor de recepten die jij live toestond; een recept dat te riskant is geworden, kan niet terug.</div>' : ''}`;
+
+  // 4. Beslissingsanalyse uit het dagboek.
+  $('ln-dec-hint').textContent = j.enabled ? `${d.mode} · ${d.days} dagen` : '';
+  if (!j.enabled) {
+    $('ln-decisions').innerHTML = `<p class="muted" style="margin:0">${esc(j.error ? `Het beslissingsdagboek is niet beschikbaar: ${j.error}` : 'Het beslissingsdagboek is nog leeg of staat uit. Na de eerste beslissingen van de bot verschijnt hier de analyse.')}</p>`;
+    return;
+  }
+  const H = j.horizons ?? [60, 240, 1440];
+  const hl = (h) => h >= 60 ? `${h / 60} u` : `${h} min`;
+  const card = (label, v, sub, cls) => `<div class="panel tile" style="--c:var(--${cls})"><div class="k">${label}</div><div class="v num">${n(v)}</div><div class="s">${sub}</div></div>`;
+  const rate = (a, b) => (a + b) ? `${Math.round((a / (a + b)) * 100)}%` : '–';
+  $('ln-decisions').innerHTML = `
+    <p class="muted" style="margin:0 0 10px;font-size:13.5px">Elke beslissing wordt bewaard met de marktgegevens van <b>dat moment</b>. Achteraf rekent de bot uit wat er gebeurde (na ${H.map(hl).join(', ')}; alleen koersen ná het besluit, na kosten). Zo zie je of afwijzen terecht was.</p>
+    <div class="grid tiles gap">
+      ${card('Goede beslissingen', o.good, 'gekocht en winst', 'up')}
+      ${card('Slechte beslissingen', o.bad, 'gekocht en verlies', 'down')}
+      ${card('Terecht afgewezen', o.correctRejections, 'zou verlies zijn geweest', 'up')}
+      ${card('Gemiste kansen', o.missedOpportunities, 'regels/toelating hielden een winstkans tegen', 'warn')}
+      ${card('Onterecht afgewezen', o.wrongRejections, 'de AI-controleur zei nee, maar het steeg', 'warn')}
+      ${card('Raak gekocht', rate(o.good ?? 0, o.bad ?? 0), 'van de gesloten trades', 'accent')}
+    </div>
+    <div class="sub-h" style="margin:14px 0 6px">${icon('cpu')}Per AI-model</div>
+    <div class="scroll">${table(j.byAi ?? [], [
+      ['AI', (x) => esc(x.provider ?? '–')], ['Beslissingen', (x) => `<span class="num">${x.decisions}</span>`, 'r'],
+      ['Ja / nee', (x) => `<span class="num">${x.approved} / ${x.vetoed}</span>`, 'r'],
+      ['Nee terecht / onterecht', (x) => `<span class="num">${x.vetoRight} / ${x.vetoWrong}</span>`, 'r'],
+      ['Nee klopte', (x) => rate(x.vetoRight ?? 0, x.vetoWrong ?? 0), 'r'],
+    ], 'Nog geen beslissingen van een AI-model.', 'cpu')}</div>
+    <div class="sub-h" style="margin:14px 0 6px">${icon('chart')}Per coin</div>
+    <div class="scroll">${table(j.byPair ?? [], [
+      ['Coin', (x) => esc(x.pair)], ['Beslissingen', (x) => `<span class="num">${x.decisions}</span>`, 'r'], ['Gekocht', (x) => `<span class="num">${x.accepted}</span>`, 'r'],
+      ['Trades', (x) => `<span class="num">${x.trades}</span>`, 'r'], ['Gem. per trade', (x) => pc(x.avgPnlPct), 'r'],
+      ['Winrate', (x) => x.winRate == null ? '–' : `${Math.round(x.winRate)}%`, 'r'], ['Gemiste kansen', (x) => `<span class="num">${x.missed}</span>`, 'r'],
+    ], 'Nog geen beslissingen.', 'chart')}</div>
+    <div class="sub-h" style="margin:14px 0 6px">${icon('target')}Per marktomstandigheid</div>
+    <div class="scroll">${table(j.byRegime ?? [], [
+      ['Trend', (x) => esc(x.regime ?? 'onbekend')], ['Volatiliteit', (x) => esc(x.volRegime ?? 'onbekend')],
+      ['Beslissingen', (x) => `<span class="num">${x.decisions}</span>`, 'r'], ['Gekocht', (x) => `<span class="num">${x.accepted}</span>`, 'r'],
+      ['Trades', (x) => `<span class="num">${x.trades}</span>`, 'r'], ['Gem. per trade', (x) => pc(x.avgPnlPct), 'r'], ['Koers daarna (gem.)', (x) => pc(x.avgRetPct), 'r'],
+    ], 'Nog geen beslissingen.', 'target')}</div>
+    <div class="sub-h" style="margin:14px 0 6px">${icon('list')}Waar het besluit viel</div>
+    <div class="scroll">${table(j.byStage ?? [], [
+      ['Stap', (x) => esc(STAGE_LABEL[x.stage] ?? x.stage)], ['Beslissingen', (x) => `<span class="num">${x.decisions}</span>`, 'r'], ['Beoordeeld', (x) => `<span class="num">${x.labeled}</span>`, 'r'],
+      ['Koers daarna (gem.)', (x) => pc(x.avgRetPct), 'r'], ['Daarna gestegen', (x) => x.positiveShare == null ? '–' : `${Math.round(x.positiveShare * 100)}%`, 'r'],
+    ], 'Nog geen beslissingen.', 'list')}</div>
+    <div class="sub-h" style="margin:14px 0 6px">${icon('history')}Laatste beslissingen</div>
+    <div class="scroll">${table(j.recent ?? [], [
+      ['Wanneer', (x) => when(x.at)], ['Coin', (x) => esc(x.pair)],
+      ['Besluit', (x) => `${x.outcome === 'accepted' ? '<span class="badge ok">gekocht</span>' : '<span class="badge soft">niet</span>'} <span class="muted" style="font-size:12.5px">${esc(STAGE_LABEL[x.stage] ?? x.stage ?? '')}</span>`],
+      ['Verwacht', (x) => pc(x.expectedPct), 'r'],
+      ...H.map((h) => [`Na ${hl(h)}`, (x) => pc(x.labels?.[h]), 'r']),
+      ['Trade', (x) => x.trade ? `${pc(x.trade.pnlPct)} <span class="muted" style="font-size:12px">max ${pc(x.trade.mfePct, 1)} / ${pc(x.trade.maePct, 1)}</span>` : '<span class="muted">–</span>', 'r'],
+      ['Reden', (x) => `<span style="font-size:12.5px">${esc(x.reason ?? '')}</span>`],
+    ], 'Nog geen beslissingen.', 'history')}</div>`;
+}
+const STAGE_LABEL = { approved: 'gekocht', toelating: 'toelating (live/paper)', risk: 'Risk Agent', pauze: 'pauze in deze marktfase', risicoregels: 'risicoregels',
+  orderboek: 'orderboek-check', 'ai-veto': 'AI-controleur zei nee', 'not-filled': 'order niet gevuld', error: 'fout bij kopen' };
+document.addEventListener('click', async (e) => {
+  const rb = e.target.closest('[data-ln-rollback]');
+  const up = e.target.closest('#ln-unpin');
+  if (!rb && !up) return;
+  const msg = (t, c) => { const m = $('ln-act-msg') ?? $('ln-msg'); if (m) { m.className = `msg ${c ?? ''}`; m.textContent = t; } };
+  try {
+    if (rb) {
+      if (!confirm(`Modelversie v${rb.dataset.lnRollback} terugzetten en vastzetten?`)) return;
+      await api('api/admin/learning/rollback', { version: Number(rb.dataset.lnRollback), password: $('ln-pass')?.value ?? '' });
+      msg(`v${rb.dataset.lnRollback} teruggezet en vastgezet.`, 'ok');
+    } else {
+      await api('api/admin/learning/unpin', {});
+      msg('Vastzetten opgeheven.', 'ok');
+    }
+    loadLearning();
+  } catch (err) { msg(err.message, 'err'); }
 });
 
 // ---------- AI-chat ----------

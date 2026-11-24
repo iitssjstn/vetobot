@@ -342,6 +342,41 @@ export function createApp({ users, manager, log = console }) {
   }));
 
   // Gesprekken van het AI-team, nieuwste eerst.
+  // Learning: wat de bot leert. Het beslissingsdagboek van deze gebruiker (goede en slechte beslissingen,
+  // gemiste kansen, onterechte afwijzingen) en de modelversies van de leerserver (alleen lezen).
+  app.get('/api/learning', wrap(async (req, { bot }) => {
+    const days = Math.max(1, Math.min(365, Number(req.query.days) || 30));
+    const mode = ['paper', 'live'].includes(req.query.mode) ? req.query.mode : bot.mode;
+    let journal = { enabled: false };
+    try {
+      journal = bot.learningStats ? (bot.learningStats({ mode, days }) ?? { enabled: false }) : { enabled: false };
+    } catch (err) {
+      journal = { enabled: false, error: err.message };
+    }
+    const registry = await manager.learningRegistry().catch((err) => ({ error: err.message }));
+    return { mode, days, isAdmin: req.user.role === 'admin', journal, registry };
+  }));
+
+  // Terug naar een eerder goedgekeurde modelversie (vastzetten), of het vastzetten opheffen.
+  // Dit raakt alleen paper/het gepubliceerde model; live blijft altijd jouw eigen akkoord per recept.
+  app.post('/api/admin/learning/rollback', adminOnly, wrap(async (req) => {
+    confirm(req, req.body?.password);
+    const version = Number(req.body?.version);
+    if (!Number.isInteger(version) || version < 1) throw new Error('Ongeldige versie');
+    const r = await manager.trainerRequest('/registry/rollback', { method: 'POST', body: { version } });
+    manager.learningCache = null;
+    await manager.refreshAgent().catch(() => {});
+    log.warn(`Modelversie v${version} teruggezet en vastgezet door ${req.user.username}`);
+    return { ok: true, ...r.data };
+  }));
+
+  app.post('/api/admin/learning/unpin', adminOnly, wrap(async (req) => {
+    const r = await manager.trainerRequest('/registry/unpin', { method: 'POST', body: {} });
+    manager.learningCache = null;
+    log.info(`Vastzetten van de modelversie opgeheven door ${req.user.username}`);
+    return { ok: true, ...r.data };
+  }));
+
   app.get('/api/aichat', wrap((req, { bot, settings }) => ({
     mode: settings.ai.mode ?? 'single',
     chats: bot.store.state.decisions.filter((d) => d.team).slice(0, 60)

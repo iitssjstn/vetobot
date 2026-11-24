@@ -227,3 +227,41 @@ test('api/state wacht niet op de live-prijsopvraag', async () => {
     close();
   }
 });
+
+test('Learning: dagboek en modelversies; terugzetten alleen admin met wachtwoord', async () => {
+  const { users, manager, client, close } = await setup();
+  try {
+    const admin = client();
+    await admin.post('/api/auth/setup', { username: 'Justin', password: PW, code: users.setupCode });
+    // Zonder leerserver: de pagina werkt, met een uitleg.
+    let r = await admin.get('/api/learning?days=7');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.days, 7);
+    assert.equal(r.body.registry.available, false);
+    assert.ok(r.body.journal);
+    // Met een leerserver: versies ophalen en terugzetten doorgeven.
+    const calls = [];
+    manager.trainerAccess = () => ({ url: 'http://t', token: 'x' });
+    manager.trainerRequest = async (p, opts = {}) => {
+      calls.push([p, opts.method ?? 'GET', opts.body]);
+      if (p === '/registry') return { data: { versions: [{ version: 3, decision: 'promoted', active: true }], active: 3, pinned: null, sessions: 5 } };
+      return { data: { ok: true } };
+    };
+    manager.refreshAgent = async () => {};
+    r = await admin.get('/api/learning');
+    assert.equal(r.body.registry.active, 3);
+    assert.equal(r.body.isAdmin, true);
+    assert.equal((await admin.post('/api/admin/learning/rollback', { version: 3, password: 'fout-wachtwoord' })).status, 400);
+    assert.equal((await admin.post('/api/admin/learning/rollback', { version: 3, password: PW })).status, 200);
+    assert.deepEqual(calls.at(-1), ['/registry/rollback', 'POST', { version: 3 }]);
+    // Een gewone gebruiker mag kijken, niet terugzetten.
+    const inv = await admin.post('/api/admin/invites', { note: 'Piet' });
+    const piet = client();
+    await piet.post('/api/auth/register', { code: inv.body.code, username: 'piet', password: PW });
+    assert.equal((await piet.get('/api/learning')).body.isAdmin, false);
+    assert.equal((await piet.post('/api/admin/learning/rollback', { version: 3, password: PW })).status, 403);
+    assert.equal((await piet.post('/api/admin/learning/unpin')).status, 403);
+  } finally {
+    close();
+  }
+});
