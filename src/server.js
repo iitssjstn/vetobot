@@ -298,11 +298,15 @@ export function createApp({ users, manager, log = console }) {
         // Ook de extra recepten die de leerserver meestuurde (om live te zetten).
         const parts = allAgentParts(a);
         const { approved, risky } = settings.agentLive;
+        // Live gezet maar niet (meer) bij de bot: dan kan hij er niet mee handelen. Laten zien.
+        const present = new Set(parts.map((p) => p.recipeKey));
+        const missing = [...new Set([...approved, ...Object.keys(risky ?? {})])].filter((k) => !present.has(k));
         return { timeframe: a.timeframe, stage: a.stage, coins: a.coins ?? null, allowed: bot.agentAllowed(a), live: a.live ?? null, team: bot.agentTeam(),
           recipes: [...new Map(parts.map((p) => [p.recipeKey, { recipe: p.recipeKey, stage: p.stage, extra: Boolean(p.extra), ready: bot.agentLiveReady(p), approved: approved.includes(p.recipeKey),
             riskyAllowed: bot.agentRiskyStage(p),
             risky: risky[p.recipeKey] ? { ...risky[p.recipeKey], lossEur: +bot.agentRiskyLoss(p.recipeKey).pnlEur.toFixed(2), trades: bot.agentRiskyLoss(p.recipeKey).trades } : null,
-            checks: p.liveCheck?.checks ?? [] }])).values()], smallStart: Number(bot.strategy.agentLiveSmallStart ?? 1) === 1, sizing: bot.sizingSummary() };
+            checks: p.liveCheck?.checks ?? [] }])).values()], smallStart: Number(bot.strategy.agentLiveSmallStart ?? 1) === 1, sizing: bot.sizingSummary(),
+          missingLive: missing.map((k) => ({ recipe: k, risky: Boolean(risky?.[k]) })) };
       })(),
       serverTime: new Date().toISOString(),
     });
@@ -322,6 +326,7 @@ export function createApp({ users, manager, log = console }) {
       const n = Number(maxLossEur);
       if (!Number.isFinite(n) || n < 1) throw new Error('Kies een verliesgrens van minstens € 1');
       settings.setAgentLiveRisky(recipe, n);
+      manager.refreshAgent?.().catch(() => {});
       log.warn(`AI-trader ${recipe} live op eigen risico gezet (verliesgrens € ${n.toFixed(2)}) door ${req.user.username}`);
       return { ok: true, risky: settings.agentLive.risky };
     }
@@ -331,6 +336,7 @@ export function createApp({ users, manager, log = console }) {
       if (!bot.agentLiveReady(part)) throw new Error('Dit recept haalt nog niet alle eisen voor live');
     }
     settings.setAgentLive(recipe, Boolean(allow));
+    manager.refreshAgent?.().catch(() => {});
     log.warn(`AI-trader ${recipe} live ${allow ? 'toegestaan' : 'ingetrokken'} door ${req.user.username}`);
     return { ok: true, approved: settings.agentLive.approved };
   }));

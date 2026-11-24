@@ -1992,14 +1992,17 @@ function recipeName(a, key) {
 // Welke recepten staan live aan (door jou toegestaan of op eigen risico)? Voor bovenaan en op het overzicht.
 function liveOnHtml(a, bot, nl) {
   const on = (bot?.recipes ?? []).filter((r) => r.approved || r.risky);
-  if (!on.length) return `<div class="alert" style="margin:0 0 12px">${icon('target')}<div><b>Nu live:</b> geen recept. ${state?.mode === 'live' ? 'De AI-trader koopt live niets tot je hieronder een recept live zet.' : ''}</div></div>`;
+  const miss = (bot?.missingLive ?? []).map((m) => `<div class="alert err" style="margin:0 0 12px;overflow-wrap:anywhere">${icon('alert')}<div><b>Live gezet, maar niet bij de bot:</b> ${esc(recipeName(a, m.recipe))}${m.risky ? ' (eigen risico)' : ''}. `
+    + `De leerserver stuurt dit recept niet (meer) mee, dus de bot kan er niet mee handelen. Werk de leerserver bij; is het recept te riskant geworden, dan komt het niet meer terug. `
+    + `<button class="btn sm" type="button" data-agent-live="${esc(m.recipe)}" data-allow="0">Intrekken</button></div></div>`).join('');
+  if (!on.length) return miss + `<div class="alert" style="margin:0 0 12px">${icon('target')}<div><b>Nu live:</b> geen recept. ${state?.mode === 'live' ? 'De AI-trader koopt live niets tot je hieronder een recept live zet.' : ''}</div></div>`;
   const line = (r) => {
     const rk = r.risky;
     const how = r.approved ? '<span class="badge ok">live toegestaan</span>'
       : `<span class="badge wait">eigen risico</span> <span class="${rk.lossEur >= 0 ? 'up' : 'down'}">${rk.lossEur >= 0 ? '+' : '−'}€ ${nl(Math.abs(rk.lossEur), 2)}</span> <span class="muted">van max. −€ ${nl(rk.maxLossEur, 2)}, ${rk.trades} trades</span>`;
     return `<div style="margin-top:4px;overflow-wrap:anywhere"><b>${esc(recipeName(a, r.recipe))}</b> ${how}</div>`;
   };
-  return `<div class="alert ok" style="margin:0 0 12px">${icon('target')}<div><b>Nu live${state?.mode === 'live' ? '' : ' (zodra je naar live overstapt)'}:</b>${on.map(line).join('')}</div></div>`;
+  return miss + `<div class="alert ok" style="margin:0 0 12px">${icon('target')}<div><b>Nu live${state?.mode === 'live' ? '' : ' (zodra je naar live overstapt)'}:</b>${on.map(line).join('')}</div></div>`;
 }
 // Kiest de AI-trader zelf de inzet, en doen zijn grotere inzetten het beter?
 function sizingHtml(z, sign, nl) {
@@ -2050,10 +2053,10 @@ function agentLiveHtml(a, bot, sign, nl) {
     ['Marktfases', (w) => esc((w.regimes ?? []).join(', ') || '–')],
   ]) : '<p class="muted" style="margin:0">Nog geen paper-trades sinds de nieuwe manier van meten.</p>';
   return `<div class="sub-h" style="margin:0 0 6px">${icon('target')}Live-toelating</div>
-    ${recs.length ? liveOnHtml(a, bot, nl) : ''}
+    ${recs.length || bot?.missingLive?.length ? liveOnHtml(a, bot, nl) : ''}
     <p class="muted" style="margin:0 0 10px;font-size:13.5px">Live handelt de AI-trader pas als een recept <b>alle</b> eisen haalt én jij het daarna zelf toestaat. Valt een eis later weg, dan stopt hij live vanzelf (met een melding) en trekt hij je akkoord in. ${bot?.smallStart === false ? 'Live gebruikt hij meteen je eigen inzet ("Live beginnen met de kleinste inzet" staat uit).' : 'Live begint hij met de kleinste inzet tot hij live 20 trades met gemiddeld winst heeft (uit te zetten bij Instellingen → Strategie).'} Op <b>eigen risico</b> gebruikt hij altijd je eigen inzet, met een verliesgrens die jij kiest.</p>
     ${list || '<p class="muted">De AI-trader gebruikt nog geen recept.</p>'}
-    ${recs.some((r) => r.ready || r.approved || r.risky || r.riskyAllowed) ? `<div class="row-actions"><input id="ag-live-pass" type="password" placeholder="Je wachtwoord" autocomplete="current-password" style="max-width:240px"><span class="msg" id="ag-live-msg"></span></div>` : ''}
+    ${recs.some((r) => r.ready || r.approved || r.risky || r.riskyAllowed) || bot?.missingLive?.length ? `<div class="row-actions"><input id="ag-live-pass" type="password" placeholder="Je wachtwoord" autocomplete="current-password" style="max-width:240px"><span class="msg" id="ag-live-msg"></span></div>` : ''}
     ${live ? '' : '<div class="help">Je staat nu in paper: live toestaan heeft pas effect als je naar live overstapt.</div>'}
     ${sizingHtml(bot?.sizing, sign, nl)}
     <div class="sub-h" style="margin:16px 0 6px">${icon('target')}Klopt zijn verwachting?</div>

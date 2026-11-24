@@ -152,7 +152,16 @@ export class BotManager {
   // De AI-trader van de trainer (elke 5 minuten, met ETag).
   async refreshAgent() {
     if (!this.trainerAccess()) return;
-    const r = await this.trainerRequest('/agent.json', { etag: this.ml.agentEtag }).catch(() => null);
+    // De recepten die iemand live heeft gezet (toegestaan of op eigen risico) altijd meevragen, zodat
+    // ze niet wegvallen als het plan per marktfase of de top van de leerserver verandert.
+    const keep = [...new Set([...this.contexts.values()].flatMap(({ settings }) => {
+      const l = settings.agentLive;
+      return [...l.approved, ...Object.keys(l.risky ?? {})];
+    }))].sort();
+    const q = keep.length ? `?keep=${encodeURIComponent(keep.join(','))}` : '';
+    if (q !== this.ml.agentKeep) this.ml.agentEtag = null; // andere vraag: niet op de oude ETag vertrouwen
+    this.ml.agentKeep = q;
+    const r = await this.trainerRequest(`/agent.json${q}`, { etag: this.ml.agentEtag }).catch(() => null);
     if (r && !r.notModified && r.data && !validateAgent(r.data)) {
       // Recepten per marktfase (Strategy Agent): een onbruikbaar recept valt terug op het hoofdrecept.
       for (const [reg, p] of Object.entries(r.data.regimes ?? {})) {

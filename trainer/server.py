@@ -1247,13 +1247,35 @@ def extra_recipes(board, best, regimes, data, limit=EXTRA_RECIPES):
         sub = read_json(os.path.join('agents', e['key'].replace('|', '_') + '.json'), None)
         if not sub:
             continue
-        lc = live_check(e['key'], e, sub.get('costPct'))
-        stage = agent_stage(e, lc)
-        if stage not in ('getest', 'bewezen'):
+        part = recipe_part(e['key'], e, sub, data)
+        if part['stage'] not in ('getest', 'bewezen'):
             continue
-        out.append({**{k: sub[k] for k in AGENT_PART_KEYS if k in sub}, 'recipeKey': e['key'], 'recipeStatus': agent_search.status(e),
-                    'stage': stage, 'live': data['live'].get(e['key']) or {}, 'liveCheck': lc, 'extra': True})
+        out.append(part)
     return out
+
+
+def recipe_part(key, entry, sub, data):
+    """Een recept zoals de bot het als (extra) onderdeel van de AI-trader krijgt."""
+    lc = live_check(key, entry, sub.get('costPct'))
+    return {**{k: sub[k] for k in AGENT_PART_KEYS if k in sub}, 'recipeKey': key, 'recipeStatus': agent_search.status(entry),
+            'stage': agent_stage(entry, lc), 'live': (data.get('live') or {}).get(key) or {}, 'liveCheck': lc, 'extra': True}
+
+
+def add_kept(a, keys, data):
+    """Recepten die de eigenaar live heeft gezet (de bot vraagt ze met ?keep=) altijd meesturen, ook als
+    ze niet meer in het plan per marktfase of de top staan. Te riskante recepten nooit."""
+    have = {p.get('recipeKey') for p in [a] + [p['agent'] for p in (a.get('regimes') or {}).values() if p.get('agent')] + list(a.get('extras') or [])}
+    have |= {p.get('key') for p in (a.get('regimes') or {}).values()}
+    for key in keys[:20]:
+        if not key or key in have:
+            continue
+        entry = (data.get('recipes') or {}).get(key)
+        sub = read_json(os.path.join('agents', key.replace('|', '_') + '.json'), None) if entry else None
+        if not entry or not sub or not agent_search.usable(entry):
+            continue
+        a.setdefault('extras', []).append({**recipe_part(key, entry, sub, data), 'kept': True})
+        have.add(key)
+    return a
 
 
 REGIME_NAME = {'stijgend': 'een stijgende markt', 'zijwaarts': 'een zijwaartse markt', 'dalend': 'een dalende markt'}
@@ -1566,11 +1588,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             return self.send(200, data, extra={'ETag': etag})
-        if self.path == '/agent.json':
+        if self.path.split('?')[0] == '/agent.json':
             a = read_json('agent.json', None)
             if not a:
                 return self.send(404, {'error': 'Nog geen AI-trader'})
             data = load_agents()
+            from urllib.parse import parse_qs, urlparse
+            keep = [k for v in parse_qs(urlparse(self.path).query).get('keep', []) for k in v.split(',')]
+            if keep:
+                add_kept(a, keep, data)
             live = data.get('live', {})
             a['live'] = live.get(a.get('recipeKey') or a['timeframe'], {})
             # Eisen voor live steeds actueel (nieuwe paper-trades komen tussen de leerrondes binnen).

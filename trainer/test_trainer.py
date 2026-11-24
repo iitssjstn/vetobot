@@ -738,6 +738,23 @@ class LiveAdmission(unittest.TestCase):
         self.assertEqual(sum(w['trades'] for w in wk), 30)
 
 
+class KeptRecipes(unittest.TestCase):
+    def test_live_recipes_always_sent(self):
+        from unittest import mock
+        import server
+        a = {'recipeKey': 'A', 'regimes': {'stijgend': {'key': 'B', 'agent': {'recipeKey': 'B'}}}, 'extras': [{'recipeKey': 'C'}]}
+        data = {'recipes': {'D': {'key': 'D'}, 'E': {'key': 'E'}, 'F': {'key': 'F'}}, 'live': {}}
+        with mock.patch.object(server, 'read_json', side_effect=lambda f, d=None: None if 'F' in f else {'entry': 1, 'exit': 2}), \
+                mock.patch.object(server, 'live_check', return_value={'allMet': False}), \
+                mock.patch.object(server, 'agent_stage', return_value='oefenen'), \
+                mock.patch.object(server.agent_search, 'status', side_effect=lambda e: 'te riskant' if e['key'] == 'E' else 'veelbelovend'), \
+                mock.patch.object(server.agent_search, 'usable', side_effect=lambda e: e['key'] != 'E'):
+            server.add_kept(a, ['A', 'B', 'C', 'D', 'E', 'F', 'X'], data)
+        # A, B, C zijn er al; D komt erbij (ook als hij nu oefent); E te riskant; F zonder bestand; X onbekend.
+        self.assertEqual([p['recipeKey'] for p in a['extras']], ['C', 'D'])
+        self.assertTrue(a['extras'][1]['kept'])
+
+
 class ScheduleOff(unittest.TestCase):
     def test_off_means_no_automatic_training(self):
         import server

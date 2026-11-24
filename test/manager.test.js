@@ -300,3 +300,27 @@ test('automatisch overstappen: nieuwe beste strategie van de trainer wordt één
   assert.equal(a.bot.timeframe, '15m');
   manager.stopAll();
 });
+
+test('AI-trader ophalen: live gezette recepten altijd meevragen (keep), extra recept alleen live actief', async () => {
+  const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
+  const { admin, manager } = setup();
+  const a = manager.ensure(admin);
+  a.secrets.update({ trainerUrl: 'http://10.0.0.5:8787', trainerToken: 'geheim' });
+  const urls = [];
+  manager.fetchImpl = async (url, opts) => {
+    urls.push({ url, etag: opts.headers['If-None-Match'] });
+    const keep = new URL(url).searchParams.get('keep');
+    const extras = keep ? keep.split(',').map((k) => ({ ...fx.agent, recipeKey: k, stage: 'getest', extra: true, kept: true })) : [];
+    return { status: 200, ok: true, headers: new Map([['etag', `"e-${keep}"`]]), json: async () => ({ ...fx.agent, recipeKey: 'A', stage: 'getest', regimes: {}, extras }) };
+  };
+  await manager.refreshAgent();
+  assert.equal(urls[0].url, 'http://10.0.0.5:8787/agent.json');
+  a.settings.setAgentLiveRisky('X|1', 20);
+  await manager.refreshAgent();
+  assert.equal(urls[1].url, 'http://10.0.0.5:8787/agent.json?keep=X%7C1');
+  assert.equal(urls[1].etag, undefined, 'andere vraag: geen oude ETag');
+  // In paper niet actief, live wel.
+  assert.deepEqual(a.bot.getAgent().extras.map((p) => p.recipeKey), []);
+  a.settings.data.mode = 'live';
+  assert.deepEqual(a.bot.getAgent().extras.map((p) => p.recipeKey), ['X|1']);
+});
