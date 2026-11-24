@@ -265,3 +265,26 @@ test('Learning: dagboek en modelversies; terugzetten alleen admin met wachtwoord
     close();
   }
 });
+
+test('Live-veiligheid: status in /api/state, saldocontrole alleen live', async () => {
+  const { users, manager, client, close } = await setup();
+  try {
+    const admin = client();
+    await admin.post('/api/auth/setup', { username: 'Justin', password: PW, code: users.setupCode });
+    const bot = manager.get(users.list()[0].id).bot;
+    let checked = 0;
+    bot.safetyStatus = () => ({ mode: bot.mode, exchangeStop: { enabled: true, positions: [] }, reconcile: checked ? { at: 'x', ok: true, issues: [] } : null, nextReconcileAt: null });
+    bot.reconcile = async () => { checked++; };
+    assert.equal((await admin.get('/api/state')).body.safety.exchangeStop.enabled, true);
+    // In paper: weigeren, niets doen.
+    assert.equal((await admin.post('/api/safety/reconcile')).status, 400);
+    assert.equal(checked, 0);
+    bot.settings.data.mode = 'live';
+    const r = await admin.post('/api/safety/reconcile');
+    assert.equal(r.status, 200);
+    assert.equal(checked, 1);
+    assert.equal(r.body.safety.reconcile.ok, true);
+  } finally {
+    close();
+  }
+});
