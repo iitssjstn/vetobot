@@ -302,7 +302,7 @@ export function createApp({ users, manager, log = console }) {
         const present = new Set(parts.map((p) => p.recipeKey));
         const missing = [...new Set([...approved, ...Object.keys(risky ?? {})])].filter((k) => !present.has(k));
         return { timeframe: a.timeframe, stage: a.stage, coins: a.coins ?? null, allowed: bot.agentAllowed(a), live: a.live ?? null, team: bot.agentTeam(),
-          recipes: [...new Map(parts.map((p) => [p.recipeKey, { recipe: p.recipeKey, stage: p.stage, extra: Boolean(p.extra), ready: bot.agentLiveReady(p), approved: approved.includes(p.recipeKey),
+          recipes: [...new Map(parts.map((p) => [p.recipeKey, { recipe: p.recipeKey, stage: p.stage, extra: Boolean(p.extra), stale: Boolean(p.stale), ready: bot.agentLiveReady(p), approved: approved.includes(p.recipeKey),
             riskyAllowed: bot.agentRiskyStage(p),
             risky: risky[p.recipeKey] ? { ...risky[p.recipeKey], lossEur: +bot.agentRiskyLoss(p.recipeKey).pnlEur.toFixed(2), trades: bot.agentRiskyLoss(p.recipeKey).trades } : null,
             checks: p.liveCheck?.checks ?? [] }])).values()], smallStart: Number(bot.strategy.agentLiveSmallStart ?? 1) === 1, sizing: bot.sizingSummary(),

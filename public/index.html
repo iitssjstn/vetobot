@@ -2046,7 +2046,11 @@ function sizingHtml(z, sign, nl) {
 function agentLiveHtml(a, bot, sign, nl) {
   const recs = [...(bot?.recipes ?? [])].sort((x, y) => Number(Boolean(y.approved || y.risky)) - Number(Boolean(x.approved || x.risky)));
   const live = state?.mode === 'live';
-  const list = recs.map((r) => {
+  const missCards = (bot?.missingLive ?? []).map((m) => `<div style="margin:0 0 12px;padding:10px 12px;border:1px solid var(--down);border-radius:10px;overflow-wrap:anywhere">
+      <div><span class="badge ${m.risky ? 'wait' : 'ok'}">${m.risky ? 'live · eigen risico' : 'live'}</span> <b>${esc(recipeName(a, m.recipe))}</b></div>
+      <div class="muted" style="font-size:12.5px">${esc(m.recipe)} · niet bij de bot: hij handelt er nu niet mee</div>
+      <div class="row-actions" style="margin-top:6px"><button class="btn" type="button" data-agent-live="${esc(m.recipe)}" data-allow="0">Live intrekken</button></div></div>`).join('');
+  const list = missCards + recs.map((r) => {
     const checks = r.checks.length ? r.checks.map((c) => `<div>${c.ok ? '<span class="up">✓</span>' : '<span class="down">✗</span>'} ${esc(c.label)} <span class="muted">· nu: ${esc(c.now)}</span></div>`).join('')
       : '<div class="muted">Nog geen gegevens van de leerserver.</div>';
     const k = esc(r.recipe);
@@ -2068,7 +2072,7 @@ function agentLiveHtml(a, bot, sign, nl) {
     const badge = r.approved ? '<span class="badge ok">live</span>' : rk ? '<span class="badge wait">live · eigen risico</span>' : '<span class="badge soft">niet live</span>';
     return `<div style="margin:0 0 12px;padding:10px 12px;border:1px solid ${on ? 'var(--up)' : 'var(--line)'};border-radius:10px;overflow-wrap:anywhere">
       <div>${badge} <b>${esc(recipeName(a, r.recipe))}</b></div>
-      <div class="muted" style="font-size:12.5px">${recipeName(a, r.recipe) !== r.recipe ? `${esc(r.recipe)} · ` : ''}${esc(r.stage ?? '')}${r.extra ? ' · extra recept: alleen in gebruik als je het live zet' : ''}</div>
+      <div class="muted" style="font-size:12.5px">${recipeName(a, r.recipe) !== r.recipe ? `${esc(r.recipe)} · ` : ''}${esc(r.stage ?? '')}${r.extra ? ' · extra recept: alleen in gebruik als je het live zet' : ''}${r.stale ? ' · <span class="warnc">de leerserver stuurt dit recept niet meer mee; de bot gebruikt zijn laatst bekende versie</span>' : ''}</div>
       <div style="margin:4px 0 6px;font-size:13.5px;line-height:1.6">${checks}</div>${btn}</div>`;
   }).join('');
   const pt = a.paperTest;

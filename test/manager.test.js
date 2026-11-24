@@ -323,4 +323,14 @@ test('AI-trader ophalen: live gezette recepten altijd meevragen (keep), extra re
   assert.deepEqual(a.bot.getAgent().extras.map((p) => p.recipeKey), []);
   a.settings.data.mode = 'live';
   assert.deepEqual(a.bot.getAgent().extras.map((p) => p.recipeKey), ['X|1']);
+  // De leerserver stuurt het live gezette recept even niet mee: de bot houdt de laatst bekende versie.
+  manager.fetchImpl = async () => ({ status: 200, ok: true, headers: new Map([['etag', '"leeg"']]), json: async () => ({ ...fx.agent, recipeKey: 'A', stage: 'getest', regimes: {}, extras: [] }) });
+  await manager.refreshAgent();
+  const x = a.bot.getAgent().extras.find((p) => p.recipeKey === 'X|1');
+  assert.ok(x, 'live recept blijft');
+  assert.equal(x.stale, true);
+  // Ingetrokken: dan hoeft hij niet meer bewaard te worden.
+  a.settings.setAgentLiveRisky('X|1', null);
+  await manager.refreshAgent();
+  assert.equal(a.bot.getAgent().extras.length, 0);
 });
