@@ -375,6 +375,10 @@ export class LiveBroker {
     if (!(amt > 0) || (min > 0 && amt < min)) return { skipped: `hoeveelheid ${amt} ligt onder het minimum van Bitvavo${min > 0 ? ` (${min})` : ''}` };
     const trigger = Number(this.ex.priceToPrecision(pair, stopPrice));
     if (!(trigger > 0)) throw new Error(`Ongeldige stopprijs ${stopPrice}`);
+    // Bitvavo weigert orders onder een minimale orderwaarde (meestal € 5). Een stop van een kleine positie
+    // (bijv. € 5 met 10% noodstop = € 4,50) zou dan steeds mislukken: niet plaatsen, de bot bewaakt zelf.
+    const minCost = Number(this.ex.markets?.[pair]?.limits?.cost?.min) > 0 ? Number(this.ex.markets[pair].limits.cost.min) : 5;
+    if (amt * trigger < minCost) return { skipped: `de stop is € ${(amt * trigger).toFixed(2)} waard, onder het minimum van Bitvavo (€ ${minCost.toFixed(2)}); de bot bewaakt de noodstop zelf` };
     const o = await this.ex.createOrder(pair, 'stopLoss', 'sell', amt, undefined,
       { triggerPrice: trigger, triggerType: 'price', triggerReference: 'lastTrade', operatorId: OPERATOR_ID });
     if (!o?.id) throw new Error('Bitvavo gaf geen order-id terug voor de stop-order');

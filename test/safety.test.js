@@ -141,7 +141,8 @@ test('exchange-stop: na een live aankoop een stop-loss-order bij Bitvavo op de s
 
 test('exchange-stop: bij de AI-trader de veiligheidsstop van het recept', async () => {
   const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
-  const { bot, ex } = setupLive({ strategy: { agentMode: 1, agentVeto: 0 } });
+  // Zonder de kleinste live-start (€ 5): een stop van € 4,60 zou onder het minimum van Bitvavo vallen.
+  const { bot, ex } = setupLive({ strategy: { agentMode: 1, agentVeto: 0, agentLiveSmallStart: 0 } });
   const agent = { ...fx.agent, stage: 'bewezen', recipeKey: 'R', safetyStopPct: 8, liveCheck: { allMet: true, checks: [] }, entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 },
     exit: { ...fx.agent.exit, init: fx.agent.exit.init + 50 }, regimes: { stijgend: { key: 'R', why: 'best' }, zijwaarts: { key: 'R', why: 'best' }, dalend: { key: 'R', why: 'best' } } };
   bot.getAgent = () => agent;
@@ -385,6 +386,11 @@ test('LiveBroker: stop-order plaatsen, annuleren en uitgevoerd ophalen', async (
   assert.ok(Math.abs(st.fill.price - 90 * 0.998) < 1e-9);
   assert.ok(st.fill.feeEur > 0 && st.fill.costEur < 0.1 * 90);
   assert.deepEqual(await b.placeStop('BTC/EUR', 0.00001, 90), { skipped: 'hoeveelheid 0.00001 ligt onder het minimum van Bitvavo (0.0001)' });
+  // Onder de minimale orderwaarde van Bitvavo (€ 5): niet plaatsen, geen eindeloze nieuwe pogingen.
+  const before = ex.calls.length;
+  const small = await b.placeStop('BTC/EUR', 0.05, 90);
+  assert.match(small.skipped, /onder het minimum van Bitvavo \(€ 5\.00\)/);
+  assert.equal(ex.calls.length, before, 'geen order naar Bitvavo');
 });
 
 // ---------- Strategy Agent: volatiliteit ----------

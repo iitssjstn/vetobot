@@ -2743,6 +2743,8 @@ function safetyRender(z, mode) {
       ['Geplaatst', (x) => when(x.placedAt)],
     ], 'Geen open live posities.', 'shield')}</div>
     <div class="sub-h" style="margin:14px 0 6px">${icon('list')}Saldocontrole met Bitvavo</div>
+    ${rc?.error ? `<div class="alert err" style="margin:0 0 8px">${icon('alert')}<div>De laatste controle lukte niet: ${esc(rc.error)}</div></div>` : ''}
+    ${rc?.closed?.length ? `<div class="alert" style="margin:0 0 8px">${icon('shield')}<div>Afgesloten omdat de stop bij Bitvavo was uitgevoerd: ${esc(rc.closed.join(', '))}.</div></div>` : ''}
     ${rc ? (rc.ok ? `<div class="alert ok" style="margin:0">${icon('shield')}<div>Klopt: wat de bot denkt te bezitten staat ook echt op je Bitvavo-account (${when(rc.at)}).</div></div>`
       : `<div class="alert err" style="margin:0">${icon('alert')}<div><b>Afwijkingen gevonden</b> (${when(rc.at)}). De bot handelt hier niet zelf op; kijk het na op Bitvavo.
           <ul style="margin:6px 0 0;padding-left:18px">${(rc.issues ?? []).map((i) => `<li>${esc(i.pair)}: ${esc(KIND[i.kind] ?? i.kind)}${i.botAmount != null || i.exchangeAmount != null ? ` (bot ${esc(String(i.botAmount ?? '–'))}, Bitvavo ${esc(String(i.exchangeAmount ?? '–'))})` : ''}${i.note ? ` · ${esc(i.note)}` : ''}</li>`).join('')}</ul></div></div>`)

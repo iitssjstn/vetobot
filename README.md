@@ -352,6 +352,14 @@ Van elke gepromote versie wordt een kopie bewaard (`agents/versions/v<n>.json`) 
 
 **Terugzetten**: op de pagina Learning (admin, met wachtwoord) bij een gepromote versie **Terugzetten**. Die versie wordt actief en **vastgezet**: nieuwe leerrondes worden nog getest en geregistreerd, maar niet in gebruik genomen tot je **Vastzetten opheffen** kiest. Een te riskant recept kan niet terug.
 
+**Statistische toets.** Een ander recept moet in de eindtests **met 95% zekerheid** meer per trade opleveren dan het actieve model (eenzijdige Welch t-toets op gemiddelde, spreiding en aantal trades, samengevoegd over alle eindtest-rondes). Omdat de leerserver veel recepten probeert en er altijd wel een toevallig goed uitkomt, wordt die zekerheid strenger naarmate er meer recepten op het leaderboard staan (Bonferroni). Recepten met alleen oude rondes (zonder spreiding) vallen terug op de score-eis.
+
+**Proefperiode.** Na elke promotie staat de nieuwe versie **op proef**: na 30 echte trades (paper of live, geen verkenner) vergelijkt de leerserver het resultaat met wat de eindtest beloofde. Is het gemiddelde ≤ 0 én met 90% zekerheid lager dan beloofd, dan is de proef mislukt: de leerserver zet **vanzelf** de vorige goedgekeurde versie terug (niet vastgezet), dat recept mag 72 uur niet opnieuw gepromoot worden, en de bot stuurt je een melding ("AI-trader: nieuw model teruggedraaid"). Op Learning zie je per versie de proefstatus en een grafiek **Praktijk tegen verwachting**.
+
+**Volatiliteit bij het kiezen.** Per recept meet de leerserver het resultaat bij hoge, normale en lage volatiliteit (`volStats`). Verloor het gekozen recept in de eindtests bij de huidige volatiliteit (≥ 30 trades, gemiddeld verlies), dan koopt de AI-trader niet, of gebruikt hij een ander toegestaan recept dat daar niet verloor (met halve inzet). Instelling: Strategie → Volatiliteit meewegen.
+
+**Gemiste kansen bijsturen.** De directe bijsturing van de verwachting gebruikt naast eigen trades en de verkenner nu ook de afgewezen kansen van de AI-trader waarvan de uitkomst vaststaat (gewicht 0,15, vanaf 30 stuks). Zo wordt hij minder vaak te voorzichtig of te optimistisch.
+
 **Alleen trainen als er iets nieuws is**: een al getest recept wordt pas opnieuw getraind na 6 uur (of één candle van het recept als dat langer is) of na 20 nieuwe trades met dat recept. Nieuwe recepten blijven altijd mogelijk.
 
 ### 5. De pagina Learning
@@ -381,6 +389,8 @@ Bot (compose, `vetobot`):
 | `JOURNAL_MAIN_HORIZON` | 240 | Horizon voor terecht/onterecht/gemist |
 | `JOURNAL_RETENTION_DAYS` | 180 | Zo lang beslissingen bewaren |
 | `BITVAVO_OPERATOR_ID` | 1 | Verplicht nummer bij Bitvavo-orders |
+| `EXCHANGE_STOP` | 1 | Stop-loss ook bij Bitvavo zetten (live) |
+| `AGENT_VOL_GUARD` | 1 | Strategy Agent let op volatiliteit |
 
 Leerserver (compose, `vetobot-trainer`; ook in de config van de leerserver):
 
@@ -392,6 +402,10 @@ Leerserver (compose, `vetobot-trainer`; ook in de config van de leerserver):
 | `RETRAIN_TOLERANCE_PCT` | 5 | Hetzelfde recept opnieuw getraind: hooguit zoveel % slechter |
 | `RETEST_HOURS` | 6 | Een recept pas na zoveel uur opnieuw trainen ... |
 | `RETEST_TRADES` | 20 | ... of na zoveel nieuwe trades met dat recept |
+| `PROMOTE_CONFIDENCE` | 0.95 | Zekerheid dat een ander recept echt beter is (vóór de correctie voor het aantal recepten) |
+| `PROBATION_TRADES` | 30 | Zoveel echte trades in de proefperiode |
+| `PROBATION_CONFIDENCE` | 0.9 | Zekerheid voor "duidelijk slechter dan beloofd" |
+| `PROBATION_COOLDOWN_HOURS` | 72 | Zo lang mag een recept na een mislukte proef niet opnieuw |
 
 Geen nieuwe containers, volumes of poorten nodig: de databases staan in de bestaande data-volumes.
 
@@ -418,6 +432,9 @@ Doe dit pas na weken paper trading met resultaten waar je tevreden over bent.
 4. Begin met een kleine inzet (minimaal € 5, het minimum van Bitvavo) en een lage daglimiet. De bot gebruikt nooit meer dan inzet × maximaal open trades; met € 5 en 2 trades heb je genoeg aan zo'n € 15 tot € 20 op Bitvavo. In paper kan de inzet vanaf € 0,10.
 
 Beveiligingen tijdens live handelen:
+
+- **Stop-loss bij Bitvavo zelf** (standaard aan; Instellingen → Risico): na elke live aankoop zet de bot een stop-loss-order bij Bitvavo op de noodstop. Die werkt ook als je server of internet uitvalt. Verkoopt de bot zelf, dan annuleert hij die order eerst (en controleert dat); ging de stop bij Bitvavo af terwijl de bot offline was, dan sluit hij de positie af met de echte uitvoering. Onder de minimale orderwaarde van Bitvavo (€ 5) wordt geen stop geplaatst; de bot bewaakt dan zelf.
+- **Saldocontrole met Bitvavo**: bij het starten en elke 24 uur (of met **Nu controleren** op de pagina Posities) vergelijkt de bot zijn posities met je echte saldo en meldt afwijkingen. Hij handelt er nooit zelf op.
 
 - Kan de bot het orderboek niet ophalen, dan koopt hij live niet ("in live koop ik niet blind"); in paper wel.
 - Per coin loopt er nooit meer dan één order tegelijk, en een positie wordt nooit twee keer verkocht.
