@@ -848,10 +848,21 @@ export class Bot {
       }
       if (this.mode === 'live') {
         this.#step('Saldo ophalen bij Bitvavo');
-        await this.refreshLiveBalance().catch((err) => {
+        // Bitvavo geeft af en toe een losse storing (bijv. 's nachts "errorCode 101"). Pas melden als het
+        // 10 minuten aanhoudt, en één keer melden als het weer werkt. Tot dan rekent de bot met het laatste saldo.
+        await this.refreshLiveBalance().then(() => {
+          if (this.balanceFail?.notified) {
+            this.#notify('errors', { title: 'Saldo ophalen bij Bitvavo werkt weer', message: `Na ${Math.round((Date.now() - this.balanceFail.since) / 60000)} minuten storing.`, level: 'info' });
+          }
+          this.balanceFail = null;
+        }).catch((err) => {
           errors++;
           this.#event('error', null, `Saldo ophalen mislukt: ${err.message}`);
-          this.#notify('errors', { title: 'Saldo ophalen bij Bitvavo mislukt', message: err.message, level: 'error' });
+          this.balanceFail ??= { since: Date.now(), notified: false };
+          if (!this.balanceFail.notified && Date.now() - this.balanceFail.since >= 10 * 60000) {
+            this.balanceFail.notified = true;
+            this.#notify('errors', { title: 'Saldo ophalen bij Bitvavo mislukt', message: `${err.message}\n\nAl ${Math.round((Date.now() - this.balanceFail.since) / 60000)} minuten. De bot rekent zolang met het laatst bekende saldo.`, level: 'error' });
+          }
         });
       }
       await this.#exclusive(async () => {

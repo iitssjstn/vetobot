@@ -1895,3 +1895,25 @@ test('een kapot leerdagboek raakt kopen en verkopen niet', async () => {
   assert.equal(b.bot.store.state.trades.length, 1);
   assert.equal(b.bot.journal.enabled, false);
 });
+
+test('live: losse storing bij saldo ophalen geeft geen melding, aanhoudend wel (en één keer "werkt weer")', async () => {
+  const { bot, ex } = setup({});
+  const sent = [];
+  bot.notifier = { send: async (event, payload) => { sent.push({ event, ...payload }); return true; }, heartbeat: async () => null };
+  bot.settings.data.mode = 'live';
+  ex.apiKey = 'k'; ex.secret = 's';
+  let down = true;
+  bot.refreshLiveBalance = async () => { if (down) throw new Error('bitvavo {"errorCode":101,"error":"Unknown error."}'); };
+  ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+  await bot.tick();
+  const fails = () => sent.filter((x) => x.title === 'Saldo ophalen bij Bitvavo mislukt').length;
+  assert.equal(fails(), 0, 'losse storing: geen melding');
+  bot.balanceFail.since -= 11 * 60000;
+  await bot.tick();
+  await bot.tick();
+  assert.equal(fails(), 1, 'na 10 minuten één melding');
+  down = false;
+  await bot.tick();
+  assert.equal(sent.filter((x) => x.title === 'Saldo ophalen bij Bitvavo werkt weer').length, 1);
+  assert.equal(bot.balanceFail, null);
+});
