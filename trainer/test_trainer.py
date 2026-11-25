@@ -2648,3 +2648,23 @@ class AuditRollback(HttpGate):
         self.assertEqual(self.published()[0], A_key(RA))
         self.assertEqual(s.load_agents()['published']['key'], A_key(RA), 'agents.json past bij agent.json')
         self.assertEqual(s.load_agents()['live'][A_key(RA)]['n'], 1, 'en de feedback telt ook mee')
+
+
+class AuditProbationTrades(unittest.TestCase):
+    """Koppeling trade -> versie bij de proef: op het openingsmoment, met of zonder tijdzone."""
+
+    def test_trades_belong_to_version_by_opening_time(self):
+        import probation
+        from datetime import datetime, timezone
+        since = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc).timestamp()
+        rows = [{'recipe': 'b', 'pct': 1.0, 'mode': 'paper', 'openedAt': '2026-03-01T11:59:00Z', 'closedAt': '2026-03-01T13:00:00Z'},
+                {'recipe': 'b', 'pct': 2.0, 'mode': 'live', 'openedAt': '2026-03-01T12:00:00+00:00', 'closedAt': '2026-03-01T13:00:00Z'},
+                {'recipe': 'b', 'pct': 3.0, 'mode': 'paper', 'openedAt': '2026-03-01T14:00:00+02:00', 'closedAt': '2026-03-01T15:00:00Z'},
+                {'recipe': 'b', 'pct': 4.0, 'mode': 'paper', 'openedAt': '', 'at': '2026-03-01T13:00:00Z'},
+                {'recipe': 'b', 'pct': 'x', 'mode': 'paper', 'openedAt': '2026-03-01T13:00:00Z'},
+                {'recipe': 'b', 'pct': 5.0, 'mode': 'paper', 'openedAt': '2026-03-01T13:00:00Z', 'explore': True}]
+        got = probation.trades_in(probation.real_trades(rows), 'b', since)
+        # Voor het promotiemoment geopend (ook al na sluiten): niet; 14:00+02:00 = 12:00 UTC: wel.
+        self.assertEqual(sorted(t['pct'] for t in got), [2.0, 3.0, 4.0])
+        self.assertEqual({t['mode'] for t in got}, {'paper', 'live'})
+        self.assertEqual(probation.trades_in(probation.real_trades(rows), 'b', since, since + 1), [t for t in got if t['open'] < since + 1])
