@@ -121,6 +121,33 @@ def _split(n, gap=0):
     return (WARMUP, a), (a + gap, b), (b + gap, n)
 
 
+def _time_split(markets, gap=0, fa=0.70, fb=0.85, test=True):
+    """Zoals _split, maar voor alle coins op dezelfde KALENDERTIJD: de grenzen komen van de coin met
+    de langste geschiedenis en worden per coin op tijdstip teruggezocht. Een coin met minder
+    geschiedenis (later genoteerd, of een gat) leert dan niet in de periode die voor de andere coins
+    al de validatie of de eindtest is; de hele markt beweegt samen, dus dat zou lekken.
+    Coins met dezelfde candles krijgen precies dezelfde splitsing als met _split.
+    test=False (eerdere periodes): de eindtest is leeg, de validatie begint direct na de buffer."""
+    ref = max(markets, key=lambda m: len(m.c))
+    rts = _times(ref)
+    n_ref = len(rts)
+    ra, rb = int(n_ref * fa), int(n_ref * fb)
+    ta, tb = int(rts[min(ra, n_ref - 1)]), int(rts[min(rb, n_ref - 1)])
+    for mk in markets:
+        ts = _times(mk)
+        n = len(ts)
+        if mk is ref:
+            a, b = ra, rb
+        else:
+            # Eerste candle op of na de grens: alles daarvoor ligt vóór de grens.
+            a, b = int(np.searchsorted(ts, ta, side='left')), int(np.searchsorted(ts, tb, side='left'))
+        if test:
+            mk.split = ((WARMUP, a), (min(n, a + gap), b), (min(n, b + gap), n))
+        else:
+            mk.split = ((WARMUP, a), (min(n, a + gap), b), (b, b))
+    return markets
+
+
 MAX_EXIT_ROWS = 250_000   # plafond voor het aantal leervoorbeelden bij verkopen (geheugen)
 MAX_ENTRY_ROWS = 300_000  # en bij kopen
 
@@ -265,10 +292,22 @@ def learn_entry(markets, exit_model, exit_med, H, cost, safety_stop, step=2, ext
             X.append(mk.X[i])
             y.append(r[0] - getattr(mk, 'cost', cost))
             w.append(1.0)
+    nf = len(FEATURES)
     for row, ret, *weights in extra or []:
-        X.append(row)
+        # Echte trades (feedback van de bot): een resultaat dat geen getal is (NaN/inf) of een rij
+        # met een verkeerd aantal kenmerken overslaan; inf in een kenmerk telt als onbekend (mediaan).
+        # Anders loopt de training vast of leert hij van onzin.
+        try:
+            ret = float(ret)
+            row = np.asarray(row, dtype=float)
+            wt = float(weights[0]) if weights else 3.0
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(ret) or row.shape != (nf,) or not (math.isfinite(wt) and wt > 0):
+            continue
+        X.append(np.where(np.isinf(row), np.nan, row))
         y.append(ret)
-        w.append(float(weights[0]) if weights else 3.0)
+        w.append(wt)
     if len(X) < 1500:
         return None, None
     X = np.array(X, dtype=float)
@@ -602,13 +641,12 @@ def _fold(markets, a, b, H, rnd, recipe, fit_kw, pol, cost, safety, extra, regim
     koopdrempel, of None als er te weinig data is."""
     saved = [mk.split for mk in markets]
     try:
-        for mk in markets:
-            n = len(mk.c)
-            mk.split = ((WARMUP, int(n * a)), (int(n * a) + H, int(n * b)), (int(n * b), int(n * b)))
+        # Op kalendertijd, net als de gewone splitsing (zie _time_split).
+        _time_split(markets, H, a, b, test=False)
         exit_model, exit_med = learn_exit(markets, H, rnd, lambda k: None, iters=recipe['look'], fit_kw=fit_kw, pol=pol)
         if exit_model is None:
             return None
-        start = min(int(mk.c[mk.split[1][0]][0]) for mk in markets)
+        start = min(int(mk.c[min(mk.split[1][0], len(mk.c) - 1)][0]) for mk in markets)
         entry_model, entry_med = learn_entry(markets, exit_model, exit_med, H, cost, safety, extra=_before(extra, start), fit_kw=fit_kw, pol=pol)
         if entry_model is None:
             return None
@@ -652,13 +690,15 @@ def train_agent(cfg, recipe, fetch, pairs, log=print, progress=None, extra=None,
         if len(c) < WARMUP + 6 * H:
             continue
         mk = Market(pair, c, ctx, tf, cfg.get('featureCache'))
-        mk.split = _split(len(c), H)
         # Werkelijke kosten van deze coin (gemeten door de bot), anders de ingestelde kosten.
         mk.cost = float((cfg.get('costs') or {}).get(pair, cost))
         markets.append(mk)
     base = {'timeframe': tf, 'recipe': recipe, 'ok': False}
     if len(markets) < 1:
         return None, {**base, 'reason': 'Te weinig koersen voor dit recept'}
+    # Leren, validatie en eindtest voor alle coins op dezelfde kalendertijd (geen lek via een coin
+    # met minder geschiedenis).
+    _time_split(markets, H)
     step('agent', 1, 5, f'AI-trader {tf}: leren wanneer verkopen')
     exit_model, exit_med = learn_exit(markets, H, rnd, lambda k: step('agent', 1, 5, f"AI-trader {tf}: verkopen leren, stap {k + 1}/{recipe['look']}"),
                                       iters=recipe['look'], fit_kw=fit_kw, pol=pol)
@@ -667,7 +707,7 @@ def train_agent(cfg, recipe, fetch, pairs, log=print, progress=None, extra=None,
     step('agent', 2, 5, f'AI-trader {tf}: leren wanneer kopen')
     # Echte trades van de bot alleen als ze vóór de validatie liggen: anders lekt de eindtest
     # (die altijd de nieuwste periode is) in het leren.
-    val_start = min(int(mk.c[mk.split[1][0]][0]) for mk in markets)
+    val_start = min(int(mk.c[min(mk.split[1][0], len(mk.c) - 1)][0]) for mk in markets)
     extra_all = extra or []
     extra = _before(extra_all, val_start)
     entry_model, entry_med = learn_entry(markets, exit_model, exit_med, H, cost, safety, extra=extra, fit_kw=fit_kw, pol=pol)
@@ -719,7 +759,7 @@ def train_agent(cfg, recipe, fetch, pairs, log=print, progress=None, extra=None,
     chosen = [m for m in markets if m.pair in coins]
     step('agent', 4, 5, f'AI-trader {tf}: eindtest')
     test = backtest(chosen, 2, entry_model, entry_med, exit_model, exit_med, H, cost, safety, (thr,), bench=markets, regimes=regimes, slots=slots, pol=pol)[thr]
-    days_test = sum((mk.split[2][1] - mk.split[2][0]) for mk in chosen) / len(chosen) * TF_MIN.get(tf, 15) / 1440
+    days_test = sum(max(0, mk.split[2][1] - mk.split[2][0]) for mk in chosen) / len(chosen) * TF_MIN.get(tf, 15) / 1440
     # Alleen goed als hij ook beter deed dan meedobberen met de markt tijdens zijn trades.
     # En alleen als het in de meeste periodes werkte (alle op één na), niet in één toevallig goede.
     ok = bool(val['totalPct'] > 0 and test['trades'] >= MIN_TEST_TRADES and (test['avgPct'] or 0) >= MIN_TEST_AVG
@@ -748,7 +788,9 @@ def _importance(model, names, markets, med, H, n=3000):
     rows = []
     for mk in markets:
         lo, hi = mk.split[0]
-        for i in rng.integers(lo, max(lo + 1, hi - H - 2), size=max(1, n // len(markets))):
+        if hi - H - 2 <= lo:
+            continue  # geen leerperiode voor deze coin (korte geschiedenis): niet buiten het leren kijken
+        for i in rng.integers(lo, hi - H - 2, size=max(1, n // len(markets))):
             h = int(rng.integers(1, H - 1))
             t = i + h
             if t < len(mk.c) and mk.valid[t]:
