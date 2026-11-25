@@ -394,6 +394,23 @@ export class LiveBroker {
     return { state, filled, fill };
   }
 
+  // Zoekt een openstaande stop-order (verkoop) voor deze hoeveelheid en stopprijs bij Bitvavo. Voor als
+  // een eerdere poging een fout gaf terwijl de order misschien wél is aangemaakt (time-out, antwoord
+  // verloren): dan die overnemen in plaats van een tweede te zetten. Geeft { orderId, stopPrice, amount } of null.
+  async findStop(pair, amount, stopPrice) {
+    this.#requireKeys();
+    if (typeof this.ex.fetchOpenOrders !== 'function') return null;
+    await this.ex.loadMarkets();
+    let amt;
+    try { amt = Number(this.ex.amountToPrecision(pair, amount)); } catch { return null; }
+    const trigger = Number(this.ex.priceToPrecision(pair, stopPrice));
+    const near = (a, b, rel) => a > 0 && b > 0 && Math.abs(a - b) <= b * rel;
+    const open = await this.ex.fetchOpenOrders(pair);
+    const o = (open ?? []).find((x) => x?.side === 'sell' && /^stoploss$/i.test(String(x.type ?? x.info?.orderType ?? ''))
+      && near(Number(x.amount), amt, 1e-6) && near(Number(x.triggerPrice ?? x.info?.triggerAmount ?? x.info?.triggerPrice), trigger, 1e-6));
+    return o?.id ? { orderId: String(o.id), stopPrice: trigger, amount: amt } : null;
+  }
+
   async fetchStop(pair, orderId) {
     this.#requireKeys();
     return this.#stopState(await this.ex.fetchOrder(orderId, pair), pair);

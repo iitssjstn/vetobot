@@ -2415,14 +2415,18 @@ export class Bot {
     const now = new Date().toISOString();
     try {
       this.#step(`${pair}: stop-order bij Bitvavo zetten`);
-      const r = await this.broker.placeStop(pair, pos.amount, stopPrice);
+      // Gaf de vorige poging een fout, dan kan de order toch bij Bitvavo staan (time-out, antwoord verloren).
+      // Eerst zoeken en die overnemen: een tweede stop-order zou dezelfde coins nog eens reserveren.
+      const found = prev.error && typeof this.broker.findStop === 'function' ? await this.broker.findStop(pair, pos.amount, stopPrice) : null;
+      const r = found ?? await this.broker.placeStop(pair, pos.amount, stopPrice);
       if (r?.skipped) {
         pos.exchangeStop = { orderId: null, stopPrice, placedAt: null, skipped: r.skipped, attemptAt: now };
         this.#event('warn', pair, `Geen stop-order bij Bitvavo gezet: ${r.skipped}. De bot bewaakt de noodstop zelf.`);
         return;
       }
       pos.exchangeStop = { orderId: r.orderId, stopPrice: r.stopPrice ?? stopPrice, amount: r.amount ?? pos.amount, placedAt: now };
-      this.#event('info', pair, `Stop-order bij Bitvavo gezet op ${fmtPrice(pos.exchangeStop.stopPrice)} (order ${r.orderId})`);
+      this.#event(found ? 'warn' : 'info', pair, found ? `Bestaande stop-order bij Bitvavo teruggevonden en overgenomen (order ${r.orderId}, ${fmtPrice(pos.exchangeStop.stopPrice)}); geen tweede gezet`
+        : `Stop-order bij Bitvavo gezet op ${fmtPrice(pos.exchangeStop.stopPrice)} (order ${r.orderId})`);
     } catch (err) {
       const msg = String(err?.message ?? err).slice(0, 300);
       pos.exchangeStop = { orderId: null, stopPrice, placedAt: null, error: msg, attemptAt: now, attempts: (prev.attempts ?? 0) + 1, notified: Boolean(prev.notified) };
