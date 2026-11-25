@@ -135,6 +135,11 @@ export function computeLabel({ at, price }, horizonMin, candles, { now = Date.no
   const end = at + horizonMin * 60000;
   if (now < end) return null; // horizon nog niet voorbij: nooit vooruitkijken
   if (!(price > 0) || !Array.isArray(candles)) return null;
+  // De laatste candle van het venster (opent als laatste vóór t + horizon) moet ook al gesloten zijn.
+  // Anders telt de tolerantie voor ontbrekende candles hieronder ook een candle die gewoon nog open
+  // is, en hangt het label (dat daarna vaststaat) af van wanneer het berekend werd.
+  const lastOpen = Math.ceil(end / FIVE_MIN) * FIVE_MIN - FIVE_MIN;
+  if (now < lastOpen + FIVE_MIN) return null;
   const win = candles.filter((c) => Array.isArray(c) && c[0] >= at && c[0] < end && c[0] + FIVE_MIN <= now
     && c[2] > 0 && c[3] > 0 && c[4] > 0).sort((x, y) => x[0] - y[0]);
   // De laatste candle moet dicht bij het einde liggen (hooguit 2 ontbrekende candles aan het eind).
