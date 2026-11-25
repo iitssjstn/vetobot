@@ -894,19 +894,23 @@ def add_agent_trades(items):
     with feedback_lock:
         rows = (read_json('agent_trades.json', []) + clean)[-5000:]
         write_json('agent_trades.json', rows)
-    data = load_agents()
-    # Trades van de verkenner leren mee, maar tellen niet als resultaat in de praktijk.
-    for t in (t for t in clean if not t['explore']):
-        lv = data['live'].setdefault(t.get('recipe') or t['timeframe'], {'n': 0, 'sum': 0.0, 'wins': 0})
-        lv['n'] += 1
-        lv['sum'] += t['pct']
-        lv['wins'] += t['pct'] > 0
-        if lv['n'] == livecheck.MIN_TRADES:
-            avg = lv['sum'] / lv['n']
-            think(f"Na {lv['n']} echte trades met dit recept doe ik gemiddeld {thoughts.pct(avg)} per trade. "
-                  'Of ik live mag, hangt af van alle eisen op de pagina Trainer (en daarna van jouw akkoord).',
-                  kind='result' if avg >= livecheck.MIN_AVG else 'warn')
-    write_json('agents.json', data)
+    # agents.json lezen-aanpassen-schrijven onder publish_lock: anders kan een leerronde of een
+    # terugzetting die tegelijk agents.json schrijft verloren gaan ('published' wijst dan naar een
+    # ander recept dan agent.json), of gaan deze tellingen verloren. Zie AuditRollback.
+    with publish_lock:
+        data = load_agents()
+        # Trades van de verkenner leren mee, maar tellen niet als resultaat in de praktijk.
+        for t in (t for t in clean if not t['explore']):
+            lv = data['live'].setdefault(t.get('recipe') or t['timeframe'], {'n': 0, 'sum': 0.0, 'wins': 0})
+            lv['n'] += 1
+            lv['sum'] += t['pct']
+            lv['wins'] += t['pct'] > 0
+            if lv['n'] == livecheck.MIN_TRADES:
+                avg = lv['sum'] / lv['n']
+                think(f"Na {lv['n']} echte trades met dit recept doe ik gemiddeld {thoughts.pct(avg)} per trade. "
+                      'Of ik live mag, hangt af van alle eisen op de pagina Trainer (en daarna van jouw akkoord).',
+                      kind='result' if avg >= livecheck.MIN_AVG else 'warn')
+        write_json('agents.json', data)
     # Licht: alleen als de actieve versie op proef is, worden de trades geteld (zie _check_probation).
     try:
         check_probation()
@@ -1807,8 +1811,20 @@ def start_probation(reg, version, key, expected, since, prev_version=None, prev_
 def _rollback_target(reg, before, failed_key, data):
     """De nieuwste eerdere gepromote versie (van vóór de proef) die nog bruikbaar is: met snapshot,
     niet te riskant, niet zelf door een proef gezakt en niet van het mislukte recept.
-    Geeft (versie, record, snapshot) of None."""
-    for r in reg.versions(2000):
+    Geeft (versie, record, snapshot) of None.
+    Gezakt telt ook voor een versie waarvan de proef doorliep in een latere versie van hetzelfde
+    recept (opnieuw getraind) en daar mislukte: die versie zelf staat dan op status None, maar hoort
+    bij dezelfde gezakte proef (van startVersion tot de versie waar hij mislukte). Recepten in de
+    afkoelperiode ook niet."""
+    rows = reg.versions(2000)
+    failed = []   # (recept, van versie, tot en met versie) van mislukte proeven
+    for r in rows:
+        p = r.get('probation') or {}
+        if p.get('status') == 'mislukt':
+            failed.append((p.get('recipeKey') or r.get('publishedKey') or r.get('recipeKey'),
+                           p.get('startVersion') or r['version'], r['version']))
+    cooling = _safe(lambda: active_cooldowns(reg), 'afkoelperiodes lezen', {}) or {}
+    for r in rows:
         if r['version'] >= before or r['decision'] != 'promoted' or not r['hasSnapshot']:
             continue
         if (r.get('probation') or {}).get('status') == 'mislukt':
@@ -1817,7 +1833,9 @@ def _rollback_target(reg, before, failed_key, data):
         if not _valid_snapshot(snap):
             continue
         key = snap.get('recipeKey') or r.get('publishedKey') or r.get('recipeKey')
-        if key == failed_key or _risky_snapshot(snap, data['recipes'].get(key)):
+        if key == failed_key or key in cooling or _risky_snapshot(snap, data['recipes'].get(key)):
+            continue
+        if any(k == key and lo <= r['version'] <= hi for k, lo, hi in failed):
             continue
         return r['version'], r, snap
     return None

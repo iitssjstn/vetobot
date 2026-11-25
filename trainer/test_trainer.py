@@ -2577,3 +2577,74 @@ class AuditPseudoReplication(GateBase):
         m = s.recipe_metrics({'key': 'x', 'recipe': {'timeframe': '15m'}, 'rounds': [r1, r2]})
         self.assertEqual(m['testTrades'], 8)
         self.assertLess(m['testEffTrades'], 5, 'zelfde eindtest (op 6 uur na): bijna dezelfde trades')
+
+
+class AuditRollback(HttpGate):
+    """Terugzetten: nooit naar een model dat (in een eerdere versie van dezelfde proef) zakte."""
+
+    def fail_b_after_retrain(self):
+        s = self.s
+        self.finish(RA, 'a1', RP())
+        self.finish(RA, 'a2', RP())
+        self.finish(RB, 'b1', RP(edge=0.4))
+        self.assertEqual(self.finish(RB, 'b2', RP(edge=0.4))[0], 'promoted')       # v4, op proef
+        d, why = self.finish(RB, 'b3', RP(edge=0.4))                               # v5: zelfde recept, proef loopt door
+        self.assertEqual(d, 'promoted', why)
+        reg = s.registry()
+        self.assertEqual(reg.get(5)['probation']['startVersion'], 4)
+        s.add_agent_trades(trades_around(RB, -0.3))
+        self.assertEqual(reg.get(5)['probation']['status'], 'mislukt')
+        self.assertEqual((reg.active(), self.published()), (2, (A_key(RA), 'a2')))
+        return reg
+
+    def test_never_back_to_a_failed_model_from_an_inherited_probation(self):
+        s = self.s
+        reg = self.fail_b_after_retrain()
+        # Daarna wordt C gepromoot en zakt ook: terug naar A (v2), niet naar v4 (B, dezelfde gezakte proef).
+        self.finish(RC, 'c1', RP(edge=0.5))
+        d, why = self.finish(RC, 'c2', RP(edge=0.5))
+        self.assertEqual(d, 'promoted', why)
+        c_ver = reg.active()
+        s.add_agent_trades(trades_around(RC, -0.3, n=30))
+        self.assertEqual(reg.get(c_ver)['probation']['status'], 'mislukt')
+        self.assertEqual(reg.get(c_ver)['probation']['restoredVersion'], 2)
+        self.assertEqual((reg.active(), self.published()), (2, (A_key(RA), 'a2')))
+        self.assertEqual(s.load_agents()['published']['key'], A_key(RA))
+        self.assertEqual(set(s.active_cooldowns(reg)), {A_key(RB), A_key(RC)})
+        # Ook na de afkoelperiode niet automatisch terug naar het gezakte B-model.
+        reg.set_meta('cooldowns', {})
+        self.assertIsNone(s._rollback_target(reg, 99, A_key(RA), s.load_agents()))
+
+    def test_rollback_is_atomic_against_feedback(self):
+        # Feedback (add_agent_trades) leest en schrijft agents.json; een terugzetting tegelijk mag niet
+        # verloren gaan (anders wijst agents.json 'published' naar een ander recept dan agent.json).
+        from unittest import mock
+        s = self.s
+        self.finish(RA, 'a1', RP())
+        self.finish(RB, 'b1', RP(edge=0.4))
+        self.finish(RB, 'b2', RP(edge=0.4))
+        self.assertEqual(self.published()[0], A_key(RB))
+        inside, go = threading.Event(), threading.Event()
+        real = s.load_agents
+
+        def slow_load():
+            d = real()
+            if threading.current_thread().name == 'feedback':
+                inside.set()
+                go.wait(5)
+            return d
+        out = {}
+        with mock.patch.object(s, 'load_agents', slow_load):
+            t1 = threading.Thread(target=lambda: s.add_agent_trades([AT(RA, 0.1)]), name='feedback')
+            t1.start()
+            self.assertTrue(inside.wait(5))
+            t2 = threading.Thread(target=lambda: out.setdefault('r', s.registry_rollback({'version': 1})), name='rollback')
+            t2.start()
+            t2.join(0.5)
+            go.set()
+            t1.join(10)
+            t2.join(10)
+        self.assertEqual(out['r'][0], 200, out)
+        self.assertEqual(self.published()[0], A_key(RA))
+        self.assertEqual(s.load_agents()['published']['key'], A_key(RA), 'agents.json past bij agent.json')
+        self.assertEqual(s.load_agents()['live'][A_key(RA)]['n'], 1, 'en de feedback telt ook mee')
