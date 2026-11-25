@@ -497,6 +497,7 @@
         <span class="sub" id="st-sub"></span>
         <div class="progress" title="Tijd tot de volgende check"><div id="st-bar"></div></div>
       </div>
+      <div id="dash-alerts"></div>
       <div class="grid tiles gap" id="tiles"></div>
       <div class="two">
         <div class="panel">
@@ -1435,6 +1436,7 @@ function render() {
   lastNums = nums;
 
   renderStatus();
+  renderDashAlerts(s);
 
   const trend = (p) => p.trend === 'up' ? '<span class="up">▲ omhoog</span>' : p.trend === 'down' ? '<span class="down">▼ omlaag</span>' : '<span class="muted">–</span>';
   const judgement = (p) => p.error ? `<span class="down">Fout: ${esc(p.error)}</span>`
@@ -1576,6 +1578,30 @@ const sumBox = () => document.activeElement?.closest('#dash-summary');
 
 // ---------- Status ----------
 let lastForcedLoad = 0;
+// Waarschuwingen bovenaan de homepage, alleen live: anders lijkt alles goed terwijl de bot niets koopt.
+function renderDashAlerts(s) {
+  const el = $('dash-alerts');
+  if (!el) return;
+  const out = [];
+  const admin = me?.role === 'admin';
+  const toLive = admin ? ' <button class="btn sm" type="button" data-goto="trainer" data-anchor="ag-live">Naar Live-toelating</button>' : '';
+  if (s.mode === 'live') {
+    const agentOn = Number(s.strategy?.agentMode ?? 0) === 1 && !s.follow?.enabled;
+    const recs = s.agent?.recipes ?? [];
+    const liveOn = recs.filter((r) => r.approved || r.risky);
+    if (agentOn && s.agent && !liveOn.length) {
+      out.push(`<div class="alert err" style="margin:0 0 12px">${icon('alert')}<div><b>De AI-trader koopt live niets:</b> er staat geen recept live. Open posities worden nog wel bewaakt. Zet een recept live (toegestaan of op eigen risico).${toLive}</div></div>`);
+    }
+    if (agentOn && s.agent?.missingLive?.length) {
+      out.push(`<div class="alert err" style="margin:0 0 12px">${icon('alert')}<div><b>${s.agent.missingLive.length} live recept(en) niet bij de bot:</b> daarmee handelt hij nu niet.${toLive}</div></div>`);
+    }
+    const bb = s.safety?.buyBlock;
+    if (bb?.blocked) {
+      out.push(`<div class="alert err" style="margin:0 0 12px">${icon('alert')}<div><b>Nieuwe aankopen staan stil:</b> ${esc((bb.reasons ?? []).join('; '))}. Bewaken en verkopen gaan door. <button class="btn sm" type="button" data-goto="positions">Naar Live-veiligheid</button></div></div>`);
+    }
+  }
+  el.innerHTML = out.join('');
+}
 function renderStatus() {
   const s = state; if (!s) return;
   const now = Date.now() + (s._offset ?? 0);
