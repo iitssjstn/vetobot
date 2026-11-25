@@ -9,8 +9,11 @@ Elke ronde probeert hij één recept: een variatie op zijn beste tot nu toe, zij
 een recept op het gemiddelde daarvan, niet op één toevallig goede ronde. Een recept is pas
 "betrouwbaar" als het in meerdere rondes standhoudt.
 """
+import math
 import random
 import time
+
+import stats
 
 SPACE = {
     'timeframe': ['5m', '15m', '30m', '1h', '2h', '4h'],
@@ -69,7 +72,8 @@ def neighbours(r, allowed):
 
 PART_FIELDS = ('trades', 'avgPct', 'totalPct', 'winRate', 'avgHeld', 'buyHoldPct', 'maxDrawdownPct', 'worstPct', 'marketPct',
                'edgePct', 'beatMarketRate', 'byRegime', 'portfolio',
-               'netReturnPct', 'profitFactor', 'sharpe', 'avgWinPct', 'avgLossPct', 'grossWinPct', 'grossLossPct', 'byVolatility')
+               'netReturnPct', 'profitFactor', 'sharpe', 'stdPct', 'avgWinPct', 'avgLossPct', 'grossWinPct', 'grossLossPct',
+               'byVolatility')
 
 
 def _agg(rounds, part):
@@ -134,6 +138,51 @@ def test_profit_factor(entry):
     if loss > 0:
         return win / loss, True
     return (float('inf') if win > 0 else None), True
+
+
+def _round_std(part):
+    """Standaardafwijking van de trade-rendementen in één ronde: opgeslagen (stdPct), anders afgeleid
+    uit de sharpe (std = gemiddelde / sharpe), bij één trade 0. None als het niet te weten is."""
+    sd = part.get('stdPct')
+    if isinstance(sd, (int, float)) and math.isfinite(sd):
+        return float(sd)
+    if part.get('trades') == 1:
+        return 0.0
+    sh, avg = part.get('sharpe'), part.get('avgPct')
+    if isinstance(sh, (int, float)) and isinstance(avg, (int, float)) and math.isfinite(sh) and abs(sh) > 1e-9:
+        return abs(avg / sh)
+    return None
+
+
+def test_stats(entry):
+    """Gemiddelde, standaardafwijking en aantal trades over alle eindtests van een recept samen
+    ((gemiddelde, std, n)), voor de statistische toets van de poortwachter. None als een ronde geen
+    bekende spreiding heeft (oudere rondes zonder stdPct en zonder sharpe)."""
+    rows = [x['test'] for x in entry.get('rounds', []) if (x.get('test') or {}).get('trades') and x['test'].get('avgPct') is not None]
+    if not rows:
+        return None
+    return stats.pooled([(r['trades'], r['avgPct'], _round_std(r)) for r in rows])
+
+
+VOL_LEVELS = ('hoog', 'normaal', 'laag')
+
+
+def vol_stats(entry):
+    """Resultaat per volatiliteit bij het kopen over alle eindtests van een recept, gewogen naar het
+    aantal trades: {hoog|normaal|laag: {trades, avgPct, edgePct?}}. Zo kan de bot een recept laten
+    rusten in een volatiliteit waarin het verliest."""
+    out = {}
+    for lvl in VOL_LEVELS:
+        rows = [((x.get('test') or {}).get('byVolatility') or {}).get(lvl) for x in (entry or {}).get('rounds', [])]
+        rows = [r for r in rows if r and r.get('trades') and r.get('avgPct') is not None]
+        n = sum(r['trades'] for r in rows)
+        item = {'trades': n, 'avgPct': sum(r['avgPct'] * r['trades'] for r in rows) / n if n else None}
+        er = [r for r in rows if r.get('edgePct') is not None]
+        en = sum(r['trades'] for r in er)
+        if en:
+            item['edgePct'] = sum(r['edgePct'] * r['trades'] for r in er) / en
+        out[lvl] = item
+    return out
 
 
 def status(entry):

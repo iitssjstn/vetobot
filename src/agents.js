@@ -52,6 +52,18 @@ export function chooseForRegime(main, regime) {
   return { agent: agent ?? main, why: agent ? p.why : 'weinig bewijs', edge: p.edge ?? null, trades: p.trades ?? 0 };
 }
 
+// Volatiliteit: de leerserver geeft per recept volStats { hoog|normaal|laag: { trades, avgPct } }
+// (eindtest, na kosten). Verloor het recept in dit volatiliteitsregime aantoonbaar (genoeg trades en
+// gemiddeld verlies), dan geeft dit de cijfers terug; anders null (ook zonder volStats).
+export const VOL_GUARD = { minTrades: 30 };
+
+export function volLoses(agent, volRegime, rules = VOL_GUARD) {
+  const st = volRegime ? agent?.volStats?.[volRegime] : null;
+  const trades = Number(st?.trades);
+  const avgPct = Number(st?.avgPct);
+  return Number.isFinite(trades) && Number.isFinite(avgPct) && trades >= rules.minTrades && avgPct < 0 ? { trades, avgPct } : null;
+}
+
 // ---------- Risk Agent ----------
 export const RISK = {
   lossStreak: 3,        // zoveel verliezen op rij van de AI-trader ...
@@ -234,18 +246,30 @@ export const LEARN = {
   prior: 20,                   // zoveel "denkbeeldige" trades met verschil 0: voorzichtig bij weinig data
   window: 300,                 // laatste zoveel trades
   maxAdj: 1.0,                 // nooit meer dan zoveel procentpunt bijsturen
+  // Gemiste kansen: afgewezen beslissingen van de AI-trader met een label (koers na de horizon,
+  // na kosten) tellen licht mee, en pas als er genoeg zijn.
+  rejectedWeight: 0.15,        // gewicht per afgewezen kans (een echte trade telt 1)
+  minRejected: 30,             // pas meetellen vanaf zoveel gelabelde afwijzingen
 };
 
 const binOf = (q, edges) => edges.filter((e) => q >= e).length;
 const clamp = (v, m) => Math.max(-m, Math.min(m, v));
 
-export function onlineCorrection(trades, rules = LEARN) {
+// rejected: gelabelde afgewezen kansen uit het dagboek (journal.labeledRejections, nieuwste eerst):
+// [{ pair, expectedPct, retPct, regime }]. Ze tellen met gewicht rules.rejectedWeight mee in de
+// groepen en per coin, maar niet als ervaring per marktfase (de verkenner).
+export function onlineCorrection(trades, rules = LEARN, rejected = []) {
   const eligible = trades.filter((t) => t.agent && Number.isFinite(t.agent.expectedPct) && Number.isFinite(t.pnlPct));
-  const rows = [...eligible.filter((t) => !t.agent.virtual).slice(0, rules.window),
+  const real = [...eligible.filter((t) => !t.agent.virtual).slice(0, rules.window),
     ...eligible.filter((t) => t.agent.virtual).slice(0, rules.window)];
+  const missed = (Array.isArray(rejected) ? rejected : []).filter((r) => r?.pair && Number.isFinite(r.expectedPct) && Number.isFinite(r.retPct))
+    .slice(0, rules.window);
+  const useMissed = (rules.rejectedWeight ?? 0) > 0 && missed.length >= (rules.minRejected ?? 0);
+  const rows = [...real, ...(useMissed ? missed.map((r) => ({ pair: r.pair, pnlPct: r.retPct, agent: { expectedPct: r.expectedPct, marketRegime: r.regime ?? null, rejected: true } })) : [])];
+  const weightOf = (t) => (t.agent.rejected ? rules.rejectedWeight : t.agent.virtual ? EXPLORE.feedbackWeight : 1);
   const bins = Array.from({ length: rules.edges.length + 1 }, () => ({ n: 0, sum: 0 }));
   for (const t of rows) {
-    const weight = t.agent.virtual ? EXPLORE.feedbackWeight : 1;
+    const weight = weightOf(t);
     const b = bins[binOf(t.agent.expectedPct, rules.edges)];
     b.n += weight;
     b.sum += (t.pnlPct - t.agent.expectedPct) * weight;
@@ -253,7 +277,7 @@ export function onlineCorrection(trades, rules = LEARN) {
   const binAdj = bins.map((b) => ({ n: b.n, adj: clamp(b.sum / (b.n + rules.prior), rules.maxAdj) }));
   const coins = {};
   for (const t of rows) {
-    const weight = t.agent.virtual ? EXPLORE.feedbackWeight : 1;
+    const weight = weightOf(t);
     const c = (coins[t.pair] ??= { n: 0, sum: 0 });
     c.n += weight;
     c.sum += (t.pnlPct - t.agent.expectedPct - binAdj[binOf(t.agent.expectedPct, rules.edges)].adj) * weight;
@@ -262,18 +286,18 @@ export function onlineCorrection(trades, rules = LEARN) {
   // Hoeveel ervaring per marktfase en per coin in een marktfase (voor de verkenner).
   const regimes = {};
   const cells = {};
-  for (const t of rows) {
-    const weight = t.agent.virtual ? EXPLORE.feedbackWeight : 1;
+  for (const t of real) {
+    const weight = weightOf(t);
     const r = t.agent.marketRegime ?? 'onbekend';
     regimes[r] = (regimes[r] ?? 0) + weight;
     cells[`${t.pair}|${r}`] = (cells[`${t.pair}|${r}`] ?? 0) + weight;
   }
-  return { trades: rows.length, bins: binAdj, coins, regimes, cells, edges: rules.edges };
+  return { trades: real.length, rejected: useMissed ? missed.length : 0, bins: binAdj, coins, regimes, cells, edges: rules.edges };
 }
 
 // Bijgestuurde verwachting: model + groep + coin.
 export function correctedExpectation(q, pair, corr) {
-  if (!corr?.trades) return { q, adj: 0 };
+  if (!corr?.trades && !corr?.rejected) return { q, adj: 0 };
   const adj = (corr.bins[binOf(q, corr.edges)]?.adj ?? 0) + (corr.coins[pair]?.adj ?? 0);
   return { q: q + adj, adj };
 }

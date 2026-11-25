@@ -169,6 +169,17 @@ export class BotManager {
       }
       // Extra recepten (om live te zetten): een onbruikbaar recept laten we weg.
       r.data.extras = (r.data.extras ?? []).filter((p) => p?.recipeKey && !validateAgent(p));
+      // Een live gezet recept mag nooit uit beeld verdwijnen (dan kun je het ook niet intrekken, en
+      // verkoopt de bot zijn posities met het hoofdrecept). Laatst bekende versie onthouden en gebruiken
+      // als de leerserver hem even niet meestuurt.
+      this.ml.liveParts ??= new Map();
+      const present = new Map([r.data, ...Object.values(r.data.regimes ?? {}).map((p) => p?.agent), ...r.data.extras]
+        .filter((p) => p?.recipeKey).map((p) => [p.recipeKey, p]));
+      for (const k of keep) {
+        if (present.has(k)) this.ml.liveParts.set(k, present.get(k));
+        else if (this.ml.liveParts.has(k)) r.data.extras.push({ ...this.ml.liveParts.get(k), extra: true, stale: true });
+      }
+      for (const k of [...this.ml.liveParts.keys()]) if (!keep.includes(k)) this.ml.liveParts.delete(k);
       const before = this.ml.agent;
       this.ml.agent = r.data;
       this.ml.agentEtag = r.etag;

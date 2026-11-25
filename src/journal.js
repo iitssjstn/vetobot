@@ -448,6 +448,51 @@ export class Journal {
     }
   }
 
+  // Afgewezen kansen van de AI-trader met een label dat al vaststaat, nieuwste eerst, voor de directe
+  // bijsturing van de verwachting. Per beslissing één label: op de horizon die het dichtst bij de
+  // gemiddelde houdtijd van het recept ligt (holdMinutes(recipe, timeframe) in minuten), anders de
+  // hoofdhorizon. retPct is na kosten. Geen leakage: alleen labels die op `now` al berekend waren
+  // (settled_at ≤ now) en waarvan de horizon voorbij was.
+  // [{ id, at, pair, recipe, timeframe, regime, stage, expectedPct, adjustedPct, horizon, retPct }]
+  labeledRejections({ mode = null, days = 60, limit = 300, now = Date.now(), holdMinutes = null } = {}) {
+    try {
+      const db = this.#open();
+      if (!db) return [];
+      const since = now - Math.max(0, Number(days) || 60) * DAY;
+      const m = mode ?? null;
+      const stages = [...REJECT_STAGES];
+      const rows = db.prepare(`SELECT d.id, d.at, d.pair, d.recipe, d.timeframe, d.regime, d.stage, d.expected_pct, d.rule, l.horizon_min, l.ret_pct
+        FROM decisions d JOIN labels l ON l.decision_id = d.id
+        WHERE d.kind = 'agent' AND d.outcome = 'rejected' AND d.stage IN (${stages.map(() => '?').join(', ')})
+          AND d.at >= ? AND (? IS NULL OR d.mode = ?) AND d.expected_pct IS NOT NULL
+          AND l.ret_pct IS NOT NULL AND l.settled_at <= ? AND d.at + l.horizon_min * 60000 <= ?
+        ORDER BY d.at DESC, d.id DESC LIMIT ?`).all(...stages, since, m, m, now, now, Math.max(1, limit) * Math.max(1, this.horizons.length));
+      const byId = new Map();
+      for (const r of rows) {
+        const e = byId.get(r.id) ?? { r, labels: {} };
+        e.labels[r.horizon_min] = r.ret_pct;
+        byId.set(r.id, e);
+      }
+      const out = [];
+      for (const { r, labels } of byId.values()) {
+        const hold = typeof holdMinutes === 'function' ? Number(holdMinutes(r.recipe, r.timeframe)) : null;
+        // Vaste keuze per recept (niet: welk label er toevallig al is), anders mengen de horizons.
+        const h = hold > 0 ? this.horizons.slice().sort((a, b) => Math.abs(a - hold) - Math.abs(b - hold) || a - b)[0] : this.mainHorizon;
+        if (!Number.isFinite(labels[h])) continue;
+        const rule = parse(r.rule);
+        // De verwachting van het model zelf (vóór de bijsturing), zoals bij de eigen trades.
+        const expectedPct = fin(rule?.expectedPct) ?? r.expected_pct;
+        out.push({ id: r.id, at: iso(r.at), pair: r.pair, recipe: r.recipe ?? null, timeframe: r.timeframe ?? null, regime: r.regime ?? null, stage: r.stage,
+          expectedPct, adjustedPct: fin(rule?.adjustedPct) ?? r.expected_pct, horizon: h, retPct: labels[h] });
+        if (out.length >= limit) break;
+      }
+      return out;
+    } catch (err) {
+      this.#fail('afgewezen kansen ophalen', err);
+      return [];
+    }
+  }
+
   // Lege stats in exact dezelfde vorm.
   #emptyStats() {
     return {

@@ -302,12 +302,14 @@ export function createApp({ users, manager, log = console }) {
         const present = new Set(parts.map((p) => p.recipeKey));
         const missing = [...new Set([...approved, ...Object.keys(risky ?? {})])].filter((k) => !present.has(k));
         return { timeframe: a.timeframe, stage: a.stage, coins: a.coins ?? null, allowed: bot.agentAllowed(a), live: a.live ?? null, team: bot.agentTeam(),
-          recipes: [...new Map(parts.map((p) => [p.recipeKey, { recipe: p.recipeKey, stage: p.stage, extra: Boolean(p.extra), ready: bot.agentLiveReady(p), approved: approved.includes(p.recipeKey),
+          recipes: [...new Map(parts.map((p) => [p.recipeKey, { recipe: p.recipeKey, stage: p.stage, extra: Boolean(p.extra), stale: Boolean(p.stale), ready: bot.agentLiveReady(p), approved: approved.includes(p.recipeKey),
             riskyAllowed: bot.agentRiskyStage(p),
             risky: risky[p.recipeKey] ? { ...risky[p.recipeKey], lossEur: +bot.agentRiskyLoss(p.recipeKey).pnlEur.toFixed(2), trades: bot.agentRiskyLoss(p.recipeKey).trades } : null,
             checks: p.liveCheck?.checks ?? [] }])).values()], smallStart: Number(bot.strategy.agentLiveSmallStart ?? 1) === 1, sizing: bot.sizingSummary(),
           missingLive: missing.map((k) => ({ recipe: k, risky: Boolean(risky?.[k]) })) };
       })(),
+      // Live-veiligheid: stop-orders bij Bitvavo en de laatste saldocontrole (licht: geen API-verzoeken).
+      safety: (() => { try { return bot.safetyStatus?.() ?? null; } catch { return null; } })(),
       serverTime: new Date().toISOString(),
     });
   });
@@ -368,6 +370,14 @@ export function createApp({ users, manager, log = console }) {
     await manager.refreshAgent().catch(() => {});
     log.warn(`Modelversie v${version} teruggezet en vastgezet door ${req.user.username}`);
     return { ok: true, ...r.data };
+  }));
+
+  // Saldocontrole met Bitvavo nu uitvoeren (alleen controleren en melden, nooit zelf handelen).
+  app.post('/api/safety/reconcile', wrap(async (_req, { bot }) => {
+    if (bot.mode !== 'live') throw new Error('De saldocontrole is alleen voor live');
+    if (!bot.reconcile) throw new Error('Deze versie van de bot heeft nog geen saldocontrole');
+    await bot.reconcile();
+    return { ok: true, safety: bot.safetyStatus?.() ?? null };
   }));
 
   app.post('/api/admin/learning/unpin', adminOnly, wrap(async (req) => {

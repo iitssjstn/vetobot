@@ -533,6 +533,10 @@
         <div class="panel-h"><h2><svg class="i"><use href="#i-brief"/></svg>Open posities</h2><span class="hint" id="pos-hint"></span></div>
         <div class="scroll" id="positions"></div>
       </div>
+      <div class="panel gap" id="safety-panel" hidden>
+        <div class="panel-h"><h2><svg class="i"><use href="#i-shield"/></svg>Live-veiligheid</h2><span class="hint" id="safety-hint"></span></div>
+        <div class="panel-b" id="safety"></div>
+      </div>
     </section>
 
     <section data-section="signals" hidden>
@@ -552,6 +556,9 @@
       <div class="grid tiles gap" id="ln-tiles"></div>
       <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Modelprestaties</h2><span class="hint" id="ln-model-hint"></span></div>
         <div class="panel-b" id="ln-models"></div></div>
+      <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-chart"/></svg>Praktijk tegen verwachting</h2>
+          <select id="ln-pv" aria-label="Modelversie" style="width:auto"></select></div>
+        <div class="panel-b" id="ln-practice"></div></div>
       <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-history"/></svg>Trainingsgeschiedenis</h2><span class="hint" id="ln-hist-hint"></span></div>
         <div class="panel-b" id="ln-history"></div></div>
       <div class="panel gap"><div class="panel-h"><h2><svg class="i"><use href="#i-pulse"/></svg>Beslissingsanalyse</h2><span class="hint" id="ln-dec-hint"></span></div>
@@ -821,6 +828,7 @@
             <div><label for="r-aievery">AI-winstcheck hooguit elke (min)</label><input id="r-aievery" type="number" min="0.5" max="1440" step="any" required></div>
             <div><label for="r-reinvest">Winst herinvesteren (%, 0 = uit)</label><input id="r-reinvest" type="number" min="0" max="100" step="any" required></div>
             <div><label for="r-maxstake">Max. inzet per trade (€, 0 = geen)</label><input id="r-maxstake" type="number" min="0" step="any" required></div>
+            <div><label for="r-exstop">Stop-loss ook bij Bitvavo zetten (live)</label><select id="r-exstop"><option value="1">Aan: werkt ook als de bot offline is</option><option value="0">Uit: alleen de bot bewaakt</option></select></div>
             <div><label for="r-limit">Limietorders (lagere fee)</label><select id="r-limit"><option value="0">Nee, market orders</option><option value="2">Alleen winst nemen (kopen direct)</option><option value="1">Kopen en winst nemen</option></select></div>
             <div><label for="r-limitwait">Wachttijd limietorder (sec)</label><input id="r-limitwait" type="number" min="5" max="300" step="1" required></div>
             <div><label for="r-maxhold">Maximale tijd in positie (min, 0 = uit)</label><input id="r-maxhold" type="number" min="0" max="43200" step="any" required></div>
@@ -863,6 +871,7 @@
             <div><label for="st-hold">Minimaal in positie (candles, 0 = uit)</label><input id="st-hold" type="number" min="0" max="500" step="1" required></div>
             <div><label for="st-agent">AI-trader</label><select id="st-agent"><option value="0">Uit</option><option value="1">Aan: de AI-trader beslist zelf</option></select></div>
             <div data-agentonly><label for="st-agentveto">AI-controleur bij de AI-trader</label><select id="st-agentveto"><option value="1">Aan: de AI-controleur mag nee zeggen</option><option value="0">Uit: de AI-trader beslist alleen</option></select></div>
+            <div data-agentonly><label for="st-agentvol">Volatiliteit meewegen</label><select id="st-agentvol"><option value="1">Aan: niet kopen waar het recept verloor</option><option value="0">Uit</option></select></div>
             <div data-agentonly><label for="st-agentsizing">AI-trader kiest zelf de inzet</label><select id="st-agentsizing"><option value="1">Aan: tussen mijn inzet en mijn max. inzet</option><option value="0">Uit: altijd mijn inzet</option></select></div>
             <div data-agentonly><label for="st-agentsmall">Live beginnen met de kleinste inzet</label><select id="st-agentsmall"><option value="1">Aan: € 5 tot 20 live trades met winst</option><option value="0">Uit: meteen mijn eigen inzet</option></select></div>
             <div data-agentonly><label for="st-agentexplore">Verkenner (alleen paper)</label><select id="st-agentexplore"><option value="1">Aan: virtueel verkennen</option><option value="0">Uit</option></select></div>
@@ -1461,6 +1470,7 @@ function render() {
   const posEmpty = 'Geen open posities. De bot opent er een bij een koopsignaal dat door de regels en de AI komt.';
   if (isOn('dashboard')) $('dash-positions').innerHTML = table(s.positions, posCols, posEmpty, 'brief');
   if (isOn('positions')) $('positions').innerHTML = table(s.positions, posCols, posEmpty, 'brief');
+  if (isOn('positions')) safetyRender(s.safety, s.mode);
   $('pos-hint').textContent = `Koersen live, elke 5 sec · P/L inclusief verkoopfee · Stop-loss ${s.risk.stopLossPct ? `−${s.risk.stopLossPct}%` : 'uit'} · take-profit ${s.risk.takeProfitPct ? `+${s.risk.takeProfitPct}%` : 'uit'}`;
 
   const outcome = { approved: ['Goedgekeurd', 'ok'], vetoed: ['Afgewezen door AI', 'bad'], blocked: ['Geblokkeerd', 'wait'] };
@@ -1663,6 +1673,7 @@ function renderSettings() {
     $('st-agentexplore').value = String(s.strategy.agentExplore ?? 1);
     $('st-agentsmall').value = String(s.strategy.agentLiveSmallStart ?? 1);
     $('st-agentsizing').value = String(s.strategy.agentSizing ?? 1);
+    $('st-agentvol').value = String(s.strategy.agentVolGuard ?? 1);
     $('st-mltrial').value = String(s.strategy.mlTrialPaper ?? 1);
     agentFields();
     $('st-hold').value = s.strategy.minHoldCandles ?? 0;
@@ -1686,6 +1697,7 @@ function renderSettings() {
     $('r-aievery').value = s.risk.aiExitEveryMin || 3;
     $('r-reinvest').value = s.risk.reinvestPct ?? 0;
     $('r-maxstake').value = s.risk.maxStakeEur ?? 0;
+    $('r-exstop').value = String(s.risk.exchangeStop ?? 1);
     $('r-limit').value = String(s.risk.limitOrders ?? 0);
     $('r-limitwait').value = s.risk.limitWaitSec || 20;
     $('r-maker').value = s.risk.makerFeePct ?? 0.15;
@@ -2034,7 +2046,11 @@ function sizingHtml(z, sign, nl) {
 function agentLiveHtml(a, bot, sign, nl) {
   const recs = [...(bot?.recipes ?? [])].sort((x, y) => Number(Boolean(y.approved || y.risky)) - Number(Boolean(x.approved || x.risky)));
   const live = state?.mode === 'live';
-  const list = recs.map((r) => {
+  const missCards = (bot?.missingLive ?? []).map((m) => `<div style="margin:0 0 12px;padding:10px 12px;border:1px solid var(--down);border-radius:10px;overflow-wrap:anywhere">
+      <div><span class="badge ${m.risky ? 'wait' : 'ok'}">${m.risky ? 'live · eigen risico' : 'live'}</span> <b>${esc(recipeName(a, m.recipe))}</b></div>
+      <div class="muted" style="font-size:12.5px">${esc(m.recipe)} · niet bij de bot: hij handelt er nu niet mee</div>
+      <div class="row-actions" style="margin-top:6px"><button class="btn" type="button" data-agent-live="${esc(m.recipe)}" data-allow="0">Live intrekken</button></div></div>`).join('');
+  const list = missCards + recs.map((r) => {
     const checks = r.checks.length ? r.checks.map((c) => `<div>${c.ok ? '<span class="up">✓</span>' : '<span class="down">✗</span>'} ${esc(c.label)} <span class="muted">· nu: ${esc(c.now)}</span></div>`).join('')
       : '<div class="muted">Nog geen gegevens van de leerserver.</div>';
     const k = esc(r.recipe);
@@ -2056,7 +2072,7 @@ function agentLiveHtml(a, bot, sign, nl) {
     const badge = r.approved ? '<span class="badge ok">live</span>' : rk ? '<span class="badge wait">live · eigen risico</span>' : '<span class="badge soft">niet live</span>';
     return `<div style="margin:0 0 12px;padding:10px 12px;border:1px solid ${on ? 'var(--up)' : 'var(--line)'};border-radius:10px;overflow-wrap:anywhere">
       <div>${badge} <b>${esc(recipeName(a, r.recipe))}</b></div>
-      <div class="muted" style="font-size:12.5px">${recipeName(a, r.recipe) !== r.recipe ? `${esc(r.recipe)} · ` : ''}${esc(r.stage ?? '')}${r.extra ? ' · extra recept: alleen in gebruik als je het live zet' : ''}</div>
+      <div class="muted" style="font-size:12.5px">${recipeName(a, r.recipe) !== r.recipe ? `${esc(r.recipe)} · ` : ''}${esc(r.stage ?? '')}${r.extra ? ' · extra recept: alleen in gebruik als je het live zet' : ''}${r.stale ? ' · <span class="warnc">de leerserver stuurt dit recept niet meer mee; de bot gebruikt zijn laatst bekende versie</span>' : ''}</div>
       <div style="margin:4px 0 6px;font-size:13.5px;line-height:1.6">${checks}</div>${btn}</div>`;
   }).join('');
   const pt = a.paperTest;
@@ -2585,6 +2601,9 @@ function renderLearning() {
     : `<p class="muted" style="margin:0 0 8px;font-size:13.5px">Alleen een model dat in de eindtest (een periode die het nooit zag) aantoonbaar beter is dan het actieve, wordt gebruikt — en dan eerst in paper. Live blijft altijd jouw eigen akkoord per recept (Trainer → Live). Een hoger rendement alleen is niet genoeg: ook terugval en profit factor tellen. <b>Rendement eindtest</b> is een echte portefeuille in de eindtest (zoveel trades tegelijk als de bot, elk een gelijk deel van het vermogen), geen optelsom van alle trades.</p>
       <div class="scroll">${table(promoted, [
         ['Versie', (v) => `<b>v${v.version}</b>${v.active ? ' <span class="badge ok">actief</span>' : ''}${r.pinned === v.version ? ' <span class="badge wait">vast</span>' : ''}`],
+        ['Proef', (v) => { const pr = v.probation; if (!pr?.status) return '<span class="muted">–</span>';
+          const b = { proef: ['wait', 'op proef'], geslaagd: ['ok', 'geslaagd'], mislukt: ['bad', 'mislukt'] }[pr.status] ?? ['soft', pr.status];
+          return `<span class="badge ${b[0]}" title="${esc(pr.reason ?? '')}">${b[1]}</span><div class="muted" style="font-size:12px">${pr.trades ?? 0} trades · ${pc(pr.avgPct)}</div>`; }],
         ['Recept', (v) => `<span style="display:inline-block;min-width:150px">${esc(v.recipeText ?? v.recipeKey ?? '–')}${v.publishedKey && v.publishedKey !== v.recipeKey ? `<span class="muted" style="display:block;font-size:12px">in gebruik genomen: ${esc(v.publishedKey)}</span>` : ''}${v.restoredVersion ? `<span class="muted" style="display:block;font-size:12px">terug naar v${v.restoredVersion}</span>` : ''}</span>`],
         ['Rendement eindtest', (v) => { const pf = m(v).portfolio; const days = v.dataset?.testDays;
           return pf ? `<span title="Echte portefeuille: zoveel trades tegelijk als de bot, elke trade een gelijk deel van het vermogen; ${pf.taken ?? '?'} trades genomen, ${pf.skipped ?? 0} overgeslagen omdat alles bezet was.">${pc(pf.returnPct)}</span>${days ? `<div class="muted" style="font-size:12px">in ${nl(days, 0)} dagen</div>` : ''}`
@@ -2598,6 +2617,9 @@ function renderLearning() {
         ['Gem. winst / verlies', (v) => `${pc(m(v).avgWinPct)} / ${pc(m(v).avgLossPct)}`, 'r'],
         ['Per marktomstandigheid', regimes],
       ], 'Nog geen gepromote modelversies.', 'target')}</div>`;
+
+  if (regOk) practiceRender(versions, nl, pc);
+  else { $('ln-pv').hidden = true; $('ln-practice').innerHTML = '<p class="muted" style="margin:0">Niet beschikbaar.</p>'; }
 
   // 3. Trainingsgeschiedenis: elke leerronde, met de beslissing en de reden.
   $('ln-hist-hint').textContent = versions.length ? `laatste ${versions.length}` : '';
@@ -2695,6 +2717,127 @@ document.addEventListener('click', async (e) => {
     loadLearning();
   } catch (err) { msg(err.message, 'err'); }
 });
+
+// ---------- Live-veiligheid (pagina Posities) ----------
+// Stop-orders bij Bitvavo (blijven werken als de bot offline is) en de dagelijkse saldocontrole.
+function safetyRender(z, mode) {
+  const panel = $('safety-panel');
+  if (!panel) return;
+  panel.hidden = mode !== 'live' || !z;
+  if (panel.hidden) return;
+  const when = (iso) => iso ? esc(String(iso).replace('T', ' ').slice(0, 16)) : '–';
+  const ST = { actief: ['ok', 'actief bij Bitvavo'], mislukt: ['bad', 'mislukt'], geen: ['soft', 'geen stop'], 'n.v.t.': ['soft', 'n.v.t.'] };
+  const es = z.exchangeStop ?? {};
+  const rows = es.positions ?? [];
+  const rc = z.reconcile;
+  const KIND = { mist: 'minder op Bitvavo dan de bot denkt', extra: 'coins op Bitvavo zonder positie in de bot', 'stop-mist': 'positie zonder stop bij Bitvavo' };
+  $('safety-hint').textContent = rc?.at ? `laatste controle ${String(rc.at).replace('T', ' ').slice(0, 16)}` : '';
+  $('safety').innerHTML = `
+    <p class="muted" style="margin:0 0 8px;font-size:13.5px">${es.enabled
+      ? 'Bij elke live aankoop zet de bot ook een <b>stop-loss bij Bitvavo</b> op de noodstop. Die werkt ook als je server of internet uitvalt. Verkoopt de bot zelf, dan haalt hij die stop eerst weg.'
+      : 'De stop-loss bij Bitvavo staat uit (Instellingen → Risico). De bot bewaakt de noodstop dan alleen zelf, zolang hij draait.'}</p>
+    <div class="scroll">${table(rows, [
+      ['Coin', (x) => esc(x.pair)],
+      ['Stop bij Bitvavo', (x) => { const b = ST[x.status] ?? ['soft', x.status ?? '–']; return `<span class="badge ${b[0]}">${esc(b[1])}</span>${x.error ? ` <span class="muted" style="font-size:12.5px">${esc(x.error)}</span>` : ''}`; }],
+      ['Stopkoers', (x) => x.stopPrice != null ? `<span class="num">${esc(String(x.stopPrice))}</span>` : '–', 'r'],
+      ['Geplaatst', (x) => when(x.placedAt)],
+    ], 'Geen open live posities.', 'shield')}</div>
+    <div class="sub-h" style="margin:14px 0 6px">${icon('list')}Saldocontrole met Bitvavo</div>
+    ${rc?.error ? `<div class="alert err" style="margin:0 0 8px">${icon('alert')}<div>De laatste controle lukte niet: ${esc(rc.error)}</div></div>` : ''}
+    ${rc?.closed?.length ? `<div class="alert" style="margin:0 0 8px">${icon('shield')}<div>Afgesloten omdat de stop bij Bitvavo was uitgevoerd: ${esc(rc.closed.join(', '))}.</div></div>` : ''}
+    ${rc ? (rc.ok ? `<div class="alert ok" style="margin:0">${icon('shield')}<div>Klopt: wat de bot denkt te bezitten staat ook echt op je Bitvavo-account (${when(rc.at)}).</div></div>`
+      : `<div class="alert err" style="margin:0">${icon('alert')}<div><b>Afwijkingen gevonden</b> (${when(rc.at)}). De bot handelt hier niet zelf op; kijk het na op Bitvavo.
+          <ul style="margin:6px 0 0;padding-left:18px">${(rc.issues ?? []).map((i) => `<li>${esc(i.pair)}: ${esc(KIND[i.kind] ?? i.kind)}${i.botAmount != null || i.exchangeAmount != null ? ` (bot ${esc(String(i.botAmount ?? '–'))}, Bitvavo ${esc(String(i.exchangeAmount ?? '–'))})` : ''}${i.note ? ` · ${esc(i.note)}` : ''}</li>`).join('')}</ul></div></div>`)
+      : '<p class="muted" style="margin:0">Nog niet gecontroleerd.</p>'}
+    <div class="row-actions"><button class="btn sm" type="button" id="safety-check">Nu controleren</button><span class="msg" id="safety-msg"></span>
+      ${z.nextReconcileAt ? `<span class="muted" style="font-size:12.5px">volgende: ${when(z.nextReconcileAt)}</span>` : ''}</div>`;
+  $('safety-check').onclick = async () => {
+    $('safety-msg').textContent = 'controleren…';
+    try {
+      const r = await api('api/safety/reconcile', {});
+      $('safety-msg').className = 'msg ok';
+      $('safety-msg').textContent = r.safety?.reconcile?.ok === false ? 'Klaar: er zijn afwijkingen.' : 'Klaar.';
+      if (state) { state.safety = r.safety; safetyRender(r.safety, state.mode); }
+    } catch (err) { $('safety-msg').className = 'msg err'; $('safety-msg').textContent = err.message; }
+  };
+}
+
+// ---------- Praktijk tegen verwachting (pagina Learning) ----------
+// Per modelversie: het cumulatieve resultaat in de praktijk (na kosten) naast wat de eindtest beloofde.
+let lnPv = null;
+function practiceRender(versions, nl, pc) {
+  const list = versions.filter((v) => v.practice);
+  const sel = $('ln-pv');
+  if (!list.length) {
+    sel.hidden = true;
+    $('ln-practice').innerHTML = '<p class="muted" style="margin:0">Nog geen praktijkresultaten per modelversie. Na de eerste trades van een gepromote versie verschijnt hier de grafiek.</p>';
+    return;
+  }
+  sel.hidden = false;
+  if (!list.some((v) => v.version === lnPv)) lnPv = (list.find((v) => v.active) ?? list[0]).version;
+  sel.innerHTML = list.map((v) => `<option value="${v.version}"${v.version === lnPv ? ' selected' : ''}>v${v.version}${v.active ? ' (actief)' : ''}</option>`).join('');
+  sel.onchange = () => { lnPv = Number(sel.value); practiceRender(versions, nl, pc); };
+  const v = list.find((x) => x.version === lnPv);
+  const p = v.practice;
+  const pts = p.series ?? [];
+  const exp = p.expectedPct;
+  const pr = v.probation;
+  const PB = { proef: ['wait', 'op proef'], geslaagd: ['ok', 'proef geslaagd'], mislukt: ['bad', 'proef mislukt'] };
+  const pb = pr?.status ? PB[pr.status] : null;
+  const head = `<p style="margin:0 0 8px;font-size:13.5px">${pb ? `<span class="badge ${pb[0]}">${pb[1]}</span> ` : ''}
+    <b>${p.trades}</b> trades in de praktijk, gemiddeld ${pc(p.avgPct)} per trade · de eindtest beloofde ${pc(exp)} per trade.
+    <span class="muted">Paper: ${p.byMode?.paper?.trades ?? 0} (${pc(p.byMode?.paper?.avgPct)}) · live: ${p.byMode?.live?.trades ?? 0} (${pc(p.byMode?.live?.avgPct)})</span>
+    ${pr?.reason ? `<br><span class="muted">${esc(pr.reason)}</span>` : pr?.status === 'proef' ? `<br><span class="muted">Proefperiode: ${pr.trades ?? 0} van ${lnData?.registry?.thresholds?.probationTrades ?? 30} trades. Doet hij het duidelijk slechter dan beloofd, dan gaat de leerserver vanzelf terug naar de vorige versie.</span>` : ''}</p>`;
+  if (pts.length < 2) { $('ln-practice').innerHTML = head; return; }
+  const W = 760, H = 260, L = 46, R = 96, T = 12, B = 28;
+  const n = pts.length;
+  const expAt = (i) => exp != null ? exp * (i + 1) : null;
+  const vals = pts.map((q) => q.cumPct).concat(exp != null ? [expAt(0), expAt(n - 1)] : []).concat([0]);
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (hi - lo < 0.5) { hi += 0.25; lo -= 0.25; }
+  const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+  const x = (i) => L + (n === 1 ? 0 : (i / (n - 1)) * (W - L - R));
+  const y = (val) => T + (1 - (val - lo) / (hi - lo)) * (H - T - B);
+  // Nul altijd; de andere lijnen alleen als ze niet tegen een al gekozen lijn aan liggen (labels overlappen dan).
+  const ticks = [0];
+  for (const t of [hi, (lo + hi) / 2, lo]) if (ticks.every((u) => Math.abs(y(u) - y(t)) >= 18)) ticks.push(t);
+  const grid = ticks.map((t) => `<line x1="${L}" x2="${W - R}" y1="${y(t).toFixed(1)}" y2="${y(t).toFixed(1)}" stroke="var(--line)" stroke-width="${t === 0 ? 1.5 : 1}"${t === 0 ? '' : ' stroke-dasharray="3 4"'}/><text x="${L - 6}" y="${(y(t) + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="var(--muted)">${t > 0 ? '+' : ''}${nl(t, 1)}%</text>`).join('');
+  const line = `<polyline points="${pts.map((q, i) => `${x(i).toFixed(1)},${y(q.cumPct).toFixed(1)}`).join(' ')}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/>`;
+  const eline = exp != null ? `<line x1="${x(0)}" y1="${y(expAt(0)).toFixed(1)}" x2="${x(n - 1)}" y2="${y(expAt(n - 1)).toFixed(1)}" stroke="var(--muted)" stroke-width="2" stroke-dasharray="6 5"/>` : '';
+  const lab = (val, txt, col) => `<text x="${W - R + 6}" y="${(y(val) + 4).toFixed(1)}" font-size="11.5" fill="var(--text)"><tspan fill="${col}">●</tspan> ${txt}</text>`;
+  const labels = lab(pts[n - 1].cumPct, `Praktijk ${pts[n - 1].cumPct > 0 ? '+' : ''}${nl(pts[n - 1].cumPct, 1)}%`, 'var(--accent)')
+    + (exp != null ? lab(expAt(n - 1), `Beloofd ${expAt(n - 1) > 0 ? '+' : ''}${nl(expAt(n - 1), 1)}%`, 'var(--muted)') : '');
+  const xl = `<text x="${L}" y="${H - 8}" font-size="11" fill="var(--muted)">trade 1</text><text x="${W - R}" y="${H - 8}" font-size="11" fill="var(--muted)" text-anchor="end">trade ${n}</text>`;
+  $('ln-practice').innerHTML = `${head}
+    <div style="position:relative">
+      <svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Cumulatief resultaat in de praktijk tegen de verwachting uit de eindtest, per trade" style="display:block;max-height:320px" id="ln-pv-svg">
+        ${grid}${xl}${eline}${line}${labels}
+        <line id="ln-pv-x" y1="${T}" y2="${H - B}" stroke="var(--faint)" stroke-width="1" visibility="hidden"/>
+        <circle id="ln-pv-dot" r="4.5" fill="var(--accent)" stroke="var(--panel)" stroke-width="2" visibility="hidden"/>
+        <rect x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" fill="transparent" id="ln-pv-hit"/>
+      </svg>
+      <div id="ln-pv-tip" class="panel" style="position:absolute;pointer-events:none;padding:6px 9px;font-size:12.5px;display:none;white-space:nowrap"></div>
+    </div>
+    <div class="help">Doorgetrokken: het opgetelde resultaat per trade in de praktijk (paper en live, na kosten). Gestippeld: wat de eindtest beloofde (zijn gemiddelde per trade, opgeteld). Ligt de lijn ver onder de stippellijn, dan doet het model het in de praktijk slechter dan getest.</div>
+    <details style="margin-top:6px"><summary>Als tabel</summary><div class="scroll">${table(pts.map((q, i) => ({ ...q, i })).slice(-50).reverse(), [
+      ['Trade', (q) => `<span class="num">${q.i + 1}</span>`, 'r'], ['Wanneer', (q) => esc(String(q.at ?? '').replace('T', ' ').slice(0, 16))], ['Modus', (q) => esc(q.mode ?? '')],
+      ['Opgeteld', (q) => pc(q.cumPct), 'r'], ['Beloofd', (q) => pc(expAt(q.i)), 'r']], '', 'list')}</div></details>`;
+  const svg = $('ln-pv-svg'), hit = $('ln-pv-hit'), tip = $('ln-pv-tip');
+  hit.addEventListener('mousemove', (e) => {
+    const r = svg.getBoundingClientRect();
+    const sx = (e.clientX - r.left) * (W / r.width);
+    const i = Math.max(0, Math.min(n - 1, Math.round(((sx - L) / (W - L - R)) * (n - 1))));
+    const q = pts[i];
+    $('ln-pv-x').setAttribute('x1', x(i)); $('ln-pv-x').setAttribute('x2', x(i)); $('ln-pv-x').setAttribute('visibility', 'visible');
+    $('ln-pv-dot').setAttribute('cx', x(i)); $('ln-pv-dot').setAttribute('cy', y(q.cumPct)); $('ln-pv-dot').setAttribute('visibility', 'visible');
+    tip.style.display = 'block';
+    tip.innerHTML = `<b>Trade ${i + 1}</b> · ${esc(String(q.at ?? '').replace('T', ' ').slice(0, 16))} · ${esc(q.mode ?? '')}<br>Praktijk ${pc(q.cumPct)} · beloofd ${pc(expAt(i))}`;
+    const px = (x(i) / W) * r.width;
+    tip.style.left = `${Math.min(px + 12, r.width - tip.offsetWidth - 4)}px`;
+    tip.style.top = `${(y(q.cumPct) / H) * r.height - 44}px`;
+  });
+  hit.addEventListener('mouseleave', () => { tip.style.display = 'none'; $('ln-pv-x').setAttribute('visibility', 'hidden'); $('ln-pv-dot').setAttribute('visibility', 'hidden'); });
+}
 
 // ---------- AI-chat ----------
 let chatsLoadedAt = null, chatData = null, chatFocus = null;
@@ -3129,7 +3272,7 @@ $('risk-form').onsubmit = async (e) => {
     cooldownMinutes: $('r-cool').value, slippagePct: $('r-slip').value, liveBudgetEur: $('r-budget').value,
     trailingStopPct: $('r-trail').value, atrStopMult: $('r-atr').value,
     watchSeconds: $('r-watch').value, aiExitMinPct: $('r-aiexit').value, aiExitEveryMin: $('r-aievery').value,
-    reinvestPct: $('r-reinvest').value, maxStakeEur: $('r-maxstake').value,
+    reinvestPct: $('r-reinvest').value, maxStakeEur: $('r-maxstake').value, exchangeStop: $('r-exstop').value,
     limitOrders: $('r-limit').value, limitWaitSec: $('r-limitwait').value, makerFeePct: $('r-maker').value,
     maxHoldMinutes: $('r-maxhold').value, maxSpreadPct: $('r-spread').value, maxBookCostPct: $('r-bookcost').value };
   if (state.mode === 'live' && !$('r-pass').value) { $('risk-msg').className = 'msg err'; $('risk-msg').textContent = 'Vul je wachtwoord in'; return; }
@@ -3245,6 +3388,8 @@ const HELP = {
   'st-mlbandit': 'Zelflerend: de bevestigde strategieën van de strategie-zoeker bepalen zelf wanneer er gekocht wordt, elk op haar eigen candle-tijd en met een eigen model, doel, stop en maximale duur (los van je eigen candle-instelling en EMA-kruisingen). Willen er meerdere kopen, dan kiest de bot er één. Na elke gesloten trade krijgt die strategie een beloning: de echte winst of het verlies. Strategieën die geld opleverden kiest hij daarna vaker; de andere probeert hij af en toe opnieuw, want het kan geluk geweest zijn of de markt kan veranderd zijn. Recente trades tellen zwaarder. De gekozen strategie bepaalt voor die trade de stop, het winstdoel en de maximale duur (jouw ATR-stop en trailing stop gelden dan niet). Zolang er nog geen bevestigde strategie is, gelden gewoon je eigen instellingen. Een positie van een strategie wordt alleen gesloten op haar eigen stop, doel of maximale duur (of handmatig). Paper en live delen hetzelfde geheugen.',
   'st-agent': 'De AI-trader van de trainer beslist zelf wanneer hij koopt en wanneer hij verkoopt: geen EMA-kruisingen, winstdoelen of vaste strategieën. Hij kijkt op zijn eigen candle-tijd (die hij zelf kiest) en verkoopt zodra hij van langer vasthouden niets meer verwacht. Alleen de noodstop (instelbaar op de pagina Trainer) en een maximale duur gelden als vangnet. Je AI (bij AI) blijft als controleur meekijken, en de orderboek-check blijft gelden. Live handelt hij pas als een recept alle eisen voor live haalt (pagina Trainer → Live-toelating) én jij het daar zelf toestaat; in paper zodra hij in de test winst maakte (of eerder als oefening, als "Oefenen in paper" aan staat). Staat dit aan, dan gelden minimale modelkans, marktfase en de oude strategie-keuze niet (die worden verborgen).',
   'st-agentexplore': 'Alleen in paper, nooit live. De verkenner koopt kansen die de AI-trader laat liggen (onder zijn koopdrempel, coins die hij niet koos, marktfases waar de Strategy Agent niet handelt) en kiest daaruit slim: vooral dicht bij de koopdrempel, waar nog weinig trades zijn en waar de echte uitkomsten beter waren dan verwacht. Wat in minstens 30 trades duidelijk slechter uitkwam, slaat hij over. Zo hoort de AI-trader ook hoe het afloopt bij kansen die hij anders afwijst, en leert hij waar zijn verwachting te optimistisch of te voorzichtig is. Met de kleinste inzet (€ 5), hooguit één verkennerspositie tegelijk (naast je gewone trades) en hooguit 8 per dag. Zijn trades zijn leervoorbeelden voor de leerserver, maar tellen niet mee voor de eisen voor live en het weekoverzicht van de paper-test. Je ziet ze op AI-chat als <b>Verkenner</b>.',
+  'st-agentvol': 'De leerserver meet per recept hoe het deed bij hoge, normale en lage volatiliteit (hoe onrustig de koers is vergeleken met normaal voor die coin). Aan: verloor het recept in de eindtests bij de huidige volatiliteit (minstens 30 trades, gemiddeld verlies na kosten), dan koopt de AI-trader niet, of gebruikt hij een ander toegestaan recept dat daar niet verloor. Uit: alleen de marktfase (trend) telt.',
+  'r-exstop': 'Alleen live. Na elke aankoop zet de bot ook een stop-loss-order bij Bitvavo op de noodstop van die positie. Die werkt ook als je server, internet of de bot uitvalt. Verkoopt de bot zelf, dan haalt hij die order eerst weg (Bitvavo houdt de coins anders vast). Ging de stop bij Bitvavo af terwijl de bot offline was, dan sluit de bot de positie daarna netjes af met de echte uitvoering. Lukt het plaatsen niet, dan bewaakt de bot de noodstop gewoon zelf en krijg je een melding.',
   'st-agentsizing': 'Paper en live. Jouw inzet is het minimum, je <b>maximale inzet</b> (Instellingen → Risico) het plafond; staat die op 0 of gelijk aan je inzet, dan verandert er niets. Daartussen kiest de AI-trader per trade: meer naarmate zijn verwachting verder boven zijn koopdrempel ligt, zijn verwachtingen in de praktijk (laatste 30 trades) uitkwamen en het recept in deze marktfase het best was. Met minder dan 10 trades met een verwachting zet hij hooguit de helft van de ruimte in; na 2 verliezen op rij of als zijn trades verlies maakten alleen jouw inzet. Is het orderboek te dun voor de grotere order, dan jouw inzet. Nooit meer dan er vrij is (saldo, budgetplafond). Let op: met een grotere inzet verlies je bij een slechte trade ook meer, en dat telt mee voor de dagelijkse verlieslimiet en de verliesgrens bij eigen risico. Op AI-chat zie je per aankoop waarom hij dat bedrag koos; op Trainer → Live of grotere inzetten beter uitkomen.',
   'st-agentsmall': 'Alleen live, voor recepten die alle eisen haalden. Aan: de AI-trader begint live met de kleinste inzet (€ 5), tot hij live 20 trades met gemiddeld winst heeft; daarna je eigen inzet. Uit: meteen je eigen inzet. Een recept op eigen risico (Trainer → Live-toelating) gebruikt altijd je eigen inzet, met de verliesgrens die je daar kiest.',
   'st-agentveto': 'Aan: elke aankoop van de AI-trader gaat eerst langs de AI-controleur (het taalmodel bij AI). Die kan nee zeggen, bijvoorbeeld bij slecht nieuws of een rare grafiek: een extra rem, maar hij kan ook goede trades tegenhouden. Uit: de AI-trader beslist helemaal zelf, sneller en zonder Groq-limieten, en leert ook van de trades die anders tegengehouden waren. Verkopen doet de AI-trader altijd zelf. De noodstop, dagelijkse verlieslimiet en orderboek-check blijven altijd gelden. Bij "Samenwerking AI + model" op de pagina Trainer zie je wie vaker gelijk had.',
@@ -3427,7 +3572,7 @@ $('strat-form').onsubmit = async (e) => {
   const strategy = { emaFast: $('st-fast').value, emaSlow: $('st-slow').value, rsiPeriod: $('st-rsi').value, rsiMaxEntry: $('st-rsimax').value,
     trendEma: $('st-trend').value, adxMin: $('st-adx').value, volumeMult: $('st-vol').value, btcFilter: $('st-btc').value,
     maxChasePct: $('st-chase').value, useOpenCandle: $('st-open').value,
-    sellConfirmCandles: $('st-confirm').value, minHoldCandles: $('st-hold').value, aiStrictness: $('st-strict').value, mlMinProb: $('st-mlmin').value, mlSkipBadRegime: $('st-mlregime').value, mlBandit: $('st-mlbandit').value, mlTrialPaper: $('st-mltrial').value, agentMode: $('st-agent').value, agentVeto: $('st-agentveto').value, agentExplore: $('st-agentexplore').value, agentLiveSmallStart: $('st-agentsmall').value, agentSizing: $('st-agentsizing').value };
+    sellConfirmCandles: $('st-confirm').value, minHoldCandles: $('st-hold').value, aiStrictness: $('st-strict').value, mlMinProb: $('st-mlmin').value, mlSkipBadRegime: $('st-mlregime').value, mlBandit: $('st-mlbandit').value, mlTrialPaper: $('st-mltrial').value, agentMode: $('st-agent').value, agentVeto: $('st-agentveto').value, agentExplore: $('st-agentexplore').value, agentLiveSmallStart: $('st-agentsmall').value, agentSizing: $('st-agentsizing').value, agentVolGuard: $('st-agentvol').value };
   if (state.mode === 'live' && !$('st-pass').value) { $('strat-msg').className = 'msg err'; $('strat-msg').textContent = 'Vul je wachtwoord in'; return; }
   try {
     await api('api/settings/strategy', { strategy, password: $('st-pass').value });

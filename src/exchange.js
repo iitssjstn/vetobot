@@ -355,4 +355,73 @@ export class LiveBroker {
     const order = await this.ex.createMarketOrder(pair, 'sell', amt);
     return this.#settle(order, pair, 'sell');
   }
+
+  // ---------- Stop-loss bij Bitvavo zelf ----------
+  // Een stop-loss market-order die Bitvavo zelf uitvoert als de laatste koers (lastTrade) op of
+  // onder de stopprijs komt, ook als de bot offline is. Let op: Bitvavo reserveert de hoeveelheid
+  // zolang de order openstaat; vóór elke eigen verkoop moet hij dus eerst geannuleerd worden.
+  // Geeft { orderId, stopPrice, amount }, of { skipped: reden } als de hoeveelheid onder het
+  // minimum van Bitvavo valt (dan wordt er niets geplaatst).
+  async placeStop(pair, amount, stopPrice) {
+    this.#requireKeys();
+    await this.ex.loadMarkets();
+    let amt;
+    try {
+      amt = Number(this.ex.amountToPrecision(pair, amount));
+    } catch (err) {
+      return { skipped: `hoeveelheid ${amount} is te klein voor Bitvavo (${err.message})` };
+    }
+    const min = Number(this.ex.markets?.[pair]?.limits?.amount?.min);
+    if (!(amt > 0) || (min > 0 && amt < min)) return { skipped: `hoeveelheid ${amt} ligt onder het minimum van Bitvavo${min > 0 ? ` (${min})` : ''}` };
+    const trigger = Number(this.ex.priceToPrecision(pair, stopPrice));
+    if (!(trigger > 0)) throw new Error(`Ongeldige stopprijs ${stopPrice}`);
+    // Bitvavo weigert orders onder een minimale orderwaarde (meestal € 5). Een stop van een kleine positie
+    // (bijv. € 5 met 10% noodstop = € 4,50) zou dan steeds mislukken: niet plaatsen, de bot bewaakt zelf.
+    const minCost = Number(this.ex.markets?.[pair]?.limits?.cost?.min) > 0 ? Number(this.ex.markets[pair].limits.cost.min) : 5;
+    if (amt * trigger < minCost) return { skipped: `de stop is € ${(amt * trigger).toFixed(2)} waard, onder het minimum van Bitvavo (€ ${minCost.toFixed(2)}); de bot bewaakt de noodstop zelf` };
+    const o = await this.ex.createOrder(pair, 'stopLoss', 'sell', amt, undefined,
+      { triggerPrice: trigger, triggerType: 'price', triggerReference: 'lastTrade', operatorId: OPERATOR_ID });
+    if (!o?.id) throw new Error('Bitvavo gaf geen order-id terug voor de stop-order');
+    return { orderId: String(o.id), stopPrice: trigger, amount: amt };
+  }
+
+  // Stand van een stop-order: { state: 'open' | 'filled' | 'canceled', filled, fill }.
+  // fill (zoals bij een verkoop) alleen als er iets is uitgevoerd.
+  #stopState(o, pair) {
+    const filled = Number(o?.filled) || 0;
+    const state = o?.status === 'closed' ? 'filled' : o?.status === 'canceled' || o?.status === 'expired' || o?.status === 'rejected' ? 'canceled' : 'open';
+    const fill = filled > 0 ? this.#fillOf({ ...o, average: o.average ?? (Number.isFinite(o.cost) && filled ? o.cost / filled : o.price) }, 'sell', pair) : null;
+    return { state, filled, fill };
+  }
+
+  async fetchStop(pair, orderId) {
+    this.#requireKeys();
+    return this.#stopState(await this.ex.fetchOrder(orderId, pair), pair);
+  }
+
+  // Annuleert de stop-order en controleert daarna bij Bitvavo dat hij echt geannuleerd is (of
+  // inmiddels uitgevoerd). Geeft de stand zoals fetchStop. Is het niet zeker (order staat nog
+  // open, of niets op te halen), dan een fout: dan mag de bot NIET verkopen.
+  async cancelStop(pair, orderId) {
+    this.#requireKeys();
+    let cancelErr = null;
+    try {
+      await this.ex.cancelOrder(orderId, pair, { operatorId: OPERATOR_ID });
+    } catch (err) {
+      cancelErr = err; // bijv. al uitgevoerd; fetchOrder hieronder is leidend
+    }
+    let last = null;
+    for (let i = 0; i < 3; i++) {
+      try {
+        last = this.#stopState(await this.ex.fetchOrder(orderId, pair), pair);
+        if (last.state !== 'open') return last;
+      } catch (err) {
+        // Annuleren lukte en de order is niet meer te vinden: dan is hij weg.
+        if (!cancelErr && err instanceof ccxt.OrderNotFound) return { state: 'canceled', filled: 0, fill: null };
+        if (i === 2) throw new Error(`Stop-order ${orderId} bij Bitvavo: stand onbekend na annuleren (${(cancelErr ?? err).message})`);
+      }
+      await orderTiming.sleep(1000);
+    }
+    throw new Error(`Stop-order ${orderId} bij Bitvavo staat nog open na annuleren${cancelErr ? ` (${cancelErr.message})` : ''}`);
+  }
 }

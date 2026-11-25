@@ -9,7 +9,8 @@ import { checkEntry } from './risk.js';
 import { Bandit } from './bandit.js';
 import { analyzeBook, bookProblem } from './orderbook.js';
 import { Journal, journalOptionsFromEnv, volRegimeOf, pickIndicators, ruleOf } from './journal.js';
-import { MARKET_TF, RISK, LEARN, EXPLORE, explorationOutcome, rewardSummary, onlineCorrection, correctedExpectation, exploreWanted, exploreScore, agentParts, agentForRecipe, allAgentCoins, chooseForRegime, assessRisk, riskStake, sizeStake, slippagePct, execSummary, lossStreak } from './agents.js';
+import { MARKET_TF, RISK, LEARN, EXPLORE, explorationOutcome, rewardSummary, onlineCorrection, correctedExpectation, exploreWanted, exploreScore, agentParts, agentForRecipe, allAgentCoins, chooseForRegime, volLoses, assessRisk, riskStake, sizeStake, slippagePct, execSummary, lossStreak } from './agents.js';
+import { SAFETY, exchangeStopPrice, stopStatus, compareBalances, issueKey } from './safety.js';
 import path from 'node:path';
 
 // Bedragen en koersen in Nederlandse notatie voor meldingen (€ 81,31 / € 0,3455 / −€ 0,36).
@@ -20,6 +21,13 @@ export const fmtSigned = (n) => `${n > 0 ? '+' : n < 0 ? '−' : ''}€ ${nl(Mat
 export const fmtPrice = (n) => `€ ${nl(n, priceDigits(n), 2)}`;
 export const fmtPct = (n) => `${n > 0 ? '+' : n < 0 ? '−' : ''}${nl(Math.abs(n), 2)}%`;
 const fmtAmount = (n) => nl(n, Math.abs(n) >= 100 ? 2 : Math.abs(n) >= 1 ? 4 : 8, 0);
+// Twee uitvoeringen van één verkoop samen (deels uitgevoerde stop-order bij Bitvavo plus de rest).
+const combineFills = (a, b) => {
+  const amount = (a?.amount ?? 0) + (b?.amount ?? 0);
+  return { amount, price: amount > 0 ? ((a?.amount ?? 0) * (a?.price ?? 0) + (b?.amount ?? 0) * (b?.price ?? 0)) / amount : b?.price ?? a?.price,
+    costEur: (a?.costEur ?? 0) + (b?.costEur ?? 0), feeEur: (a?.feeEur ?? 0) + (b?.feeEur ?? 0) };
+};
+const VOL_LABEL = { hoog: 'hoge volatiliteit', normaal: 'normale volatiliteit', laag: 'lage volatiliteit' };
 
 // Eén "tick": loopt alle pairs langs, beheert open posities en beoordeelt nieuwe signalen.
 //
@@ -817,8 +825,9 @@ export class Bot {
     this.tickStats = { pairs: 0, buySignals: 0, aiCalls: 0, blocked: 0, opened: 0, closed: 0 };
     try {
       this.#resetHaltIfNewDay();
-      // Directe bijsturing bijwerken met de nieuwste afgesloten trades.
-      this.learnCorr = onlineCorrection(this.#learningTrades());
+      // Directe bijsturing bijwerken met de nieuwste afgesloten trades (en gelabelde afgewezen kansen).
+      this.learnCorr = onlineCorrection(this.#learningTrades(), LEARN, this.#labeledRejections());
+      this.#agentNotice();
       await this.#updateBtcTrend();
       // Gevolgde coins plus coins waarin nog een positie open staat, zodat een positie
       // altijd bewaakt blijft, ook als de coin uit de lijst is gehaald.
@@ -839,13 +848,30 @@ export class Bot {
       }
       if (this.mode === 'live') {
         this.#step('Saldo ophalen bij Bitvavo');
-        await this.refreshLiveBalance().catch((err) => {
+        // Bitvavo geeft af en toe een losse storing (bijv. 's nachts "errorCode 101"). Pas melden als het
+        // 10 minuten aanhoudt, en één keer melden als het weer werkt. Tot dan rekent de bot met het laatste saldo.
+        await this.refreshLiveBalance().then(() => {
+          if (this.balanceFail?.notified) {
+            this.#notify('errors', { title: 'Saldo ophalen bij Bitvavo werkt weer', message: `Na ${Math.round((Date.now() - this.balanceFail.since) / 60000)} minuten storing.`, level: 'info' });
+          }
+          this.balanceFail = null;
+        }).catch((err) => {
           errors++;
           this.#event('error', null, `Saldo ophalen mislukt: ${err.message}`);
-          this.#notify('errors', { title: 'Saldo ophalen bij Bitvavo mislukt', message: err.message, level: 'error' });
+          this.balanceFail ??= { since: Date.now(), notified: false };
+          if (!this.balanceFail.notified && Date.now() - this.balanceFail.since >= 10 * 60000) {
+            this.balanceFail.notified = true;
+            this.#notify('errors', { title: 'Saldo ophalen bij Bitvavo mislukt', message: `${err.message}\n\nAl ${Math.round((Date.now() - this.balanceFail.since) / 60000)} minuten. De bot rekent zolang met het laatst bekende saldo.`, level: 'error' });
+          }
         });
       }
       await this.#exclusive(async () => {
+        // Live: stop-orders bij Bitvavo controleren (uitgevoerd? opnieuw zetten?) en de saldocontrole
+        // bij de eerste check en daarna elke 24 uur.
+        await this.#exchangeStopRound();
+        if (this.mode === 'live' && (!this.reconcileRanAt || Date.now() - this.reconcileRanAt >= SAFETY.reconcileMs)) {
+          await this.#reconcile().catch((err) => this.#event('warn', null, `Saldocontrole mislukt: ${err.message}`));
+        }
         await this.#settleExplorations();
         await this.#settleShadows();
         this.#armSummary();
@@ -1575,6 +1601,33 @@ export class Bot {
       .sort((left, right) => Date.parse(right.closedAt) - Date.parse(left.closedAt));
   }
 
+  // Afgewezen kansen van de AI-trader met een label dat al vaststaat (gemiste kansen en terechte
+  // afwijzingen), voor de directe bijsturing. Hooguit elke 5 minuten uit het dagboek; fouten blijven daar.
+  #labeledRejections() {
+    const now = Date.now();
+    const c = this.rejCache;
+    if (c && c.mode === this.mode && now - c.at < 5 * 60000) return c.rows;
+    let rows = [];
+    try {
+      const j = this.journal;
+      if (j?.enabled && typeof j.labeledRejections === 'function') {
+        // Gemiddelde houdtijd per recept (eindtest van de leerserver), om de passende horizon te kiezen.
+        const hold = {};
+        for (const a of agentParts(this.getAgent?.())) {
+          const held = Number(a?.meta?.report?.test?.avgHeld);
+          const tfMin = TIMEFRAME_MINUTES[a?.timeframe];
+          if (a?.recipeKey && held > 0 && tfMin) hold[a.recipeKey] = held * tfMin;
+        }
+        rows = j.labeledRejections({ mode: this.mode, days: 60, limit: LEARN.window, now, holdMinutes: (recipe) => hold[recipe] ?? null });
+      }
+    } catch (err) {
+      this.#journalError(err);
+      rows = [];
+    }
+    this.rejCache = { at: now, mode: this.mode, rows };
+    return rows;
+  }
+
   async #settleExplorations() {
     if (this.mode !== 'paper' || this.following) return 0;
     const open = this.store.state.explorations ?? [];
@@ -1634,7 +1687,7 @@ export class Bot {
     for (const key of Object.keys(this.store.state.explorationModels ?? {})) {
       if (!used.has(key)) delete this.store.state.explorationModels[key];
     }
-    if (closed) this.learnCorr = onlineCorrection(this.#learningTrades());
+    if (closed) this.learnCorr = onlineCorrection(this.#learningTrades(), LEARN, this.#labeledRejections());
     return closed;
   }
 
@@ -1696,6 +1749,36 @@ export class Bot {
       talk.push(Bot.say('gate', 'Toelating', `Niet kopen: ${why}.`, 'reject'));
       await this.#journalAgent(pair, agent, regime, x, qModel, q, 'toelating', reason);
       const e = explore ? await this.#exploreBuy(pair, agent, regime, x, q, talk, 'toelating') : null;
+      if (e) return e;
+      this.#agentChat(pair, 'buy', 'blocked', talk);
+      return { buy: false, reason };
+    }
+    // Strategy Agent, volatiliteit: verloor dit recept in de eindtest aantoonbaar in de huidige
+    // volatiliteit van deze coin, dan niet kopen (of een ander toegestaan recept dat daar niet verliest).
+    // Zonder volStats (oudere leerserver) of zonder bekend volatiliteitsregime: gewoon doorgaan.
+    const vol = x.volRegime;
+    const volLoss = Number(this.strategy.agentVolGuard ?? 1) === 1 && vol ? volLoses(agent, vol) : null;
+    if (volLoss) {
+      const tried = [...(opts.volTried ?? []), agent.recipeKey ?? null];
+      const lossTxt = `${volLoss.trades} trades, gem. ${volLoss.avgPct < 0 ? '−' : ''}${Math.abs(volLoss.avgPct).toFixed(2).replace('.', ',')}%`;
+      const alt = agentParts(this.getAgent?.()).find((p) => p && p !== agent && !tried.includes(p.recipeKey ?? null)
+        && this.agentAllowed(p) && !volLoses(p, vol));
+      if (alt) {
+        talk.push(Bot.say('strategy', 'Strategy Agent', `In ${VOL_LABEL[vol]} verloor recept ${agent.recipeKey ?? '–'} in de eindtest (${lossTxt}); ` +
+          `ik gebruik recept ${alt.recipeKey ?? '–'}, dat daar niet verliest${alt.volStats?.[vol]?.trades ? ` (${alt.volStats[vol].trades} trades, gem. ${nl(Number(alt.volStats[vol].avgPct) || 0)}%)` : ''}.`));
+        this.agentChoice ??= {};
+        this.agentChoice[pair] = { ...this.agentChoice[pair], recipe: alt.recipeKey ?? null, why: 'volatiliteit' };
+        // Zelfde candle opnieuw beoordelen met het andere recept.
+        if (alt.timeframe === tf) delete this.agentTs[key];
+        return this.#agentBuy(pair, alt, regime, { ...choice, why: 'volatiliteit' }, talk, { ...opts, volTried: tried });
+      }
+      this.#whyNot('volatiliteit', q, agent.threshold);
+      const reason = `Strategy Agent: in ${VOL_LABEL[vol]} verloor dit recept (${lossTxt})`;
+      this.agentReason[pair] = reason;
+      this.think(`Ik zie een kans bij ${pair} (${nl(q)}% verwacht), maar in ${VOL_LABEL[vol]} verloor dit recept in de eindtest (${lossTxt}). Ik koop niet.`, pair, 'warn');
+      talk.push(Bot.say('strategy', 'Strategy Agent', `Niet kopen: ${pair} zit in ${VOL_LABEL[vol]}, en daar verloor recept ${agent.recipeKey ?? '–'} in de eindtest (${lossTxt}). Geen ander toegestaan recept dat daar niet verliest.`, 'reject'));
+      await this.#journalAgent(pair, agent, regime, x, qModel, q, 'pauze', reason);
+      const e = explore ? await this.#exploreBuy(pair, agent, regime, x, q, talk, 'pauze') : null;
       if (e) return e;
       this.#agentChat(pair, 'buy', 'blocked', talk);
       return { buy: false, reason };
@@ -2091,7 +2174,9 @@ export class Bot {
       this.store.state.positions[pair].ml = { ts: lf.ts, timeframe: lf.timeframe, features: lf.features, prob: lf.prob };
     }
     delete this.lastFeatures[pair];
-    this.#event('info', pair, `Gekocht: ${fmtAmount(fill.amount)} @ ${fmtPrice(fill.price)} (${this.broker.mode}${fill.limit ? `, limietorder${fill.partial ? ', deels gevuld' : ''}` : ''})` +
+    // Live: meteen een stop-order bij Bitvavo zelf op de noodstop (mislukt dat, dan blijft de positie gewoon bewaakt).
+    await this.#placeExchangeStop(pair, this.store.state.positions[pair]);
+    this.#event('info', pair, `Gekocht:${fmtAmount(fill.amount)} @ ${fmtPrice(fill.price)} (${this.broker.mode}${fill.limit ? `, limietorder${fill.partial ? ', deels gevuld' : ''}` : ''})` +
       (stakeInfo.extra > 0 ? `, inzet ${fmtEur(stake)} waarvan ${fmtEur(stakeInfo.extra)} herinvesteerde winst` : '') +
       (stake < stakeInfo.effective ? `, inzet verlaagd naar ${fmtEur(stake)} door de Risk Agent` : ''));
     // Volgers laten meedoen (alleen gezet op de bot van de leider).
@@ -2282,7 +2367,7 @@ export class Bot {
         const c = this.learnCorr ?? onlineCorrection(trades);
         const coins = Object.entries(c.coins).filter(([, x]) => Math.abs(x.adj) >= 0.01).sort((a, b) => Math.abs(b[1].adj) - Math.abs(a[1].adj)).slice(0, 5)
           .map(([pair, x]) => ({ pair, n: x.n, adj: +x.adj.toFixed(3) }));
-        return { trades: c.trades, edges: LEARN.edges, bins: c.bins.map((b) => ({ n: b.n, adj: +b.adj.toFixed(3) })), coins };
+        return { trades: c.trades, rejected: c.rejected ?? 0, edges: LEARN.edges, bins: c.bins.map((b) => ({ n: b.n, adj: +b.adj.toFixed(3) })), coins };
       })(),
       explorer: (() => {
         const ex = trades.filter((t) => t.agent?.explore);
@@ -2314,13 +2399,253 @@ export class Bot {
     }
   }
 
-  async #placeSell(pair, reason, pos) {
+  // ---------- Stop-loss bij Bitvavo zelf (alleen live) ----------
+  // Na elke live aankoop zet de bot een stop-order bij Bitvavo op de noodstop van de positie, zodat
+  // die ook beschermd is als de bot offline is. Vóór elke eigen verkoop annuleert hij die order weer.
+  get exchangeStopEnabled() {
+    return this.mode === 'live' && Number(this.risk.exchangeStop ?? 1) === 1;
+  }
+
+  async #placeExchangeStop(pair, pos) {
+    if (!pos || pos.exchangeStop?.orderId || this.broker.mode !== 'live' || !this.exchangeStopEnabled) return;
+    if (typeof this.broker.placeStop !== 'function') return;
+    const stopPrice = exchangeStopPrice(pos, this.risk);
+    if (!stopPrice) return; // geen noodstop ingesteld: ook geen stop bij Bitvavo
+    const prev = pos.exchangeStop ?? {};
+    const now = new Date().toISOString();
+    try {
+      this.#step(`${pair}: stop-order bij Bitvavo zetten`);
+      const r = await this.broker.placeStop(pair, pos.amount, stopPrice);
+      if (r?.skipped) {
+        pos.exchangeStop = { orderId: null, stopPrice, placedAt: null, skipped: r.skipped, attemptAt: now };
+        this.#event('warn', pair, `Geen stop-order bij Bitvavo gezet: ${r.skipped}. De bot bewaakt de noodstop zelf.`);
+        return;
+      }
+      pos.exchangeStop = { orderId: r.orderId, stopPrice: r.stopPrice ?? stopPrice, amount: r.amount ?? pos.amount, placedAt: now };
+      this.#event('info', pair, `Stop-order bij Bitvavo gezet op ${fmtPrice(pos.exchangeStop.stopPrice)} (order ${r.orderId})`);
+    } catch (err) {
+      const msg = String(err?.message ?? err).slice(0, 300);
+      pos.exchangeStop = { orderId: null, stopPrice, placedAt: null, error: msg, attemptAt: now, attempts: (prev.attempts ?? 0) + 1, notified: Boolean(prev.notified) };
+      this.#event('error', pair, `Stop-order bij Bitvavo zetten mislukt: ${msg}. De bot bewaakt de noodstop zelf en probeert het over 10 minuten opnieuw.`);
+      if (!prev.notified) {
+        pos.exchangeStop.notified = true;
+        this.#notify('errors', { title: `Stop-order bij Bitvavo mislukt: ${pair}`, level: 'error',
+          message: `${msg}\n\nDe positie blijft open en wordt door de bot zelf bewaakt (noodstop op ${fmtPrice(stopPrice)}). ` +
+            'Hij probeert de stop-order elke 10 minuten opnieuw te zetten; je krijgt hier voor deze positie geen nieuwe melding van.' });
+      }
+    }
+  }
+
+  // Stop-order annuleren vóór een eigen verkoop. Geeft de stand ({ state, filled, fill }) als de
+  // stop (deels) was uitgevoerd, anders null. Is niet zeker dat hij weg is, dan een fout: niet verkopen.
+  async #releaseExchangeStop(pair, pos) {
+    const id = pos.exchangeStop?.orderId;
+    if (!id || typeof this.broker.cancelStop !== 'function') return null;
+    this.#step(`${pair}: stop-order bij Bitvavo annuleren`);
+    let st;
+    try {
+      st = await this.broker.cancelStop(pair, id);
+    } catch (err) {
+      throw new Error(`Niet verkocht: de stop-order bij Bitvavo kon niet geannuleerd worden (${err.message}). Hij blijft de positie beschermen.`);
+    }
+    // Geannuleerd: mislukt de verkoop hierna, dan zet de volgende check meteen een nieuwe stop-order.
+    pos.exchangeStop = { ...pos.exchangeStop, orderId: null, canceledAt: new Date().toISOString(), lastOrderId: id, attemptAt: null, error: null };
+    return st?.filled > 0 ? st : null;
+  }
+
+  // De stop-order bij Bitvavo is uitgevoerd terwijl de bot de positie nog open had: afsluiten met die uitvoering.
+  async #closeFromExchangeStop(pair, pos, fill) {
+    if (!pos || this.ordering.has(pair)) return BUSY;
+    this.ordering.add(pair);
+    try {
+      this.#event('warn', pair, 'De stop-order bij Bitvavo is uitgevoerd; de positie wordt afgesloten met die verkoop');
+      await this.#placeSell(pair, 'Stop-loss bij Bitvavo', pos, { fill, expected: pos.exchangeStop?.stopPrice ?? null });
+      if (this.pairStatus[pair]) this.pairStatus[pair] = { ...this.pairStatus[pair], inPosition: false, signal: 'sell', reason: 'Stop-loss bij Bitvavo', positionChangePct: null };
+      return true;
+    } finally {
+      this.ordering.delete(pair);
+    }
+  }
+
+  // Wat te doen met de stand van een stop-order. Geeft true als de positie is afgesloten.
+  async #onStopState(pair, pos, st) {
+    const s = pos.exchangeStop;
+    if (st.state === 'filled' && st.fill && st.filled >= (s?.amount ?? pos.amount) * SAFETY.filledShare) {
+      return (await this.#closeFromExchangeStop(pair, pos, st.fill)) === true;
+    }
+    if (st.state === 'open') return false;
+    // Weg zonder (volledige) uitvoering: geannuleerd of verlopen bij Bitvavo, of maar deels uitgevoerd.
+    const partial = st.filled > 0;
+    const why = partial ? `de stop-order ${s.orderId} is bij Bitvavo maar deels uitgevoerd (${fmtAmount(st.filled)} van ${fmtAmount(s.amount ?? pos.amount)})`
+      : `de stop-order ${s.orderId} staat niet meer open bij Bitvavo (geannuleerd of verlopen)`;
+    const Why = `${why.charAt(0).toUpperCase()}${why.slice(1)}`;
+    // Deels uitgevoerd: niets automatisch doen (twijfel), alleen melden. Anders over 10 minuten een nieuwe zetten.
+    pos.exchangeStop = { orderId: null, stopPrice: s.stopPrice, placedAt: null, lastOrderId: s.orderId, attemptAt: new Date().toISOString(),
+      ...(partial ? { skipped: `${why}; controleer de positie zelf` } : { error: why }), notified: true };
+    this.#event('warn', pair, Why);
+    this.#notify('errors', { title: `Stop-order bij Bitvavo: ${pair}`, level: 'warn',
+      message: `${Why}. De positie staat nog open in de bot en wordt door de bot zelf bewaakt.` +
+        (partial ? ' Controleer bij Bitvavo hoeveel er nog over is; de bot doet hier zelf niets mee.' : ' Hij probeert over 10 minuten een nieuwe stop-order te zetten.') });
+    return false;
+  }
+
+  // Elke check (live): uitgevoerde stop-orders opmerken (hooguit elke minuut per positie) en
+  // mislukte stop-orders opnieuw proberen (hooguit elke 10 minuten).
+  async #exchangeStopRound() {
+    if (this.broker.mode !== 'live') return;
+    const now = Date.now();
+    this.stopCheckedAt ??= {};
+    for (const [pair, pos] of Object.entries(this.store.state.positions)) {
+      if (!pos || this.ordering.has(pair)) continue;
+      const s = pos.exchangeStop;
+      try {
+        if (s?.orderId) {
+          if (typeof this.broker.fetchStop !== 'function' || now - (this.stopCheckedAt[pair] ?? 0) < SAFETY.checkMs) continue;
+          this.stopCheckedAt[pair] = now;
+          await this.#onStopState(pair, pos, await this.broker.fetchStop(pair, s.orderId));
+        } else if (!s?.skipped && (!s?.attemptAt || now - Date.parse(s.attemptAt) >= SAFETY.retryMs)) {
+          await this.#placeExchangeStop(pair, pos);
+        }
+      } catch (err) {
+        this.#event('warn', pair, `Stop-order bij Bitvavo controleren mislukt: ${err.message}`);
+      }
+    }
+  }
+
+  // ---------- Saldocontrole (alleen live) ----------
+  // Bij de eerste check in live en daarna elke 24 uur: klopt wat de bot denkt te hebben met het saldo
+  // op Bitvavo? Alleen melden; nooit iets kopen of verkopen op basis hiervan. Eén uitzondering: is
+  // de coin van een positie helemaal weg én is de stop-order bij Bitvavo aantoonbaar uitgevoerd, dan
+  // sluit de bot die positie af met die uitvoering.
+  reconcile() {
+    return this.#exclusive(() => this.#reconcile());
+  }
+
+  async #reconcile() {
+    if (this.mode !== 'live') return null;
+    this.reconcileRanAt = Date.now();
+    const prev = this.store.state.reconcile ?? null;
+    let result;
+    try {
+      if (!hasTradingKeys(this.ex)) throw new Error('Bitvavo-keys ontbreken');
+      this.#step('Saldocontrole bij Bitvavo');
+      const balance = await this.ex.fetchBalance();
+      let openStops = null;
+      if (typeof this.ex.fetchOpenOrders === 'function') {
+        try {
+          openStops = new Set((await this.ex.fetchOpenOrders()).map((o) => String(o.id)));
+        } catch {
+          openStops = null; // onbekend: dan niet op open orders controleren
+        }
+      }
+      const markets = this.ex.markets ?? {};
+      // Koersen in euro: van coins zonder positie (voor hun waarde) en van de posities zelf.
+      const curs = Object.entries(balance?.total ?? {}).filter(([c, v]) => c !== 'EUR' && Number(v) > 0).map(([c]) => `${c}/EUR`);
+      const want = [...new Set([...curs.filter((p) => !Object.keys(markets).length || markets[p]), ...Object.keys(this.store.state.positions)])].slice(0, 60);
+      const prices = {};
+      if (want.length) {
+        let t = {};
+        try { t = (await this.ex.fetchTickers?.(want)) ?? {}; } catch { /* per coin hieronder */ }
+        for (const p of want) {
+          const v = t?.[p]?.last ?? (await fetchPrice(this.ex, p).catch(() => null));
+          if (v > 0) prices[p] = v;
+        }
+      }
+      let issues = compareBalances({ positions: this.store.state.positions, balance, prices, markets, precisionMode: this.ex.precisionMode,
+        openStops, stopOn: this.exchangeStopEnabled });
+      // De uitzondering: coin helemaal weg en de stop-order aantoonbaar uitgevoerd → afsluiten.
+      const closed = [];
+      for (const i of issues.filter((x) => x.kind === 'mist' && x.gone)) {
+        const pos = this.store.state.positions[i.pair];
+        const id = pos?.exchangeStop?.orderId;
+        if (!id || typeof this.broker.fetchStop !== 'function') continue;
+        try {
+          const st = await this.broker.fetchStop(i.pair, id);
+          if (st.state === 'filled' && (await this.#onStopState(i.pair, pos, st))) closed.push(i.pair);
+        } catch (err) {
+          i.note += ` (stop-order ophalen mislukt: ${err.message})`;
+        }
+      }
+      if (closed.length) issues = issues.filter((x) => !closed.includes(x.pair));
+      result = { at: new Date().toISOString(), ok: issues.length === 0, issues: issues.map(({ gone, ...i }) => i), ...(closed.length ? { closed } : {}) };
+    } catch (err) {
+      result = { at: new Date().toISOString(), ok: false, issues: [], error: String(err?.message ?? err).slice(0, 300) };
+    }
+    this.store.state.reconcile = result;
+    this.store.save();
+    // Alleen melden wat nieuw mis is.
+    const seen = new Set((prev?.issues ?? []).map(issueKey));
+    const fresh = result.issues.filter((i) => !seen.has(issueKey(i)));
+    const label = { mist: 'mist op Bitvavo', extra: 'extra op Bitvavo', 'stop-mist': 'geen stop-order' };
+    if (fresh.length) {
+      this.#event('warn', null, `Saldocontrole: ${fresh.map((i) => `${i.pair} ${label[i.kind] ?? i.kind}`).join(', ')}`);
+      this.#notify('errors', { title: 'Saldocontrole: afwijking bij Bitvavo', level: 'warn',
+        message: `${fresh.map((i) => `**${i.pair}** (${label[i.kind] ?? i.kind}): ${i.note} Bot: ${i.botAmount}, Bitvavo: ${i.exchangeAmount}.`).join('\n')}\n\n` +
+          'De bot koopt of verkoopt hier niets voor; controleer het zelf bij Bitvavo.' });
+    } else if (result.error && result.error !== prev?.error) {
+      this.#event('warn', null, `Saldocontrole mislukt: ${result.error}`);
+      this.#notify('errors', { title: 'Saldocontrole bij Bitvavo mislukt', message: result.error, level: 'warn' });
+    }
+    if (result.closed?.length) this.#event('info', null, `Saldocontrole: ${result.closed.join(', ')} afgesloten (de stop-order bij Bitvavo was uitgevoerd)`);
+    return result;
+  }
+
+  // Stand van de veiligheid voor het dashboard: stop-orders bij Bitvavo en de laatste saldocontrole.
+  safetyStatus() {
+    const live = this.mode === 'live';
+    const enabled = this.exchangeStopEnabled;
+    const next = !live ? null : this.reconcileRanAt ? new Date(this.reconcileRanAt + SAFETY.reconcileMs).toISOString() : new Date().toISOString();
+    return {
+      mode: this.mode,
+      exchangeStop: { enabled, positions: Object.values(this.store.state.positions).filter(Boolean).map((p) => stopStatus(p, { live, enabled })) },
+      reconcile: this.store.state.reconcile ?? null,
+      nextReconcileAt: next,
+    };
+  }
+
+  // De leerserver viel automatisch terug op het vorige model (proefperiode mislukt): één keer melden per notice.at.
+  #agentNotice() {
+    if (this.following) return;
+    const n = this.getAgent?.()?.notice;
+    if (n?.kind !== 'probation-failed' || !n.at) return;
+    const stores = Object.values(this.stores ?? {}).filter((s) => s?.state);
+    if (stores.some((s) => s.state.agentNoticeAt === n.at)) return;
+    for (const s of stores) {
+      s.state.agentNoticeAt = n.at;
+      try { s.save(); } catch { /* volgende keer */ }
+    }
+    const what = `Het nieuwe model${n.version ? ` (${n.version})` : ''} haalde de proefperiode niet; de leerserver gebruikt weer ${n.restoredVersion ? `model ${n.restoredVersion}` : 'het vorige model'}.`;
+    this.#event('warn', null, `AI-trader: nieuw model teruggedraaid. ${what}${n.reason ? ` Reden: ${n.reason}` : ''}`);
+    this.#notify('strategy', { title: 'AI-trader: nieuw model teruggedraaid', level: 'warn', message: `${n.reason ?? 'Geen reden opgegeven.'}\n\n${what}` });
+  }
+
+  // given: { fill, expected } als de verkoop al gebeurd is (de stop-order bij Bitvavo werd uitgevoerd).
+  async #placeSell(pair, reason, pos, given = null) {
     this.#step(`${pair}: verkopen`);
+    let fill = given?.fill ?? null;
+    let expected = given?.expected ?? null;
+    if (!fill) {
+      // Eerst de stop-order bij Bitvavo weg (die reserveert de coins). Was hij al uitgevoerd, dan
+      // is de positie al verkocht: afsluiten met die uitvoering en NIET nog eens verkopen.
+      const stopAmt = pos.exchangeStop?.amount ?? pos.amount;
+      const stopPx = pos.exchangeStop?.stopPrice ?? null;
+      const done = await this.#releaseExchangeStop(pair, pos);
+      if (done?.fill && done.filled >= stopAmt * SAFETY.filledShare) {
+        this.#event('warn', pair, `De stop-order bij Bitvavo was al uitgevoerd; niet nog eens verkocht (bedoeld: ${reason})`);
+        fill = done.fill;
+        expected = stopPx;
+        reason = 'Stop-loss bij Bitvavo';
+      } else {
+        const opts = this.#orderOpts(reason);
+        if (opts.limit) this.#step(`${pair}: limietorder verkopen, wacht max. ${opts.waitSec} sec`);
+        expected = await fetchPrice(this.ex, pair).catch(() => null);
+        // Deels uitgevoerde stop: alleen de rest nog verkopen.
+        const rest = done?.fill ? Math.max(0, pos.amount - done.filled) : pos.amount;
+        const sold = await this.broker.sell(pair, rest, opts);
+        fill = done?.fill ? combineFills(done.fill, sold) : sold;
+      }
+    }
     if (this.tickStats) this.tickStats.closed++;
-    const opts = this.#orderOpts(reason);
-    if (opts.limit) this.#step(`${pair}: limietorder verkopen, wacht max. ${opts.waitSec} sec`);
-    const expected = await fetchPrice(this.ex, pair).catch(() => null);
-    const fill = await this.broker.sell(pair, pos.amount, opts);
     this.#execution(pair, 'sell', expected, fill);
     const pnlEur = fill.costEur - pos.costEur;
     // Werkelijke kosten van deze ronde in %: fees plus de gemeten afwijking bij kopen en verkopen.

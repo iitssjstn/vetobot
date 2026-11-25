@@ -34,6 +34,8 @@ export const RISK_LIMITS = {
   maxHoldMinutes: [0, 43200],
   maxSpreadPct: [0, 10],
   maxBookCostPct: [0, 10],
+  // 1 = live na elke aankoop ook een stop-loss-order bij Bitvavo zelf zetten (op de noodstop).
+  exchangeStop: [0, 1],
 };
 export const LIVE_MIN_STAKE_EUR = 5;
 export const STRATEGY_LIMITS = {
@@ -59,8 +61,11 @@ export const STRATEGY_LIMITS = {
   agentExplore: [0, 1],
   agentLiveSmallStart: [0, 1],
   agentSizing: [0, 1],
+  agentVolGuard: [0, 1],
 };
 export const AI_FAIL_MODES = ['reject', 'approve'];
+// Instellingen die aan staan als ze nergens zijn opgegeven.
+const DEFAULT_ON = new Set(['agentLiveSmallStart', 'agentSizing', 'agentVolGuard', 'exchangeStop']);
 const NOTIFY_DEFAULTS = {
   discordUserId: '',
   events: { startup: true, trades: true, stoploss: true, errors: true, dailyLimit: true, mode: true, aiVeto: false, dailySummary: true, aiFallback: true, aiFailed: true, strategy: true },
@@ -99,6 +104,8 @@ const RISK_LABELS = {
   agentExplore: 'Verkenner (alleen paper)',
   agentLiveSmallStart: 'Live beginnen met de kleinste inzet',
   agentSizing: 'AI-trader kiest zelf de inzet',
+  agentVolGuard: 'Strategy Agent let op volatiliteit',
+  exchangeStop: 'Stop-loss ook bij Bitvavo zetten (live)',
   aiExitMinPct: 'AI winst nemen vanaf',
   aiExitEveryMin: 'AI winstcheck elke',
   reinvestPct: 'Winst herinvesteren',
@@ -149,13 +156,14 @@ export class Settings {
         mode: saved.ai?.mode === 'team' ? 'team' : 'single',
         fallbacks: Array.isArray(saved.ai?.fallbacks) ? saved.ai.fallbacks : [],
       },
-      // Ontbreekt een instelling, dan 0 (uit); alleen de kleinste live-start en de eigen inzet van de AI-trader (die
-      // alleen werkt als je een maximale inzet instelt) staan standaard aan.
-      strategy: Object.fromEntries(Object.keys(STRATEGY_LIMITS).map((k) => [k, saved.strategy?.[k] ?? defaults.strategy?.[k] ?? (k === 'agentLiveSmallStart' || k === 'agentSizing' ? 1 : 0)])),
+      // Ontbreekt een instelling, dan 0 (uit); alleen de kleinste live-start, de eigen inzet van de AI-trader (die
+      // alleen werkt als je een maximale inzet instelt) en de volatiliteitscheck staan standaard aan.
+      strategy: Object.fromEntries(Object.keys(STRATEGY_LIMITS).map((k) => [k, saved.strategy?.[k] ?? defaults.strategy?.[k] ?? (DEFAULT_ON.has(k) ? 1 : 0)])),
       pairs: saved.pairs ?? defaults.pairs,
       timeframe: saved.timeframe ?? defaults.timeframe,
       checkIntervalMinutes: saved.checkIntervalMinutes ?? defaults.checkIntervalMinutes,
-      risk: Object.fromEntries(Object.keys(RISK_LIMITS).map((k) => [k, saved.risk?.[k] ?? defaults.risk?.[k] ?? 0])),
+      // De stop-loss bij Bitvavo (live) staat standaard aan.
+      risk: Object.fromEntries(Object.keys(RISK_LIMITS).map((k) => [k, saved.risk?.[k] ?? defaults.risk?.[k] ?? (DEFAULT_ON.has(k) ? 1 : 0)])),
       notify: {
         discordUserId: saved.notify?.discordUserId ?? NOTIFY_DEFAULTS.discordUserId,
         events: { ...NOTIFY_DEFAULTS.events, ...saved.notify?.events },
@@ -194,7 +202,7 @@ export class Settings {
 
   setRisk(values) {
     // Velden die ontbreken houden hun huidige waarde.
-    this.data.risk = validated({ ...this.data.risk, ...values }, RISK_LIMITS, ['maxOpenTrades', 'cooldownMinutes', 'watchSeconds', 'limitOrders', 'limitWaitSec']);
+    this.data.risk = validated({ ...this.data.risk, ...values }, RISK_LIMITS, ['maxOpenTrades', 'cooldownMinutes', 'watchSeconds', 'limitOrders', 'limitWaitSec', 'exchangeStop']);
     this.#save();
   }
 
@@ -229,7 +237,7 @@ export class Settings {
   }
 
   setStrategy(values) {
-    const next = validated({ ...this.data.strategy, ...values }, STRATEGY_LIMITS, ['emaFast', 'emaSlow', 'rsiPeriod', 'trendEma', 'btcFilter', 'useOpenCandle', 'sellConfirmCandles', 'minHoldCandles', 'aiStrictness', 'mlSkipBadRegime', 'mlBandit', 'mlTrialPaper', 'agentMode', 'agentVeto', 'agentExplore', 'agentLiveSmallStart', 'agentSizing']);
+    const next = validated({ ...this.data.strategy, ...values }, STRATEGY_LIMITS, ['emaFast', 'emaSlow', 'rsiPeriod', 'trendEma', 'btcFilter', 'useOpenCandle', 'sellConfirmCandles', 'minHoldCandles', 'aiStrictness', 'mlSkipBadRegime', 'mlBandit', 'mlTrialPaper', 'agentMode', 'agentVeto', 'agentExplore', 'agentLiveSmallStart', 'agentSizing', 'agentVolGuard']);
     if (next.emaFast >= next.emaSlow) throw new Error('EMA fast moet kleiner zijn dan EMA slow');
     this.data.strategy = next;
     this.#save();
