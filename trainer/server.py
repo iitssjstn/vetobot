@@ -26,7 +26,7 @@ import secrets
 import threading
 import time
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import agent as agent_mod
@@ -1231,11 +1231,36 @@ def recipe_metrics(entry):
     st = agent_search.status(entry)
     pf, known = agent_search.test_profit_factor(entry)
     ts = agent_search.test_stats(entry)
+    eff = _safe(lambda: stats.effective_trades(_test_spans(entry)), 'unieke eindtest-trades tellen') if ts else None
     return {'status': st, 'order': STATUS_ORDER.get(st, 0), 'ratio': sc['ratio'], 'avg': sc['avg'], 'edge': sc['edge'],
             'tested': sc['tested'], 'testAvg': sc['test']['avg'], 'testDrawdown': sc['test']['drawdown'],
             'testProfitFactor': pf, 'pfKnown': known,
             # Voor de statistische toets: gemiddelde, spreiding en aantal trades over alle eindtests samen.
-            'testMean': ts[0] if ts else None, 'testStd': ts[1] if ts else None, 'testTrades': ts[2] if ts else None}
+            'testMean': ts[0] if ts else None, 'testStd': ts[1] if ts else None, 'testTrades': ts[2] if ts else None,
+            # Zoveel van die trades zijn echt los van elkaar (rondes op dezelfde eindtest tellen één keer).
+            'testEffTrades': eff}
+
+
+def _test_spans(entry):
+    """Per eindtest-ronde (dezelfde rondes als agent_search.test_stats): (trades, begin, eind) van de
+    eindtestperiode als unix-tijd. Uit periods['eindtest'] (UTC, 'JJJJ-MM-DD UU:MM'); oudere rondes
+    zonder periodes: de testDays dagen tot het moment van de ronde (de eindtest is altijd de nieuwste
+    data). Onbekend: (trades, None, None)."""
+    out = []
+    for x in (entry or {}).get('rounds', []):
+        t = x.get('test') or {}
+        if not t.get('trades') or t.get('avgPct') is None:
+            continue
+        a = b = None
+        span = ((x.get('periods') or {}).get('eindtest')) or None
+        try:
+            a, b = (datetime.strptime(str(s), '%Y-%m-%d %H:%M').replace(tzinfo=timezone.utc).timestamp() for s in span)
+        except (TypeError, ValueError):
+            a = b = None
+        if (a is None or b is None or b <= a) and _num(x.get('ts')) and _num(x.get('testDays')) and x['testDays'] > 0:
+            a, b = x['ts'] - x['testDays'] * 86400, x['ts']
+        out.append((t['trades'], a, b))
+    return out
 
 
 def _num(v):
@@ -1265,20 +1290,25 @@ def _sp(v, d=2):
 def stat_test(new, old, conf, candidates=1):
     """Statistische toets op de eindtests: is het gemiddelde rendement per trade van `new` met
     betrouwbaarheid `conf` hoger dan dat van `old`? Eenzijdige Welch t-toets op (gemiddelde, std,
-    aantal trades) van alle eindtest-rondes samen. Correctie voor selectie (Bonferroni): de beste van
+    aantal trades) van alle eindtest-rondes samen, waarbij rondes op dezelfde eindtestperiode niet als
+    extra trades tellen (testEffTrades, zie stats.effective_trades). Correctie voor selectie (Bonferroni): de beste van
     `candidates` geteste recepten is vaak toevallig de beste, dus de toets gebruikt 1 - (1 - conf) /
     candidates als betrouwbaarheid; hoe meer recepten geprobeerd, hoe strenger.
     Geeft (ok, reden, cijfers) of None als de toets niet kan (oudere rondes zonder spreiding)."""
     keys = ('testMean', 'testStd', 'testTrades')
     if not all(_num((new or {}).get(k)) and _num((old or {}).get(k)) for k in keys) or new['testTrades'] < 2 or old['testTrades'] < 2:
         return None
+    # Het aantal trades voor de standaardfout: alleen de trades die echt los van elkaar zijn. Rondes
+    # die dezelfde eindtestperiode opnieuw testen, tellen niet als nieuwe trades (stats.effective_trades).
+    eff = lambda m: min(m['testTrades'], max(m['testEffTrades'], 2.0)) if _num(m.get('testEffTrades')) else m['testTrades']
+    n_new, n_old = eff(new), eff(old)
     k = max(1, int(candidates or 1))
     level = 1 - (1 - float(conf)) / k
-    diff, lower, _ = stats.welch_lower((new['testMean'], new['testStd'], new['testTrades']),
-                                       (old['testMean'], old['testStd'], old['testTrades']), level)
+    diff, lower, _ = stats.welch_lower((new['testMean'], new['testStd'], n_new), (old['testMean'], old['testStd'], n_old), level)
     pc = f'{float(conf) * 100:g}%'
     corr = f', gecorrigeerd voor {k} geteste recepten' if k > 1 else ''
-    info = {'diffPct': diff, 'lowerPct': lower, 'confidence': float(conf), 'level': level, 'candidates': k}
+    info = {'diffPct': diff, 'lowerPct': lower, 'confidence': float(conf), 'level': level, 'candidates': k,
+            'trades': [n_new, n_old]}
     if lower > 0:
         return True, f'met {pc} zekerheid beter: {_sp(diff)} per trade (ondergrens {_sp(lower)}{corr})', info
     return False, f'niet zeker genoeg beter: ondergrens {_sp(lower)} per trade ({_sp(diff)} gemiddeld, {pc} zekerheid{corr})', info
