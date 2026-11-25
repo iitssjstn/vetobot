@@ -2409,3 +2409,262 @@ class VolStatsAndPractice(HttpGate):
         self.assertEqual(pr['trades'], 5000)
         self.assertAlmostEqual(pr['series'][-1]['cumPct'], pr['sumPct'], places=3)
         self.assertAlmostEqual(pr['series'][0]['cumPct'], -0.03)
+
+
+# ---------- Audit van de statistiek, de proefperiode en het terugzetten ----------
+
+# Tabelwaarden van de t-verdeling (eenzijdig kwantiel p, df vrijheidsgraden), uit de gangbare
+# statistiektabellen, afgerond op 3 decimalen.
+T_TABLE = {
+    1: (3.078, 6.314, 12.706, 31.821, 318.309), 2: (1.886, 2.920, 4.303, 6.965, 22.327),
+    3: (1.638, 2.353, 3.182, 4.541, 10.215), 4: (1.533, 2.132, 2.776, 3.747, 7.173),
+    5: (1.476, 2.015, 2.571, 3.365, 5.893), 6: (1.440, 1.943, 2.447, 3.143, 5.208),
+    7: (1.415, 1.895, 2.365, 2.998, 4.785), 8: (1.397, 1.860, 2.306, 2.896, 4.501),
+    9: (1.383, 1.833, 2.262, 2.821, 4.297), 10: (1.372, 1.812, 2.228, 2.764, 4.144),
+    11: (1.363, 1.796, 2.201, 2.718, 4.025), 12: (1.356, 1.782, 2.179, 2.681, 3.930),
+    13: (1.350, 1.771, 2.160, 2.650, 3.852), 14: (1.345, 1.761, 2.145, 2.624, 3.787),
+    15: (1.341, 1.753, 2.131, 2.602, 3.733), 16: (1.337, 1.746, 2.120, 2.583, 3.686),
+    17: (1.333, 1.740, 2.110, 2.567, 3.646), 18: (1.330, 1.734, 2.101, 2.552, 3.610),
+    19: (1.328, 1.729, 2.093, 2.539, 3.579), 20: (1.325, 1.725, 2.086, 2.528, 3.552),
+    21: (1.323, 1.721, 2.080, 2.518, 3.527), 22: (1.321, 1.717, 2.074, 2.508, 3.505),
+    23: (1.319, 1.714, 2.069, 2.500, 3.485), 24: (1.318, 1.711, 2.064, 2.492, 3.467),
+    25: (1.316, 1.708, 2.060, 2.485, 3.450), 26: (1.315, 1.706, 2.056, 2.479, 3.435),
+    27: (1.314, 1.703, 2.052, 2.473, 3.421), 28: (1.313, 1.701, 2.048, 2.467, 3.408),
+    29: (1.311, 1.699, 2.045, 2.462, 3.396), 30: (1.310, 1.697, 2.042, 2.457, 3.385),
+    60: (1.296, 1.671, 2.000, 2.390, 3.232), 120: (1.289, 1.658, 1.980, 2.358, 3.160),
+    float('inf'): (1.282, 1.645, 1.960, 2.326, 3.090)}
+T_PS = (0.9, 0.95, 0.975, 0.99, 0.999)
+
+
+def _t_tail(t, df, steps=40000):
+    """P(T > t) door numeriek integreren van de dichtheid (Simpson, na x = t / u zodat de staart
+    eindig wordt): een onafhankelijke controle, zonder de formules van stats.py."""
+    c = math.exp(math.lgamma((df + 1) / 2) - math.lgamma(df / 2)) / math.sqrt(df * math.pi)
+    u = np.linspace(1e-12, 1.0, steps + 1)
+    x = t / u
+    f = c * (1 + x * x / df) ** (-(df + 1) / 2) * t / (u * u)
+    w = np.ones(steps + 1)
+    w[1:-1:2], w[2:-1:2] = 4, 2
+    return float((f * w).sum() * (1.0 / steps) / 3)
+
+
+class AuditStats(unittest.TestCase):
+    """Rekenwerk van stats.py tegen tabellen en een onafhankelijke berekening."""
+
+    def test_t_quantile_against_tables(self):
+        import stats
+        for df, row in T_TABLE.items():
+            for p, want in zip(T_PS, row):
+                got = stats.t_quantile(p, df)
+                self.assertLess(abs(got - want), 0.0006 + want * 1e-5, f'df={df} p={p}: {got} in plaats van {want}')
+                self.assertAlmostEqual(stats.t_quantile(1 - p, df), -got, places=6, msg='symmetrisch')
+
+    def test_t_quantile_at_bonferroni_levels(self):
+        import stats
+        # 1 - 0,05/k voor k = 50 en 200 geteste recepten, en een nog strengere: de staartkans van het
+        # kwantiel moet kloppen (hooguit 1% ernaast), ook bij weinig vrijheidsgraden en niet-gehele df.
+        for p in (1 - 0.05 / 50, 1 - 0.05 / 200, 0.9999):
+            for df in list(range(3, 31)) + [2.5, 3.7, 7.3, 60, 120, 1000]:
+                tail = _t_tail(stats.t_quantile(p, df), df)
+                self.assertLess(abs(tail - (1 - p)) / (1 - p), 0.01, f'df={df} p={p}: staart {tail}')
+        self.assertAlmostEqual(stats.t_quantile(0.999, None), 3.0902, places=4)
+        self.assertAlmostEqual(stats.t_quantile(0.999, float('nan')), 3.0902, places=4)
+        self.assertAlmostEqual(stats.t_quantile(0.5, 4), 0.0, places=9)
+
+    def test_welch_and_pooled(self):
+        import stats
+        rnd = np.random.default_rng(1)
+        a, b = rnd.normal(0.5, 1.0, 10), rnd.normal(0.1, 2.0, 30)
+        diff, lower, df = stats.welch_lower((a.mean(), a.std(ddof=1), 10), (b.mean(), b.std(ddof=1), 30), 0.95)
+        v1, v2 = a.var(ddof=1) / 10, b.var(ddof=1) / 30
+        self.assertAlmostEqual(df, (v1 + v2) ** 2 / (v1 ** 2 / 9 + v2 ** 2 / 29))
+        self.assertAlmostEqual(lower, diff - stats.t_quantile(0.95, df) * math.sqrt(v1 + v2))
+        # Samenvoegen: gelijk aan alle trades achter elkaar, ook met verschil tussen de rondes.
+        parts = [rnd.normal(m, s, n) for m, s, n in ((0.3, 1.0, 12), (-0.4, 0.5, 7), (1.0, 2.0, 1), (0.0, 1.5, 40))]
+        rows = [(len(x), float(x.mean()), float(x.std(ddof=1)) if len(x) > 1 else 0.0) for x in parts]
+        mean, sd, n = stats.pooled(rows)
+        allx = np.concatenate(parts)
+        self.assertEqual(n, 60)
+        self.assertAlmostEqual(mean, float(allx.mean()))
+        self.assertAlmostEqual(sd, float(allx.std(ddof=1)))
+        # Randgevallen: niets, één trade, onbekende of kapotte spreiding.
+        self.assertIsNone(stats.pooled([]))
+        self.assertIsNone(stats.pooled([(1, 0.5, 0.0)]))
+        self.assertIsNone(stats.pooled([(0, 0.5, 1.0)]))
+        for bad in (None, float('nan'), float('inf')):
+            self.assertIsNone(stats.pooled([(10, 0.5, 1.0), (10, 0.5, bad)]))
+        self.assertEqual(stats.pooled([(0, 9.9, None), (5, 0.5, 1.0)])[2], 5, 'lege ronde telt niet mee')
+        self.assertEqual(stats.mean_upper([], 0.9), (None, None, None))
+        self.assertEqual(stats.mean_upper([0.4], 0.9), (0.4, None, None))
+
+    def test_effective_trades_per_unique_period(self):
+        import stats
+        d = 86400.0
+        same = [(60, 0, 9 * d)] * 6
+        self.assertAlmostEqual(stats.effective_trades(same), 60, msg='zes keer dezelfde periode: 60 trades, niet 360')
+        self.assertAlmostEqual(stats.effective_trades([(60, 0, 9 * d), (60, 9 * d, 18 * d)]), 120, msg='los van elkaar: optellen')
+        self.assertAlmostEqual(stats.effective_trades([(60, 0, 10 * d), (60, 5 * d, 15 * d)]), 90, msg='half overlappend')
+        self.assertAlmostEqual(stats.effective_trades([(60, 0, 9 * d), (30, None, None)]), 90, msg='onbekende periode: los geteld')
+        self.assertEqual(stats.effective_trades([]), 0)
+        self.assertLessEqual(stats.effective_trades([(10, 0, 9 * d), (100, 0, 1 * d)]), 110)
+
+
+def _sim_round(trades, start_h, days=9.0):
+    """Een eindtest-ronde zoals add_round hem bewaart, met een eindtest vanaf start_h uur."""
+    from datetime import datetime, timedelta, timezone
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(hours=start_h)
+    fmt = lambda t: t.strftime('%Y-%m-%d %H:%M')
+    x = np.asarray(trades, dtype=float)
+    part = {'trades': len(x), 'avgPct': float(x.mean()), 'stdPct': float(x.std(ddof=1)), 'maxDrawdownPct': 4.0,
+            'edgePct': float(x.mean()), 'grossWinPct': float(x[x > 0].sum()), 'grossLossPct': float(-x[x < 0].sum())}
+    return {'ok': True, 'ts': t0.timestamp() + days * 86400, 'testDays': days, 'test': part, 'val': dict(part),
+            'periods': {'eindtest': [fmt(t0), fmt(t0 + timedelta(days=days))]}}
+
+
+def _sim_promotions(s, delta, n, rounds, trials, seed, same_period=True, k=1, jitter=0.2):
+    """Hoe vaak haalt kandidaat B de statistische toets tegen A? Beide recepten hebben een echte
+    verwachting van 0,2% (B: + delta) per trade, std 1%. Elke ronde test hetzelfde recept opnieuw
+    op (bijna) dezelfde eindtest (6 uur later, zoals retestHours), met grotendeels dezelfde trades
+    (ander zaadje: kleine afwijking `jitter`). same_period=False: elke ronde een nieuwe periode."""
+    rnd = np.random.default_rng(seed)
+    hits = 0
+    for _ in range(trials):
+        ents = []
+        for mu in (0.2 + delta, 0.2):
+            base = rnd.normal(mu, 1.0, n)
+            rs = []
+            for r in range(rounds):
+                if same_period:
+                    rs.append(_sim_round(base + rnd.normal(0, jitter, n), 6 * r))
+                else:
+                    rs.append(_sim_round(rnd.normal(mu, 1.0, n), 24 * 10 * r))
+            ents.append({'key': 'x', 'recipe': {'timeframe': '15m'}, 'rounds': rs})
+        out = s.stat_test(s.recipe_metrics(ents[0]), s.recipe_metrics(ents[1]), 0.95, k)
+        hits += bool(out and out[0])
+    return hits / trials
+
+
+class AuditPseudoReplication(GateBase):
+    """Rondes die dezelfde eindtestperiode opnieuw testen, zijn geen nieuwe, onafhankelijke trades."""
+
+    def test_repeated_rounds_on_same_period_do_not_inflate_evidence(self):
+        # Gelijke echte verwachting: de toets mag hooguit ~5% (eenzijdig, 95%) onterecht promoveren.
+        # Telden de 6 herhaalde rondes als 360 losse trades, dan was dat ~25%.
+        rate = _sim_promotions(self.s, 0.0, 60, 6, 300, seed=11)
+        self.assertLess(rate, 0.10, f'onterecht gepromoot in {rate:.0%} van de gevallen')
+
+    def test_real_new_periods_still_count_fully(self):
+        # Echt nieuwe periodes (los van elkaar) tellen wel volledig: de toets wordt daar niet strenger.
+        s = self.s
+        rnd = np.random.default_rng(3)
+        e = {'key': 'x', 'recipe': {'timeframe': '15m'}, 'rounds': [_sim_round(rnd.normal(0.2, 1, 60), 24 * 10 * r) for r in range(3)]}
+        m = s.recipe_metrics(e)
+        self.assertEqual(m['testTrades'], 180)
+        self.assertAlmostEqual(m['testEffTrades'], 180)
+        same = {**e, 'rounds': [_sim_round(rnd.normal(0.2, 1, 60), 0) for _ in range(3)]}
+        self.assertAlmostEqual(s.recipe_metrics(same)['testEffTrades'], 60)
+        # Gelijke verwachting op nieuwe periodes: ook ~5%.
+        self.assertLess(_sim_promotions(s, 0.0, 60, 3, 300, seed=5, same_period=False), 0.10)
+        # Een echt beter recept komt er met genoeg nieuwe periodes wel door.
+        self.assertGreater(_sim_promotions(s, 0.4, 100, 3, 100, seed=6, same_period=False), 0.8)
+
+    def test_rounds_without_period_use_time_and_test_days(self):
+        s = self.s
+        r1 = _sim_round([0.1, 0.3, -0.2, 0.5], 0)
+        r2 = _sim_round([0.1, 0.3, -0.2, 0.5], 6)
+        for r in (r1, r2):
+            r['periods'] = None
+        m = s.recipe_metrics({'key': 'x', 'recipe': {'timeframe': '15m'}, 'rounds': [r1, r2]})
+        self.assertEqual(m['testTrades'], 8)
+        self.assertLess(m['testEffTrades'], 5, 'zelfde eindtest (op 6 uur na): bijna dezelfde trades')
+
+
+class AuditRollback(HttpGate):
+    """Terugzetten: nooit naar een model dat (in een eerdere versie van dezelfde proef) zakte."""
+
+    def fail_b_after_retrain(self):
+        s = self.s
+        self.finish(RA, 'a1', RP())
+        self.finish(RA, 'a2', RP())
+        self.finish(RB, 'b1', RP(edge=0.4))
+        self.assertEqual(self.finish(RB, 'b2', RP(edge=0.4))[0], 'promoted')       # v4, op proef
+        d, why = self.finish(RB, 'b3', RP(edge=0.4))                               # v5: zelfde recept, proef loopt door
+        self.assertEqual(d, 'promoted', why)
+        reg = s.registry()
+        self.assertEqual(reg.get(5)['probation']['startVersion'], 4)
+        s.add_agent_trades(trades_around(RB, -0.3))
+        self.assertEqual(reg.get(5)['probation']['status'], 'mislukt')
+        self.assertEqual((reg.active(), self.published()), (2, (A_key(RA), 'a2')))
+        return reg
+
+    def test_never_back_to_a_failed_model_from_an_inherited_probation(self):
+        s = self.s
+        reg = self.fail_b_after_retrain()
+        # Daarna wordt C gepromoot en zakt ook: terug naar A (v2), niet naar v4 (B, dezelfde gezakte proef).
+        self.finish(RC, 'c1', RP(edge=0.5))
+        d, why = self.finish(RC, 'c2', RP(edge=0.5))
+        self.assertEqual(d, 'promoted', why)
+        c_ver = reg.active()
+        s.add_agent_trades(trades_around(RC, -0.3, n=30))
+        self.assertEqual(reg.get(c_ver)['probation']['status'], 'mislukt')
+        self.assertEqual(reg.get(c_ver)['probation']['restoredVersion'], 2)
+        self.assertEqual((reg.active(), self.published()), (2, (A_key(RA), 'a2')))
+        self.assertEqual(s.load_agents()['published']['key'], A_key(RA))
+        self.assertEqual(set(s.active_cooldowns(reg)), {A_key(RB), A_key(RC)})
+        # Ook na de afkoelperiode niet automatisch terug naar het gezakte B-model.
+        reg.set_meta('cooldowns', {})
+        self.assertIsNone(s._rollback_target(reg, 99, A_key(RA), s.load_agents()))
+
+    def test_rollback_is_atomic_against_feedback(self):
+        # Feedback (add_agent_trades) leest en schrijft agents.json; een terugzetting tegelijk mag niet
+        # verloren gaan (anders wijst agents.json 'published' naar een ander recept dan agent.json).
+        from unittest import mock
+        s = self.s
+        self.finish(RA, 'a1', RP())
+        self.finish(RB, 'b1', RP(edge=0.4))
+        self.finish(RB, 'b2', RP(edge=0.4))
+        self.assertEqual(self.published()[0], A_key(RB))
+        inside, go = threading.Event(), threading.Event()
+        real = s.load_agents
+
+        def slow_load():
+            d = real()
+            if threading.current_thread().name == 'feedback':
+                inside.set()
+                go.wait(5)
+            return d
+        out = {}
+        with mock.patch.object(s, 'load_agents', slow_load):
+            t1 = threading.Thread(target=lambda: s.add_agent_trades([AT(RA, 0.1)]), name='feedback')
+            t1.start()
+            self.assertTrue(inside.wait(5))
+            t2 = threading.Thread(target=lambda: out.setdefault('r', s.registry_rollback({'version': 1})), name='rollback')
+            t2.start()
+            t2.join(0.5)
+            go.set()
+            t1.join(10)
+            t2.join(10)
+        self.assertEqual(out['r'][0], 200, out)
+        self.assertEqual(self.published()[0], A_key(RA))
+        self.assertEqual(s.load_agents()['published']['key'], A_key(RA), 'agents.json past bij agent.json')
+        self.assertEqual(s.load_agents()['live'][A_key(RA)]['n'], 1, 'en de feedback telt ook mee')
+
+
+class AuditProbationTrades(unittest.TestCase):
+    """Koppeling trade -> versie bij de proef: op het openingsmoment, met of zonder tijdzone."""
+
+    def test_trades_belong_to_version_by_opening_time(self):
+        import probation
+        from datetime import datetime, timezone
+        since = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc).timestamp()
+        rows = [{'recipe': 'b', 'pct': 1.0, 'mode': 'paper', 'openedAt': '2026-03-01T11:59:00Z', 'closedAt': '2026-03-01T13:00:00Z'},
+                {'recipe': 'b', 'pct': 2.0, 'mode': 'live', 'openedAt': '2026-03-01T12:00:00+00:00', 'closedAt': '2026-03-01T13:00:00Z'},
+                {'recipe': 'b', 'pct': 3.0, 'mode': 'paper', 'openedAt': '2026-03-01T14:00:00+02:00', 'closedAt': '2026-03-01T15:00:00Z'},
+                {'recipe': 'b', 'pct': 4.0, 'mode': 'paper', 'openedAt': '', 'at': '2026-03-01T13:00:00Z'},
+                {'recipe': 'b', 'pct': 'x', 'mode': 'paper', 'openedAt': '2026-03-01T13:00:00Z'},
+                {'recipe': 'b', 'pct': 5.0, 'mode': 'paper', 'openedAt': '2026-03-01T13:00:00Z', 'explore': True}]
+        got = probation.trades_in(probation.real_trades(rows), 'b', since)
+        # Voor het promotiemoment geopend (ook al na sluiten): niet; 14:00+02:00 = 12:00 UTC: wel.
+        self.assertEqual(sorted(t['pct'] for t in got), [2.0, 3.0, 4.0])
+        self.assertEqual({t['mode'] for t in got}, {'paper', 'live'})
+        self.assertEqual(probation.trades_in(probation.real_trades(rows), 'b', since, since + 1), [t for t in got if t['open'] < since + 1])

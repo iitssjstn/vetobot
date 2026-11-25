@@ -26,7 +26,7 @@ import secrets
 import threading
 import time
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import agent as agent_mod
@@ -894,19 +894,23 @@ def add_agent_trades(items):
     with feedback_lock:
         rows = (read_json('agent_trades.json', []) + clean)[-5000:]
         write_json('agent_trades.json', rows)
-    data = load_agents()
-    # Trades van de verkenner leren mee, maar tellen niet als resultaat in de praktijk.
-    for t in (t for t in clean if not t['explore']):
-        lv = data['live'].setdefault(t.get('recipe') or t['timeframe'], {'n': 0, 'sum': 0.0, 'wins': 0})
-        lv['n'] += 1
-        lv['sum'] += t['pct']
-        lv['wins'] += t['pct'] > 0
-        if lv['n'] == livecheck.MIN_TRADES:
-            avg = lv['sum'] / lv['n']
-            think(f"Na {lv['n']} echte trades met dit recept doe ik gemiddeld {thoughts.pct(avg)} per trade. "
-                  'Of ik live mag, hangt af van alle eisen op de pagina Trainer (en daarna van jouw akkoord).',
-                  kind='result' if avg >= livecheck.MIN_AVG else 'warn')
-    write_json('agents.json', data)
+    # agents.json lezen-aanpassen-schrijven onder publish_lock: anders kan een leerronde of een
+    # terugzetting die tegelijk agents.json schrijft verloren gaan ('published' wijst dan naar een
+    # ander recept dan agent.json), of gaan deze tellingen verloren. Zie AuditRollback.
+    with publish_lock:
+        data = load_agents()
+        # Trades van de verkenner leren mee, maar tellen niet als resultaat in de praktijk.
+        for t in (t for t in clean if not t['explore']):
+            lv = data['live'].setdefault(t.get('recipe') or t['timeframe'], {'n': 0, 'sum': 0.0, 'wins': 0})
+            lv['n'] += 1
+            lv['sum'] += t['pct']
+            lv['wins'] += t['pct'] > 0
+            if lv['n'] == livecheck.MIN_TRADES:
+                avg = lv['sum'] / lv['n']
+                think(f"Na {lv['n']} echte trades met dit recept doe ik gemiddeld {thoughts.pct(avg)} per trade. "
+                      'Of ik live mag, hangt af van alle eisen op de pagina Trainer (en daarna van jouw akkoord).',
+                      kind='result' if avg >= livecheck.MIN_AVG else 'warn')
+        write_json('agents.json', data)
     # Licht: alleen als de actieve versie op proef is, worden de trades geteld (zie _check_probation).
     try:
         check_probation()
@@ -1231,11 +1235,36 @@ def recipe_metrics(entry):
     st = agent_search.status(entry)
     pf, known = agent_search.test_profit_factor(entry)
     ts = agent_search.test_stats(entry)
+    eff = _safe(lambda: stats.effective_trades(_test_spans(entry)), 'unieke eindtest-trades tellen') if ts else None
     return {'status': st, 'order': STATUS_ORDER.get(st, 0), 'ratio': sc['ratio'], 'avg': sc['avg'], 'edge': sc['edge'],
             'tested': sc['tested'], 'testAvg': sc['test']['avg'], 'testDrawdown': sc['test']['drawdown'],
             'testProfitFactor': pf, 'pfKnown': known,
             # Voor de statistische toets: gemiddelde, spreiding en aantal trades over alle eindtests samen.
-            'testMean': ts[0] if ts else None, 'testStd': ts[1] if ts else None, 'testTrades': ts[2] if ts else None}
+            'testMean': ts[0] if ts else None, 'testStd': ts[1] if ts else None, 'testTrades': ts[2] if ts else None,
+            # Zoveel van die trades zijn echt los van elkaar (rondes op dezelfde eindtest tellen één keer).
+            'testEffTrades': eff}
+
+
+def _test_spans(entry):
+    """Per eindtest-ronde (dezelfde rondes als agent_search.test_stats): (trades, begin, eind) van de
+    eindtestperiode als unix-tijd. Uit periods['eindtest'] (UTC, 'JJJJ-MM-DD UU:MM'); oudere rondes
+    zonder periodes: de testDays dagen tot het moment van de ronde (de eindtest is altijd de nieuwste
+    data). Onbekend: (trades, None, None)."""
+    out = []
+    for x in (entry or {}).get('rounds', []):
+        t = x.get('test') or {}
+        if not t.get('trades') or t.get('avgPct') is None:
+            continue
+        a = b = None
+        span = ((x.get('periods') or {}).get('eindtest')) or None
+        try:
+            a, b = (datetime.strptime(str(s), '%Y-%m-%d %H:%M').replace(tzinfo=timezone.utc).timestamp() for s in span)
+        except (TypeError, ValueError):
+            a = b = None
+        if (a is None or b is None or b <= a) and _num(x.get('ts')) and _num(x.get('testDays')) and x['testDays'] > 0:
+            a, b = x['ts'] - x['testDays'] * 86400, x['ts']
+        out.append((t['trades'], a, b))
+    return out
 
 
 def _num(v):
@@ -1265,20 +1294,25 @@ def _sp(v, d=2):
 def stat_test(new, old, conf, candidates=1):
     """Statistische toets op de eindtests: is het gemiddelde rendement per trade van `new` met
     betrouwbaarheid `conf` hoger dan dat van `old`? Eenzijdige Welch t-toets op (gemiddelde, std,
-    aantal trades) van alle eindtest-rondes samen. Correctie voor selectie (Bonferroni): de beste van
+    aantal trades) van alle eindtest-rondes samen, waarbij rondes op dezelfde eindtestperiode niet als
+    extra trades tellen (testEffTrades, zie stats.effective_trades). Correctie voor selectie (Bonferroni): de beste van
     `candidates` geteste recepten is vaak toevallig de beste, dus de toets gebruikt 1 - (1 - conf) /
     candidates als betrouwbaarheid; hoe meer recepten geprobeerd, hoe strenger.
     Geeft (ok, reden, cijfers) of None als de toets niet kan (oudere rondes zonder spreiding)."""
     keys = ('testMean', 'testStd', 'testTrades')
     if not all(_num((new or {}).get(k)) and _num((old or {}).get(k)) for k in keys) or new['testTrades'] < 2 or old['testTrades'] < 2:
         return None
+    # Het aantal trades voor de standaardfout: alleen de trades die echt los van elkaar zijn. Rondes
+    # die dezelfde eindtestperiode opnieuw testen, tellen niet als nieuwe trades (stats.effective_trades).
+    eff = lambda m: min(m['testTrades'], max(m['testEffTrades'], 2.0)) if _num(m.get('testEffTrades')) else m['testTrades']
+    n_new, n_old = eff(new), eff(old)
     k = max(1, int(candidates or 1))
     level = 1 - (1 - float(conf)) / k
-    diff, lower, _ = stats.welch_lower((new['testMean'], new['testStd'], new['testTrades']),
-                                       (old['testMean'], old['testStd'], old['testTrades']), level)
+    diff, lower, _ = stats.welch_lower((new['testMean'], new['testStd'], n_new), (old['testMean'], old['testStd'], n_old), level)
     pc = f'{float(conf) * 100:g}%'
     corr = f', gecorrigeerd voor {k} geteste recepten' if k > 1 else ''
-    info = {'diffPct': diff, 'lowerPct': lower, 'confidence': float(conf), 'level': level, 'candidates': k}
+    info = {'diffPct': diff, 'lowerPct': lower, 'confidence': float(conf), 'level': level, 'candidates': k,
+            'trades': [n_new, n_old]}
     if lower > 0:
         return True, f'met {pc} zekerheid beter: {_sp(diff)} per trade (ondergrens {_sp(lower)}{corr})', info
     return False, f'niet zeker genoeg beter: ondergrens {_sp(lower)} per trade ({_sp(diff)} gemiddeld, {pc} zekerheid{corr})', info
@@ -1777,8 +1811,20 @@ def start_probation(reg, version, key, expected, since, prev_version=None, prev_
 def _rollback_target(reg, before, failed_key, data):
     """De nieuwste eerdere gepromote versie (van vóór de proef) die nog bruikbaar is: met snapshot,
     niet te riskant, niet zelf door een proef gezakt en niet van het mislukte recept.
-    Geeft (versie, record, snapshot) of None."""
-    for r in reg.versions(2000):
+    Geeft (versie, record, snapshot) of None.
+    Gezakt telt ook voor een versie waarvan de proef doorliep in een latere versie van hetzelfde
+    recept (opnieuw getraind) en daar mislukte: die versie zelf staat dan op status None, maar hoort
+    bij dezelfde gezakte proef (van startVersion tot de versie waar hij mislukte). Recepten in de
+    afkoelperiode ook niet."""
+    rows = reg.versions(2000)
+    failed = []   # (recept, van versie, tot en met versie) van mislukte proeven
+    for r in rows:
+        p = r.get('probation') or {}
+        if p.get('status') == 'mislukt':
+            failed.append((p.get('recipeKey') or r.get('publishedKey') or r.get('recipeKey'),
+                           p.get('startVersion') or r['version'], r['version']))
+    cooling = _safe(lambda: active_cooldowns(reg), 'afkoelperiodes lezen', {}) or {}
+    for r in rows:
         if r['version'] >= before or r['decision'] != 'promoted' or not r['hasSnapshot']:
             continue
         if (r.get('probation') or {}).get('status') == 'mislukt':
@@ -1787,7 +1833,9 @@ def _rollback_target(reg, before, failed_key, data):
         if not _valid_snapshot(snap):
             continue
         key = snap.get('recipeKey') or r.get('publishedKey') or r.get('recipeKey')
-        if key == failed_key or _risky_snapshot(snap, data['recipes'].get(key)):
+        if key == failed_key or key in cooling or _risky_snapshot(snap, data['recipes'].get(key)):
+            continue
+        if any(k == key and lo <= r['version'] <= hi for k, lo, hi in failed):
             continue
         return r['version'], r, snap
     return None
