@@ -343,6 +343,43 @@ export function createApp({ users, manager, log = console }) {
     return { ok: true, approved: settings.agentLive.approved };
   }));
 
+  // Meerdere recepten tegelijk op eigen risico live zetten (zelfde controles als bij één recept, per recept
+  // een eigen verliesgrens van maxLossEur), of alles in één keer intrekken. Eén wachtwoord, één bevestiging.
+  app.post('/api/agent/live/bulk', wrap((req, { bot, settings }) => {
+    const { recipes, maxLossEur, confirmText, password, revokeAll } = req.body ?? {};
+    confirm(req, password);
+    if (revokeAll) {
+      const { approved, risky } = settings.agentLive;
+      const keys = [...new Set([...approved, ...Object.keys(risky ?? {})])];
+      for (const k of keys) {
+        settings.setAgentLiveRisky(k, null);
+        settings.setAgentLive(k, false);
+      }
+      manager.refreshAgent?.().catch(() => {});
+      log.warn(`AI-trader: alle ${keys.length} live recepten ingetrokken door ${req.user.username}`);
+      return { ok: true, revoked: keys };
+    }
+    if (!Array.isArray(recipes) || !recipes.length) throw new Error('Kies minstens één recept');
+    if (recipes.length > 50) throw new Error('Hooguit 50 recepten tegelijk');
+    if (String(confirmText ?? '').trim().toUpperCase() !== 'EIGEN RISICO') throw new Error('Typ EIGEN RISICO om te bevestigen');
+    const n = Number(maxLossEur);
+    if (!Number.isFinite(n) || n < 1) throw new Error('Kies een verliesgrens van minstens € 1');
+    const parts = allAgentParts(bot.getAgent?.());
+    const done = [], skipped = [];
+    for (const key of [...new Set(recipes.map(String))]) {
+      const part = parts.find((p) => p?.recipeKey === key);
+      if (!part) { skipped.push({ recipe: key, reason: 'dit recept gebruikt de AI-trader nu niet' }); continue; }
+      if (!bot.agentRiskyStage(part)) { skipped.push({ recipe: key, reason: `staat op "${part.stage}"; alleen getest of betrouwbaar mag op eigen risico` }); continue; }
+      settings.setAgentLiveRisky(key, n);
+      done.push(key);
+    }
+    if (done.length) {
+      manager.refreshAgent?.().catch(() => {});
+      log.warn(`AI-trader: ${done.length} recepten live op eigen risico gezet (verliesgrens € ${n.toFixed(2)} per recept) door ${req.user.username}`);
+    }
+    return { ok: true, done, skipped };
+  }));
+
   // Gesprekken van het AI-team, nieuwste eerst.
   // Learning: wat de bot leert. Het beslissingsdagboek van deze gebruiker (goede en slechte beslissingen,
   // gemiste kansen, onterechte afwijzingen) en de modelversies van de leerserver (alleen lezen).

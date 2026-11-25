@@ -2070,8 +2070,9 @@ function agentLiveHtml(a, bot, sign, nl) {
           : '<span class="badge soft">nog niet alle eisen gehaald</span> <span class="muted">· op eigen risico kan pas als hij de backtests haalt</span>';
     const on = r.approved || rk;
     const badge = r.approved ? '<span class="badge ok">live</span>' : rk ? '<span class="badge wait">live · eigen risico</span>' : '<span class="badge soft">niet live</span>';
+    const pick = !on && r.riskyAllowed ? `<label style="float:right;font-size:13px;cursor:pointer"><input type="checkbox" data-bulk-pick="${k}"> kies</label>` : '';
     return `<div style="margin:0 0 12px;padding:10px 12px;border:1px solid ${on ? 'var(--up)' : 'var(--line)'};border-radius:10px;overflow-wrap:anywhere">
-      <div>${badge} <b>${esc(recipeName(a, r.recipe))}</b></div>
+      ${pick}<div>${badge} <b>${esc(recipeName(a, r.recipe))}</b></div>
       <div class="muted" style="font-size:12.5px">${recipeName(a, r.recipe) !== r.recipe ? `${esc(r.recipe)} · ` : ''}${esc(r.stage ?? '')}${r.extra ? ' · extra recept: alleen in gebruik als je het live zet' : ''}${r.stale ? ' · <span class="warnc">de leerserver stuurt dit recept niet meer mee; de bot gebruikt zijn laatst bekende versie</span>' : ''}</div>
       <div style="margin:4px 0 6px;font-size:13.5px;line-height:1.6">${checks}</div>${btn}</div>`;
   }).join('');
@@ -2086,6 +2087,18 @@ function agentLiveHtml(a, bot, sign, nl) {
   ]) : '<p class="muted" style="margin:0">Nog geen paper-trades sinds de nieuwe manier van meten.</p>';
   return `<div class="sub-h" style="margin:0 0 6px">${icon('target')}Live-toelating</div>
     ${recs.length || bot?.missingLive?.length ? liveOnHtml(a, bot, nl) : ''}
+    ${recs.some((r) => !(r.approved || r.risky) && r.riskyAllowed) || recs.some((r) => r.approved || r.risky) ? `<div class="panel" style="margin:0 0 12px;padding:10px 12px">
+      <div class="sub-h" style="margin:0 0 6px">${icon('list')}Meerdere tegelijk</div>
+      <div class="row-actions" style="flex-wrap:wrap">
+        <button class="btn sm" type="button" id="bulk-all">Alles kiezen</button>
+        <input type="number" min="1" step="1" placeholder="Verliesgrens per recept (€)" id="bulk-max" style="max-width:190px">
+        <input type="text" placeholder="Typ EIGEN RISICO" id="bulk-confirm" autocomplete="off" style="max-width:170px">
+        <button class="btn danger" type="button" id="bulk-go">Gekozen recepten op eigen risico live</button>
+        ${recs.some((r) => r.approved || r.risky) || bot?.missingLive?.length ? '<button class="btn" type="button" id="bulk-revoke">Alles intrekken</button>' : ''}
+        <span class="msg" id="bulk-msg"></span>
+      </div>
+      <div class="help">Vink hieronder recepten aan (alleen getest of betrouwbaar). Elk recept krijgt zijn eigen verliesgrens van dit bedrag en stopt vanzelf als die bereikt is. Je wachtwoord vul je onderaan in.</div>
+    </div>` : ''}
     <p class="muted" style="margin:0 0 10px;font-size:13.5px">Live handelt de AI-trader pas als een recept <b>alle</b> eisen haalt én jij het daarna zelf toestaat. Valt een eis later weg, dan stopt hij live vanzelf (met een melding) en trekt hij je akkoord in. ${bot?.smallStart === false ? 'Live gebruikt hij meteen je eigen inzet ("Live beginnen met de kleinste inzet" staat uit).' : 'Live begint hij met de kleinste inzet tot hij live 20 trades met gemiddeld winst heeft (uit te zetten bij Instellingen → Strategie).'} Op <b>eigen risico</b> gebruikt hij altijd je eigen inzet, met een verliesgrens die jij kiest.</p>
     ${list || '<p class="muted">De AI-trader gebruikt nog geen recept.</p>'}
     ${recs.some((r) => r.ready || r.approved || r.risky || r.riskyAllowed) || bot?.missingLive?.length ? `<div class="row-actions"><input id="ag-live-pass" type="password" placeholder="Je wachtwoord" autocomplete="current-password" style="max-width:240px"><span class="msg" id="ag-live-msg"></span></div>` : ''}
@@ -2120,6 +2133,25 @@ document.addEventListener('click', async (e) => {
   } catch (err) {
     msg(err.message, 'err');
   }
+});
+document.addEventListener('click', async (e) => {
+  const id = e.target?.id;
+  if (!['bulk-all', 'bulk-go', 'bulk-revoke'].includes(id)) return;
+  const msg = (t, c) => { const m = $('bulk-msg'); if (m) { m.className = `msg ${c ?? ''}`; m.textContent = t; } };
+  const boxes = [...document.querySelectorAll('[data-bulk-pick]')];
+  if (id === 'bulk-all') { const all = boxes.every((b) => b.checked); boxes.forEach((b) => { b.checked = !all; }); return; }
+  try {
+    if (id === 'bulk-revoke') {
+      if (!confirm('Alle live recepten intrekken? De bot koopt dan live niets meer (open posities worden nog bewaakt).')) return;
+      const r = await api('api/agent/live/bulk', { revokeAll: true, password: $('ag-live-pass')?.value ?? '' });
+      msg(`${r.revoked.length} recept(en) ingetrokken.`, 'ok');
+    } else {
+      const recipes = boxes.filter((b) => b.checked).map((b) => b.dataset.bulkPick);
+      const r = await api('api/agent/live/bulk', { recipes, maxLossEur: $('bulk-max').value, confirmText: $('bulk-confirm').value, password: $('ag-live-pass')?.value ?? '' });
+      msg(`${r.done.length} recept(en) live op eigen risico.${r.skipped.length ? ` Overgeslagen: ${r.skipped.map((x) => `${x.recipe} (${x.reason})`).join('; ')}` : ''}`, r.skipped.length ? '' : 'ok');
+    }
+    load();
+  } catch (err) { msg(err.message, 'err'); }
 });
 // ---------- Beloningen: wordt de AI-trader beter? ----------
 // Elke trade is een beloning (▲, winst na kosten) of een straf (▼, verlies). Positie boven/onder de
