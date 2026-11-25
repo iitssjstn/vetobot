@@ -2732,7 +2732,10 @@ function safetyRender(z, mode) {
   const rc = z.reconcile;
   const KIND = { mist: 'minder op Bitvavo dan de bot denkt', extra: 'coins op Bitvavo zonder positie in de bot', 'stop-mist': 'positie zonder stop bij Bitvavo' };
   $('safety-hint').textContent = rc?.at ? `laatste controle ${String(rc.at).replace('T', ' ').slice(0, 16)}` : '';
+  const bb = z.buyBlock;
   $('safety').innerHTML = `
+    ${bb?.blocked ? `<div class="alert err" style="margin:0 0 10px">${icon('alert')}<div><b>Nieuwe aankopen staan stil</b> tot dit is opgelost. Bewaken, verkopen en stop-orders gaan gewoon door.
+      <ul style="margin:6px 0 0;padding-left:18px">${(bb.reasons ?? []).map((r) => `<li>${esc(r)}</li>`).join('')}</ul></div></div>` : ''}
     <p class="muted" style="margin:0 0 8px;font-size:13.5px">${es.enabled
       ? 'Bij elke live aankoop zet de bot ook een <b>stop-loss bij Bitvavo</b> op de noodstop. Die werkt ook als je server of internet uitvalt. Verkoopt de bot zelf, dan haalt hij die stop eerst weg.'
       : 'De stop-loss bij Bitvavo staat uit (Instellingen → Risico). De bot bewaakt de noodstop dan alleen zelf, zolang hij draait.'}</p>

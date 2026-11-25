@@ -23,6 +23,11 @@ export function createExchange(secrets) {
 
 export const hasTradingKeys = (ex) => Boolean(ex.apiKey && ex.secret);
 
+// Weigerde Bitvavo de order duidelijk (dan is er zeker niets gebeurd)? Ongeldige order, te weinig saldo,
+// keys of rechten. Bij al het andere (time-out, verbinding weg, order niet gevuld) is de uitkomst onzeker.
+export const isOrderRefusal = (err) => err instanceof ccxt.InvalidOrder || err instanceof ccxt.InsufficientFunds || err instanceof ccxt.BadSymbol || err instanceof ccxt.AuthenticationError
+  || err instanceof ccxt.PermissionDenied || err instanceof ccxt.AccountSuspended || /^Bitvavo-keys ontbreken/.test(String(err?.message ?? ''));
+
 // ---------- Gedeelde marktdata voor meerdere gebruikers ----------
 // Bitvavo telt de rate limit per IP-adres, en alle gebruikers draaien op dezelfde server.
 // Daarom halen alle bots koersen en candles via één publieke verbinding met een korte cache.
@@ -392,6 +397,23 @@ export class LiveBroker {
     const state = o?.status === 'closed' ? 'filled' : o?.status === 'canceled' || o?.status === 'expired' || o?.status === 'rejected' ? 'canceled' : 'open';
     const fill = filled > 0 ? this.#fillOf({ ...o, average: o.average ?? (Number.isFinite(o.cost) && filled ? o.cost / filled : o.price) }, 'sell', pair) : null;
     return { state, filled, fill };
+  }
+
+  // Zoekt een openstaande stop-order (verkoop) voor deze hoeveelheid en stopprijs bij Bitvavo. Voor als
+  // een eerdere poging een fout gaf terwijl de order misschien wél is aangemaakt (time-out, antwoord
+  // verloren): dan die overnemen in plaats van een tweede te zetten. Geeft { orderId, stopPrice, amount } of null.
+  async findStop(pair, amount, stopPrice) {
+    this.#requireKeys();
+    if (typeof this.ex.fetchOpenOrders !== 'function') return null;
+    await this.ex.loadMarkets();
+    let amt;
+    try { amt = Number(this.ex.amountToPrecision(pair, amount)); } catch { return null; }
+    const trigger = Number(this.ex.priceToPrecision(pair, stopPrice));
+    const near = (a, b, rel) => a > 0 && b > 0 && Math.abs(a - b) <= b * rel;
+    const open = await this.ex.fetchOpenOrders(pair);
+    const o = (open ?? []).find((x) => x?.side === 'sell' && /^stoploss$/i.test(String(x.type ?? x.info?.orderType ?? ''))
+      && near(Number(x.amount), amt, 1e-6) && near(Number(x.triggerPrice ?? x.info?.triggerAmount ?? x.info?.triggerPrice), trigger, 1e-6));
+    return o?.id ? { orderId: String(o.id), stopPrice: trigger, amount: amt } : null;
   }
 
   async fetchStop(pair, orderId) {
