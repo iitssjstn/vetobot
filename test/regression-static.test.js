@@ -80,7 +80,7 @@ test('CI: de workflow draait npm test en de Python-tests van de trainer', () => 
   const wf = read('.github/workflows/docker.yml');
   assert.match(wf, /run:\s*npm test/);
   assert.match(wf, /node-version:\s*22/);
-  assert.match(wf, /python -m unittest[^\n]*test_trainer/);
+  assert.match(wf, /python -m unittest[^\n]*(test_trainer|discover)/);
   assert.match(wf, /working-directory:\s*trainer/);
   assert.match(wf, /pip install numpy scikit-learn/);
   // npm test pakt alle test/*.test.js, dus ook de regressietests.
@@ -90,7 +90,7 @@ test('CI: de workflow draait npm test en de Python-tests van de trainer', () => 
   assert.ok(wf.indexOf('unittest') < wf.indexOf('docker/build-push-action'));
 });
 
-test('CI draait ook trainer/test_regression.py (alle Python-tests)', { todo: 'de workflow draait alleen "python -m unittest -v test_trainer"; trainer/test_regression.py (en elk ander test_*.py) wordt in CI niet uitgevoerd' }, () => {
+test('CI draait ook trainer/test_regression.py (alle Python-tests)', () => {
   const wf = read('.github/workflows/docker.yml');
   assert.match(wf, /python -m unittest[^\n]*(discover|test_regression)/);
 });

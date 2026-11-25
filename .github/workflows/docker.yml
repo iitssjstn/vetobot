@@ -27,7 +27,8 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install numpy scikit-learn
-      - run: python -m unittest -v test_trainer
+      # Alle Python-tests (test_trainer, test_regression, test_learning_data, ...), niet alleen test_trainer.
+      - run: python -m unittest discover -v -p "test*.py"
         working-directory: trainer
 
       - uses: docker/login-action@v3
