@@ -434,6 +434,7 @@ Doe dit pas na weken paper trading met resultaten waar je tevreden over bent.
 Beveiligingen tijdens live handelen:
 
 - **Stop-loss bij Bitvavo zelf** (standaard aan; Instellingen → Risico): na elke live aankoop zet de bot een stop-loss-order bij Bitvavo op de noodstop. Die werkt ook als je server of internet uitvalt. Verkoopt de bot zelf, dan annuleert hij die order eerst (en controleert dat); ging de stop bij Bitvavo af terwijl de bot offline was, dan sluit hij de positie af met de echte uitvoering. Onder de minimale orderwaarde van Bitvavo (€ 5) wordt geen stop geplaatst; de bot bewaakt dan zelf.
+- **Bij twijfel geen nieuwe aankopen** (alleen live): vóór de coins bekijkt de bot eerst de stand bij Bitvavo (saldo, stop-orders, saldocontrole). Lukt het saldo ophalen niet, vond de saldocontrole een positie die op Bitvavo mist, heeft een open positie geen werkende stop bij Bitvavo, of is een aankoop onzeker (geen antwoord van Bitvavo), dan koopt hij niets nieuws tot het is opgelost. Bewaken, verkopen en stop-orders gaan altijd door. De reden staat op de pagina Posities bij Live-veiligheid.
 - **Saldocontrole met Bitvavo**: bij het starten en elke 24 uur (of met **Nu controleren** op de pagina Posities) vergelijkt de bot zijn posities met je echte saldo en meldt afwijkingen. Hij handelt er nooit zelf op.
 
 - Kan de bot het orderboek niet ophalen, dan koopt hij live niet ("in live koop ik niet blind"); in paper wel.
