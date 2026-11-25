@@ -4,7 +4,7 @@ import { computeFeatures, predict, predictRaw, contributions, explain, positionF
 import { askVetoChain, askTeamChain, askExitChain, testChain, listModels, writeSummaryChain } from './ai.js';
 import { TIMEFRAME_MINUTES, fmtInterval, LIVE_MIN_STAKE_EUR } from './settings.js';
 import { cleanSuggestions, currentValues, applySuggestions } from './suggest.js';
-import { fetchClosedCandles, fetchPrice, hasTradingKeys } from './exchange.js';
+import { fetchClosedCandles, fetchPrice, hasTradingKeys, isOrderRefusal } from './exchange.js';
 import { checkEntry } from './risk.js';
 import { Bandit } from './bandit.js';
 import { analyzeBook, bookProblem } from './orderbook.js';
@@ -165,7 +165,7 @@ export class Bot {
       const pos = this.store.state.positions[pair];
       try {
         if (type === 'open' && !pos) {
-          const blocked = checkEntry(this.store, { risk: this.entryRisk() }, this.broker.mode, this.ex, this.liveBalance,
+          const blocked = this.#buyBlockText() ?? checkEntry(this.store, { risk: this.entryRisk() }, this.broker.mode, this.ex, this.liveBalance,
             { pair, openPnlEur: this.openPositionsValue().pnlEur });
           if (blocked) {
             this.store.addDecision({ pair, signal: 'buy', outcome: 'blocked', reason: `Volgen: ${blocked}`, indicators });
@@ -835,6 +835,9 @@ export class Bot {
       const agentCoins = this.strategy.agentMode && !this.following ? allAgentCoins(this.getAgent?.()) : [];
       const pairs = [...new Set([...this.pairs, ...agentCoins, ...Object.keys(this.store.state.positions)])];
       await this.#prefetch(pairs);
+      // Live: eerst de stand bij Bitvavo (saldo, stop-orders, zo nodig de saldocontrole), pas daarna de coins.
+      // Zo beslist een aankoop nooit op een saldo of stop-stand van de vorige check.
+      if (this.mode === 'live') errors += await this.#liveChecks();
       for (const pair of pairs) {
         try {
           await this.#exclusive(() => this.#handlePair(pair));
@@ -846,32 +849,10 @@ export class Bot {
           this.pairStatus[pair] = { ...this.pairStatus[pair], at: new Date().toISOString(), error: err.message };
         }
       }
-      if (this.mode === 'live') {
-        this.#step('Saldo ophalen bij Bitvavo');
-        // Bitvavo geeft af en toe een losse storing (bijv. 's nachts "errorCode 101"). Pas melden als het
-        // 10 minuten aanhoudt, en één keer melden als het weer werkt. Tot dan rekent de bot met het laatste saldo.
-        await this.refreshLiveBalance().then(() => {
-          if (this.balanceFail?.notified) {
-            this.#notify('errors', { title: 'Saldo ophalen bij Bitvavo werkt weer', message: `Na ${Math.round((Date.now() - this.balanceFail.since) / 60000)} minuten storing.`, level: 'info' });
-          }
-          this.balanceFail = null;
-        }).catch((err) => {
-          errors++;
-          this.#event('error', null, `Saldo ophalen mislukt: ${err.message}`);
-          this.balanceFail ??= { since: Date.now(), notified: false };
-          if (!this.balanceFail.notified && Date.now() - this.balanceFail.since >= 10 * 60000) {
-            this.balanceFail.notified = true;
-            this.#notify('errors', { title: 'Saldo ophalen bij Bitvavo mislukt', message: `${err.message}\n\nAl ${Math.round((Date.now() - this.balanceFail.since) / 60000)} minuten. De bot rekent zolang met het laatst bekende saldo.`, level: 'error' });
-          }
-        });
-      }
       await this.#exclusive(async () => {
-        // Live: stop-orders bij Bitvavo controleren (uitgevoerd? opnieuw zetten?) en de saldocontrole
-        // bij de eerste check en daarna elke 24 uur.
+        // Nog eens langs de stop-orders: bijv. een stop die vóór een mislukte verkoop werd geannuleerd meteen
+        // opnieuw zetten. Kost meestal geen verzoek (elke positie hooguit eens per minuut, plaatsen eens per 10 min).
         await this.#exchangeStopRound();
-        if (this.mode === 'live' && (!this.reconcileRanAt || Date.now() - this.reconcileRanAt >= SAFETY.reconcileMs)) {
-          await this.#reconcile().catch((err) => this.#event('warn', null, `Saldocontrole mislukt: ${err.message}`));
-        }
         await this.#settleExplorations();
         await this.#settleShadows();
         this.#armSummary();
@@ -896,6 +877,91 @@ export class Bot {
       this.running = false;
       this.#step(null);
     }
+  }
+
+  // ---------- Live: stand bij Bitvavo vóór nieuwe aankopen ----------
+  // Saldo ophalen, stop-orders controleren en (bij de eerste check, elke 24 uur, en sneller als er
+  // iets mis was) de saldocontrole. Geeft het aantal fouten. Bewaken en verkopen hangen hier niet van af.
+  async #liveChecks() {
+    let errors = 0;
+    let recovered = false;
+    await this.#exclusive(async () => {
+      this.#step('Saldo ophalen bij Bitvavo');
+      // Bitvavo geeft af en toe een losse storing (bijv. 's nachts "errorCode 101"). Pas melden als het
+      // 10 minuten aanhoudt, en één keer melden als het weer werkt. Zolang koopt de bot niets nieuws.
+      await this.refreshLiveBalance().then(() => {
+        if (this.balanceFail?.notified) {
+          this.#notify('errors', { title: 'Saldo ophalen bij Bitvavo werkt weer', message: `Na ${Math.round((Date.now() - this.balanceFail.since) / 60000)} minuten storing.`, level: 'info' });
+        }
+        recovered = Boolean(this.balanceFail);
+        this.balanceFail = null;
+      }).catch((err) => {
+        errors++;
+        this.#event('error', null, `Saldo ophalen mislukt: ${err.message}`);
+        this.balanceFail ??= { since: Date.now(), notified: false };
+        this.balanceFail.error = String(err?.message ?? err).slice(0, 200);
+        if (!this.balanceFail.notified && Date.now() - this.balanceFail.since >= 10 * 60000) {
+          this.balanceFail.notified = true;
+          this.#notify('errors', { title: 'Saldo ophalen bij Bitvavo mislukt', message: `${err.message}\n\nAl ${Math.round((Date.now() - this.balanceFail.since) / 60000)} minuten. De bot koopt zolang niets nieuws; bewaken en verkopen gaan door.`, level: 'error' });
+        }
+      });
+      // Stop-orders bij Bitvavo controleren (uitgevoerd? opnieuw zetten?) en de saldocontrole als die aan de beurt is.
+      await this.#exchangeStopRound();
+      // Werkt Bitvavo weer na een storing waarin de saldocontrole mislukte: die meteen opnieuw (niet pas na 10 minuten).
+      if (Date.now() >= this.#reconcileDueAt() || (recovered && this.store.state.reconcile?.error)) {
+        await this.#reconcile().catch((err) => this.#event('warn', null, `Saldocontrole mislukt: ${err.message}`));
+      }
+      this.#buyBlockNotice();
+    });
+    return errors;
+  }
+
+  // Wanneer de volgende saldocontrole moet: meteen bij de eerste check of na een onzekere aankoop,
+  // na 10 minuten als de vorige mislukte of een positie op Bitvavo miste, anders na 24 uur.
+  #reconcileDueAt() {
+    if (!this.reconcileRanAt) return 0;
+    if (this.buyUncertain && this.reconcileRanAt < this.buyUncertain.at) return 0;
+    const r = this.store.state.reconcile;
+    const bad = r && (r.error || (r.issues ?? []).some((i) => i.kind === 'mist'));
+    return this.reconcileRanAt + (bad ? SAFETY.retryMs : SAFETY.reconcileMs);
+  }
+
+  // Redenen om live NU geen nieuwe aankopen te doen (leeg = mag). Alleen voor kopen: bewaken, verkopen
+  // en de stop-orders gaan altijd door. Paper: altijd leeg.
+  buyBlockReasons() {
+    if (this.mode !== 'live') return [];
+    const reasons = [];
+    if (this.balanceFail) reasons.push(`saldo ophalen bij Bitvavo mislukt (${this.balanceFail.error ?? 'onbekende fout'})`);
+    if (this.buyUncertain) reasons.push(`aankoop van ${this.buyUncertain.pair} onzeker (${this.buyUncertain.error}); eerst de saldocontrole`);
+    const r = this.store.state.reconcile;
+    if (r?.error) reasons.push(`saldocontrole bij Bitvavo mislukt (${r.error})`);
+    for (const i of r?.issues ?? []) {
+      if (i.kind === 'mist' && this.store.state.positions[i.pair]) reasons.push(`saldocontrole: ${i.pair} mist op Bitvavo (bot ${i.botAmount}, Bitvavo ${i.exchangeAmount})`);
+    }
+    // Een positie die een stop-order bij Bitvavo hoort te hebben maar er geen heeft (plaatsen mislukt,
+    // geannuleerd, deels uitgevoerd). Onder het minimum van Bitvavo ('overgeslagen') telt niet.
+    if (this.exchangeStopEnabled && typeof this.broker.placeStop === 'function') {
+      for (const [pair, pos] of Object.entries(this.store.state.positions)) {
+        if (!pos || pos.exchangeStop?.orderId || pos.exchangeStop?.skipped || this.ordering.has(pair) || !exchangeStopPrice(pos, this.risk)) continue;
+        reasons.push(`${pair} heeft geen werkende stop-order bij Bitvavo${pos.exchangeStop?.error ? ` (${pos.exchangeStop.error})` : ''}`);
+      }
+    }
+    return reasons;
+  }
+
+  #buyBlockText() {
+    const r = this.buyBlockReasons();
+    return r.length ? `Live-veiligheid, geen nieuwe aankopen: ${r.join('; ')}` : null;
+  }
+
+  // Eén regel in het activiteitenlog als nieuwe aankopen geblokkeerd raken of weer mogen.
+  #buyBlockNotice() {
+    const r = this.buyBlockReasons();
+    const key = r.join('|');
+    if (key === (this.buyBlockKey ?? '')) return;
+    this.buyBlockKey = key;
+    if (r.length) this.#event('warn', null, `Live-veiligheid: geen nieuwe aankopen zolang ${r.join('; ')}. Bewaken en verkopen gaan door.`);
+    else this.#event('info', null, 'Live-veiligheid: nieuwe aankopen weer toegestaan.');
   }
 
   #resetHaltIfNewDay() {
@@ -1087,8 +1153,10 @@ export class Bot {
     if (this.tickStats) this.tickStats.buySignals++;
     this.#event('info', pair, `Koopsignaal: ${result.reason}`);
 
-    const blocked = checkEntry(this.store, { risk: this.entryRisk() }, this.broker.mode, this.ex, this.liveBalance,
+    const liveBlock = this.#buyBlockText();
+    const blocked = liveBlock ?? checkEntry(this.store, { risk: this.entryRisk() }, this.broker.mode, this.ex, this.liveBalance,
       { pair, openPnlEur: this.openPositionsValue().pnlEur, explore: exploring });
+    if (liveBlock) this.pairStatus[pair] = { ...this.pairStatus[pair], reason: `Koopsignaal, maar: ${liveBlock}` };
     // Volatiliteitsregime uit de candles die er al zijn (voor het leerdagboek).
     const volRegime = result.indicators?.agent?.volRegime ?? volRegimeOf(useOpen ? candles.slice(0, -1) : candles);
     if (blocked) {
@@ -2089,7 +2157,7 @@ export class Bot {
     // Harde limieten nog één keer vlak voor de order, wat de AI ook besliste: noodstop/daglimiet en het maximum aantal trades.
     const hard = this.store.state.halted ? `Handel gepauzeerd: ${this.store.state.halted.reason}`
       : !indicators?.agent?.explore && Object.values(this.store.state.positions).filter((p) => !p?.explore).length >= this.risk.maxOpenTrades
-        ? `Maximum van ${this.risk.maxOpenTrades} open trades bereikt` : null;
+        ? `Maximum van ${this.risk.maxOpenTrades} open trades bereikt` : this.#buyBlockText();
     if (hard) {
       this.#event('warn', pair, `Niet gekocht: ${hard}`);
       return BUSY;
@@ -2097,6 +2165,14 @@ export class Bot {
     this.ordering.add(pair);
     try {
       return await this.#placeBuy(pair, reason, indicators);
+    } catch (err) {
+      // Live en geen duidelijke weigering (time-out, verbinding weg, order niet gevuld): misschien is er bij
+      // Bitvavo wél gekocht, zonder positie in de bot. Niets nieuws kopen tot de saldocontrole (volgende check).
+      if (this.broker.mode === 'live' && !this.store.state.positions[pair] && !isOrderRefusal(err)) {
+        this.buyUncertain = { pair, at: Date.now(), error: String(err?.message ?? err).slice(0, 200) };
+        this.#event('warn', pair, `Aankoop onzeker: ${this.buyUncertain.error}. Geen nieuwe aankopen tot de saldocontrole bij de volgende check.`);
+      }
+      throw err;
     } finally {
       this.ordering.delete(pair);
     }
@@ -2584,6 +2660,9 @@ export class Bot {
       result = { at: new Date().toISOString(), ok: false, issues: [], error: String(err?.message ?? err).slice(0, 300) };
     }
     this.store.state.reconcile = result;
+    // Een geslaagde saldocontrole na een onzekere aankoop: de stand is weer bekend (eventuele coins zonder
+    // positie staan hierboven als 'extra' en worden gemeld).
+    if (!result.error && this.buyUncertain && this.reconcileRanAt >= this.buyUncertain.at) this.buyUncertain = null;
     this.store.save();
     // Alleen melden wat nieuw mis is.
     const seen = new Set((prev?.issues ?? []).map(issueKey));
@@ -2606,12 +2685,14 @@ export class Bot {
   safetyStatus() {
     const live = this.mode === 'live';
     const enabled = this.exchangeStopEnabled;
-    const next = !live ? null : this.reconcileRanAt ? new Date(this.reconcileRanAt + SAFETY.reconcileMs).toISOString() : new Date().toISOString();
+    const next = !live ? null : new Date(Math.max(this.#reconcileDueAt(), Date.now())).toISOString();
+    const reasons = this.buyBlockReasons();
     return {
       mode: this.mode,
       exchangeStop: { enabled, positions: Object.values(this.store.state.positions).filter(Boolean).map((p) => stopStatus(p, { live, enabled })) },
       reconcile: this.store.state.reconcile ?? null,
       nextReconcileAt: next,
+      buyBlock: { blocked: reasons.length > 0, reasons },
     };
   }
 
