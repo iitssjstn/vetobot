@@ -723,7 +723,7 @@ export class Bot {
     const list = Object.values(this.store.state.positions).map((p) => {
       const live = this.livePrices?.[p.pair];
       const price = live?.price ?? this.pairStatus[p.pair]?.price ?? null;
-      const valueEur = price != null ? p.amount * price * (1 - fee) : null;
+      const valueEur = price != null ? p.amount * price * (1 - fee) + (p.stopFill?.costEur ?? 0) : null;
       const pnlEur = valueEur != null ? valueEur - p.costEur : null;
       return {
         ...p,
@@ -1360,7 +1360,7 @@ export class Bot {
     for (const p of Object.values(st.positions ?? {})) {
       if (p.agent?.recipe !== recipeKey || Date.parse(p.openedAt) < since) continue;
       const price = this.livePrices?.[p.pair]?.price ?? this.pairStatus?.[p.pair]?.price;
-      if (price != null) pnl += p.amount * price * (1 - fee) - p.costEur;
+      if (price != null) pnl += p.amount * price * (1 - fee) + (p.stopFill?.costEur ?? 0) - p.costEur;
     }
     return { pnlEur: pnl, trades: closed.length };
   }
@@ -2479,13 +2479,21 @@ export class Bot {
     const why = partial ? `de stop-order ${s.orderId} is bij Bitvavo maar deels uitgevoerd (${fmtAmount(st.filled)} van ${fmtAmount(s.amount ?? pos.amount)})`
       : `de stop-order ${s.orderId} staat niet meer open bij Bitvavo (geannuleerd of verlopen)`;
     const Why = `${why.charAt(0).toUpperCase()}${why.slice(1)}`;
-    // Deels uitgevoerd: niets automatisch doen (twijfel), alleen melden. Anders over 10 minuten een nieuwe zetten.
+    // Deels uitgevoerd (bijv. Bitvavo annuleerde de rest door marktbescherming): die coins zijn echt verkocht.
+    // De positie houdt alleen de rest, de opbrengst gaat mee in de trade bij het sluiten. Zonder dit verkocht de bot
+    // later de hele oude hoeveelheid (Bitvavo weigert: te weinig saldo, of eigen coins van de gebruiker gaan mee) en
+    // bleef de rest zonder stop-order. In beide gevallen over 10 minuten een nieuwe stop-order (voor de rest).
+    if (partial && st.fill) {
+      pos.stopFill = combineFills(pos.stopFill, st.fill);
+      pos.amount = Math.max(0, pos.amount - st.filled);
+    }
     pos.exchangeStop = { orderId: null, stopPrice: s.stopPrice, placedAt: null, lastOrderId: s.orderId, attemptAt: new Date().toISOString(),
-      ...(partial ? { skipped: `${why}; controleer de positie zelf` } : { error: why }), notified: true };
+      error: partial ? `${why}; de rest (${fmtAmount(pos.amount)}) heeft nog geen stop-order` : why, notified: true };
     this.#event('warn', pair, Why);
     this.#notify('errors', { title: `Stop-order bij Bitvavo: ${pair}`, level: 'warn',
       message: `${Why}. De positie staat nog open in de bot en wordt door de bot zelf bewaakt.` +
-        (partial ? ' Controleer bij Bitvavo hoeveel er nog over is; de bot doet hier zelf niets mee.' : ' Hij probeert over 10 minuten een nieuwe stop-order te zetten.') });
+        (partial ? ` De bot rekent verder met de rest (${fmtAmount(pos.amount)}) en zet daar over 10 minuten een nieuwe stop-order voor; controleer het bij Bitvavo.`
+          : ' Hij probeert over 10 minuten een nieuwe stop-order te zetten.') });
     return false;
   }
 
@@ -2647,6 +2655,8 @@ export class Bot {
     }
     if (this.tickStats) this.tickStats.closed++;
     this.#execution(pair, 'sell', expected, fill);
+    // Eerder deels uitgevoerde stop-order bij Bitvavo: die opbrengst hoort bij deze trade.
+    if (pos.stopFill) fill = combineFills(pos.stopFill, fill);
     const pnlEur = fill.costEur - pos.costEur;
     // Werkelijke kosten van deze ronde in %: fees plus de gemeten afwijking bij kopen en verkopen.
     const sellSlip = slippagePct('sell', expected, fill.price);
@@ -2668,7 +2678,7 @@ export class Bot {
       closedAt: new Date().toISOString(),
       entryPrice: pos.entryPrice,
       exitPrice: fill.price,
-      amount: pos.amount,
+      amount: pos.amount + (pos.stopFill?.amount ?? 0),
       pnlEur,
       pnlPct: (pnlEur / pos.costEur) * 100,
       costEur: pos.costEur,
