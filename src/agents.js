@@ -246,6 +246,9 @@ export const LEARN = {
   prior: 20,                   // zoveel "denkbeeldige" trades met verschil 0: voorzichtig bij weinig data
   window: 300,                 // laatste zoveel trades
   maxAdj: 1.0,                 // nooit meer dan zoveel procentpunt bijsturen
+  // Verschil verwacht/echt per trade begrensd: één uitschieter (een kapotte prijs, -100%) mag de
+  // hele groep niet tot maxAdj trekken. 10 procentpunt = de standaard veiligheidsstop.
+  maxErr: 10,
   // Gemiste kansen: afgewezen beslissingen van de AI-trader met een label (koers na de horizon,
   // na kosten) tellen licht mee, en pas als er genoeg zijn.
   rejectedWeight: 0.15,        // gewicht per afgewezen kans (een echte trade telt 1)
@@ -267,12 +270,14 @@ export function onlineCorrection(trades, rules = LEARN, rejected = []) {
   const useMissed = (rules.rejectedWeight ?? 0) > 0 && missed.length >= (rules.minRejected ?? 0);
   const rows = [...real, ...(useMissed ? missed.map((r) => ({ pair: r.pair, pnlPct: r.retPct, agent: { expectedPct: r.expectedPct, marketRegime: r.regime ?? null, rejected: true } })) : [])];
   const weightOf = (t) => (t.agent.rejected ? rules.rejectedWeight : t.agent.virtual ? EXPLORE.feedbackWeight : 1);
+  const maxErr = rules.maxErr ?? Infinity;
+  const err = (t) => clamp(t.pnlPct - t.agent.expectedPct, maxErr);
   const bins = Array.from({ length: rules.edges.length + 1 }, () => ({ n: 0, sum: 0 }));
   for (const t of rows) {
     const weight = weightOf(t);
     const b = bins[binOf(t.agent.expectedPct, rules.edges)];
     b.n += weight;
-    b.sum += (t.pnlPct - t.agent.expectedPct) * weight;
+    b.sum += err(t) * weight;
   }
   const binAdj = bins.map((b) => ({ n: b.n, adj: clamp(b.sum / (b.n + rules.prior), rules.maxAdj) }));
   const coins = {};
@@ -280,7 +285,7 @@ export function onlineCorrection(trades, rules = LEARN, rejected = []) {
     const weight = weightOf(t);
     const c = (coins[t.pair] ??= { n: 0, sum: 0 });
     c.n += weight;
-    c.sum += (t.pnlPct - t.agent.expectedPct - binAdj[binOf(t.agent.expectedPct, rules.edges)].adj) * weight;
+    c.sum += (err(t) - binAdj[binOf(t.agent.expectedPct, rules.edges)].adj) * weight;
   }
   for (const c of Object.values(coins)) c.adj = clamp(c.sum / (c.n + rules.prior), rules.maxAdj);
   // Hoeveel ervaring per marktfase en per coin in een marktfase (voor de verkenner).
