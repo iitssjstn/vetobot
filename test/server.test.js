@@ -288,3 +288,31 @@ test('Live-veiligheid: status in /api/state, saldocontrole alleen live', async (
     close();
   }
 });
+
+test('Live op eigen risico in bulk: meerdere tegelijk, per recept een verliesgrens, alles intrekken', async () => {
+  const { users, manager, client, close } = await setup();
+  try {
+    const admin = client();
+    await admin.post('/api/auth/setup', { username: 'Justin', password: PW, code: users.setupCode });
+    const bot = manager.get(users.list()[0].id).bot;
+    const part = (k, stage) => ({ recipeKey: k, stage, liveCheck: { allMet: false, checks: [] } });
+    bot.getAgent = () => ({ ...part('A', 'getest'), regimes: {}, extras: [part('B', 'bewezen'), part('C', 'oefenen')], extrasAll: [part('B', 'bewezen'), part('C', 'oefenen')] });
+    // Zonder bevestiging of wachtwoord: niets.
+    assert.equal((await admin.post('/api/agent/live/bulk', { recipes: ['A', 'B'], maxLossEur: 25, confirmText: 'ja', password: PW })).status, 400);
+    assert.equal((await admin.post('/api/agent/live/bulk', { recipes: ['A', 'B'], maxLossEur: 25, confirmText: 'EIGEN RISICO', password: 'fout-wachtwoord' })).status, 400);
+    assert.deepEqual(bot.settings.agentLive.risky, {});
+    const r = await admin.post('/api/agent/live/bulk', { recipes: ['A', 'B', 'C', 'X'], maxLossEur: 25, confirmText: 'eigen risico', password: PW });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.done, ['A', 'B']);
+    assert.deepEqual(r.body.skipped.map((x) => x.recipe), ['C', 'X'], 'oefenen en onbekend overgeslagen');
+    assert.equal(bot.settings.agentLive.risky.A.maxLossEur, 25);
+    assert.equal(bot.settings.agentLive.risky.B.maxLossEur, 25);
+    bot.settings.setAgentLive('B', true);
+    const rv = await admin.post('/api/agent/live/bulk', { revokeAll: true, password: PW });
+    assert.equal(rv.status, 200);
+    assert.deepEqual(bot.settings.agentLive.risky, {});
+    assert.deepEqual(bot.settings.agentLive.approved, []);
+  } finally {
+    close();
+  }
+});
