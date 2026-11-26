@@ -136,6 +136,18 @@ class Server(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read() or b'{}')
 
+    def test_post_body_that_is_not_an_object_gives_400(self):
+        # Een JSON-array of een kapotte Content-Length gaf een onafgevangen fout: de client kreeg geen antwoord.
+        self.assertEqual(self.req('POST', '/helper/pair', [], tok=False)[0], 400)
+        self.assertEqual(self.req('POST', '/config', [1, 2])[0], 400)
+        import http.client
+        c = http.client.HTTPConnection('127.0.0.1', self.httpd.server_address[1], timeout=5)
+        c.putrequest('POST', '/helper/pair')
+        c.putheader('Content-Length', 'abc')
+        c.endheaders()
+        self.assertEqual(c.getresponse().status, 400)
+        c.close()
+
     def test_auth_and_config(self):
         self.assertEqual(self.req('GET', '/health', tok=False)[0], 200)
         self.assertEqual(self.req('GET', '/status', tok=False)[0], 401)

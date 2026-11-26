@@ -2444,21 +2444,27 @@ class Handler(BaseHTTPRequestHandler):
             })
         self.send(404, {'error': 'Niet gevonden'})
 
+    def read_json(self, limit):
+        """Body als JSON-object; None bij een ongeldige lengte, ongeldige JSON of geen object."""
+        try:
+            length = max(0, min(int(self.headers.get('Content-Length') or 0), limit))
+            body = json.loads(self.rfile.read(length) or b'{}')
+        except ValueError:
+            return None
+        return body if isinstance(body, dict) else None
+
     def do_POST(self):
         if self.path == '/helper/pair':  # zonder code: alleen met een geldige koppelcode
-            try:
-                body = json.loads(self.rfile.read(min(int(self.headers.get('Content-Length') or 0), 2000)) or b'{}')
-            except ValueError:
+            body = self.read_json(2000)
+            if body is None:
                 return self.send(400, {'error': 'Ongeldige JSON'})
             code, out = helper_pair(body)
             return self.send(code, out)
         if not self.authed(helper=self.path.startswith('/helper/') and self.path != '/helper/pair-code'):
             return
         limit = {'/feedback': 500_000, '/helper/result': 60_000_000}.get(self.path, 20_000)
-        length = min(int(self.headers.get('Content-Length') or 0), limit)
-        try:
-            body = json.loads(self.rfile.read(length) or b'{}')
-        except ValueError:
+        body = self.read_json(limit)
+        if body is None:
             return self.send(400, {'error': 'Ongeldige JSON'})
         if self.path == '/config':
             try:
