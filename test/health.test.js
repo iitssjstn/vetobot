@@ -389,3 +389,27 @@ test('bot: check die in de wachtrij hangt (achter een hangende handmatige verkoo
   assert.ok(!keys.includes('scheduler'), `geen planner-herstart: ${keys}`);
   assert.ok(keys.includes('loop-hang'), `hangende ronde gemeld: ${keys}`);
 });
+
+test('bot: AI-trader schrijft eens per uur een samenvatting in het log', () => {
+  const { bot } = setupBot();
+  bot.settings.setStrategy?.({ agentMode: 1 });
+  bot.strategy.agentMode = 1;
+  const t0 = Date.parse('2026-11-26T10:00:00Z');
+  assert.equal(bot.agentHourlyLog(t0), null); // start van het eerste uur
+  bot.agentWhy = [
+    { at: t0 + 60000, kind: 'drempel', q: 0.31, thr: 0.5 },
+    { at: t0 + 120000, kind: 'drempel', q: 0.12, thr: 0.5 },
+    { at: t0 + 180000, kind: 'toelating', q: 0.62, thr: 0.5 },
+  ];
+  assert.equal(bot.agentHourlyLog(t0 + 30 * 60000), null); // nog geen uur om
+  const text = bot.agentHourlyLog(t0 + 60 * 60000);
+  assert.match(text, /3 candles beoordeeld/);
+  assert.match(text, /2× onder de koopdrempel/);
+  assert.match(text, /1× mocht niet/);
+  assert.match(text, /hoogste verwachting \+0,62%/);
+  assert.equal(bot.activity[0].message, text);
+  // Een uur waarin hij niets beoordeelde: waarschuwing.
+  const none = bot.agentHourlyLog(t0 + 120 * 60000);
+  assert.match(none, /geen enkele candle beoordeeld/);
+  assert.equal(bot.activity[0].level, 'warn');
+});
