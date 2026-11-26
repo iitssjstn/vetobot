@@ -12,6 +12,7 @@ Laatste opdrachten (25–26 november 2026):
 - AI-trader deed een dag niets: oorzaak gevonden en gefixt (PR #12–#14, gemerged).
 - Opschonen (PR #16–#18, gemerged): klassieke strategie + AI-team verwijderd (keuze eigenaar; strategieën/bandit, strategie volgen en verkenner bewust behouden), dashboard in 4 groepen met tabs, CI-build-race opgelost.
 - Koopdrempel van de AI-trader zelf bijstellen (PR #20, gemerged).
+- Live nooit kopen onder het verkoopbare minimum (PR #22) en meeschuivende winstgrens bij uitschieters (PR #23), gemerged.
 
 De eigenaar handelt live (op eigen risico, met eigen inzet). Eerste echte trade via Bitvavo is gelukt (+€ 0,17).
 
@@ -25,10 +26,10 @@ De eigenaar handelt live (op eigen risico, met eigen inzet). Eerste echte trade 
 
 ## Staat van de code
 
-- `main` = `ef69911` "Merge pull request #20 from iitssjstn/claude/threshold-adjust" (bevat PR #4 t/m #20).
+- `main` = `e688f07` "Merge pull request #23 from iitssjstn/claude/pump-trailing" (bevat PR #4 t/m #23). Image-build groen.
 - CI draait `npm test` en **alle** Python-tests; images worden alleen gebouwd bij een push naar `main`. Sinds PR #18 stopt een nieuwere build een oudere (`concurrency`), anders kon een oude build `latest` overschrijven.
 - De eigenaar heeft de thuisserver bijgewerkt tot en met PR #17 (26 november) en ziet de nieuwe indeling; VPS t/m PR #11. Na elke update van de bot zet hij de recepten opnieuw live (Trainer → Live, bulkknop).
-- Tests op `main`: `npm test` 301/301 (minder door het weghalen van de klassieke strategie); `cd trainer && python -m unittest discover -p "test*.py"` 144 OK.
+- Tests op `main`: `npm test` 314/314 (minder door het weghalen van de klassieke strategie); `cd trainer && python -m unittest discover -p "test*.py"` 144 OK.
 - Eigenaar werkt via Termius (mobiel) op de thuisserver (`/opt/media-stack`). Claude Code draait daar niet (CPU zonder AVX: "Illegal instruction").
 
 ## Active files
@@ -66,7 +67,9 @@ De eigenaar handelt live (op eigen risico, met eigen inzet). Eerste echte trade 
    - AI-trader én strategieën uit = niets kopen, rode melding op de homepage.
    - Dashboard: menu Overzicht / Handel / AI-trader & leren / Systeem. Trainer-tabs: AI-trader, Wordt hij beter?, Leerserver, Strategieën. Instellingen-tabs: Handel & risico, AI-trader & AI, Coins, Meldingen, Trainer-koppeling, API-keys & account. Deep links openen de juiste tab; pagina en tab worden onthouden.
 7. Koopdrempel (PR #20): de leerserver kiest per recept een drempel (bijv. +0,50%, +1,20%); er was geen instelling. Nu `strategy.agentThrAdjust` (−1…+1 %-punt, standaard 0) bij Instellingen → AI-trader & AI; `bot.agentThreshold(agent)` = max(0, recept + bijstelling), overal gebruikt (koop, sizing, verkenner, whyNot, dagboek, plan); AI-chat toont "(recept +0,50%, door jou −0,20)".
-8. Live-instellingen eigenaar: wil de drempel ±−0,2 lager zetten om de keten te testen; Limietorders op "Alleen winst nemen (kopen direct)", omdat limiet-kopen na een dip vaak niet gevuld werden.
+8. Live-instellingen eigenaar: koopdrempel-bijstelling −0,30 (bevestigd: hij koopt), laat het voorlopig zo; Limietorders op "Alleen winst nemen (kopen direct)", omdat limiet-kopen na een dip vaak niet gevuld werden.
+9. Verkoopbaar minimum (PR #22): Bitvavo weigert orders onder € 5 (errorCode 212). Een halve inzet (Risk Agent) of de kleinste start gaf posities van ~€ 5 die na een kleine daling niet meer te verkopen waren (en geen stop bij Bitvavo kregen). Nu `sellableStake(noodstop%)` = € 5 × 1,03 / (1 − stop) als ondergrens voor live kopen (€ 5,73 bij 10%); `belowMinimum(err)` geeft bij een geweigerde verkoop een duidelijke fout + één Discord-melding per positie (`pos.belowMinNotified`), positie blijft bewaakt.
+10. Uitschieter-winstgrens (PR #23, keuzes eigenaar): vanaf +3% topwinst `pos.pump`; niveau = min(instap × (1 + 0,70 × topwinst), top × 0,99), nooit omlaag; verkoop met market order (ook in `watchPositions`); model (`#agentExit`) verkoopt dan niet; live schuift de Bitvavo-stop mee (`#raisePumpStop`, ≥ 0,3% hoger, hooguit eens per 60 s, via `#releaseExchangeStop` + `#placeExchangeStop`). Instellingen `pumpTriggerPct` 3 (0 = uit), `pumpGivebackPct` 30, `pumpMinGapPct` 1 (Handel & risico). Alleen AI-trader-posities, niet de verkenner. Code in `src/safety.js` (`pumpRawLevel`, `pumpLevel`, `exchangeStopPrice` = max(noodstop, winstgrens)) en `test/pump.test.js`. Rest-risico: heel kort geen stop tijdens het vervangen; een afgegane winst-stop heet nog "Stop-loss bij Bitvavo".
 
 ## Failed attempts
 
