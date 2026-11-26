@@ -51,10 +51,12 @@
   .app.is-live { box-shadow: inset 0 3px 0 var(--down); }
   main, .two > * { min-width: 0; }
   aside { background: var(--panel); border-right: 1px solid var(--line); padding: 20px 12px;
-    display: flex; flex-direction: column; gap: 4px; position: sticky; top: 0; height: 100vh; }
+    display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
   .brand { display: flex; align-items: center; gap: 10px; padding: 4px 10px 18px; font-weight: 700; font-size: 17px; }
   .brand .logo { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center;
     background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; }
+  .nav-group { padding: 14px 12px 4px; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+  .brand + .nav-group { padding-top: 0; }
   .nav { display: flex; align-items: center; gap: 11px; padding: 9px 12px; border-radius: 9px; color: var(--muted);
     cursor: pointer; border: 0; background: none; font: inherit; text-align: left; width: 100%; }
   .nav:hover { background: var(--panel-2); color: var(--text); }
@@ -165,6 +167,11 @@
   .alert svg { color: var(--warn); margin-top: 1px; }
   .alert.err { border-color: color-mix(in srgb, var(--down) 40%, transparent); background: var(--down-soft); }
   .alert.err svg { color: var(--down); }
+  /* Tabbladen (Trainer, Instellingen): op smalle schermen horizontaal scrollbaar binnen de balk. */
+  .tabs { display: flex; gap: 8px; margin: 0 0 14px; overflow-x: auto; scrollbar-width: thin; padding-bottom: 2px; }
+  .tabs .btn { flex: none; }
+  .tabpane { display: grid; gap: 16px; }
+  .tabpane > * { margin-top: 0; min-width: 0; }
   details.trgroup { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
   details.trgroup > summary { list-style: none; cursor: pointer; padding: 14px 18px; display: flex; flex-direction: column; gap: 2px; }
   details.trgroup > summary::-webkit-details-marker { display: none; }
@@ -443,17 +450,21 @@
 <div class="app" id="view-app" hidden>
   <aside id="aside">
     <div class="brand"><span class="logo"><svg class="i"><use href="#i-shield"/></svg></span>vetobot</div>
+    <div class="nav-group">Overzicht</div>
     <button class="nav active" data-view="dashboard"><svg class="i"><use href="#i-grid"/></svg>Dashboard</button>
-    <button class="nav" data-view="market"><svg class="i"><use href="#i-chart"/></svg>Markt<span class="count" id="c-market"></span></button>
+    <div class="nav-group">Handel</div>
     <button class="nav" data-view="positions"><svg class="i"><use href="#i-brief"/></svg>Posities<span class="count" id="c-positions"></span></button>
+    <button class="nav" data-view="trades"><svg class="i"><use href="#i-history"/></svg>Trades<span class="count" id="c-trades"></span></button>
     <button class="nav" data-view="signals"><svg class="i"><use href="#i-pulse"/></svg>AI-signalen<span class="count" id="c-signals"></span></button>
     <button class="nav" data-view="aichat"><svg class="i"><use href="#i-chat"/></svg>AI-chat</button>
-    <button class="nav" data-view="learning"><svg class="i"><use href="#i-target"/></svg>Learning</button>
-    <button class="nav" data-view="trades"><svg class="i"><use href="#i-history"/></svg>Trades<span class="count" id="c-trades"></span></button>
-    <button class="nav" data-view="activity"><svg class="i"><use href="#i-list"/></svg>Activiteit</button>
-    <button class="nav" data-view="settings"><svg class="i"><use href="#i-gear"/></svg>Instellingen</button>
+    <button class="nav" data-view="market"><svg class="i"><use href="#i-chart"/></svg>Markt<span class="count" id="c-market"></span></button>
+    <div class="nav-group">AI-trader &amp; leren</div>
     <button class="nav" data-view="trainer" id="nav-trainer" hidden><svg class="i"><use href="#i-cpu"/></svg>Trainer<span class="count" id="c-trainer"></span></button>
+    <button class="nav" data-view="learning"><svg class="i"><use href="#i-target"/></svg>Learning</button>
+    <div class="nav-group">Systeem</div>
+    <button class="nav" data-view="activity"><svg class="i"><use href="#i-list"/></svg>Activiteit</button>
     <button class="nav" data-view="users" id="nav-users" hidden><svg class="i"><use href="#i-users"/></svg>Gebruikers<span class="count" id="c-users"></span></button>
+    <button class="nav" data-view="settings"><svg class="i"><use href="#i-gear"/></svg>Instellingen</button>
     <div class="aside-foot">
       <div id="side-mode"></div>
       <div class="user"><span id="side-user"></span>
@@ -488,6 +499,11 @@
       <div class="panel gap" id="dash-health"></div>
       <div id="dash-alerts"></div>
       <div class="grid tiles gap" id="tiles"></div>
+      <div class="panel gap">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-brief"/></svg>Open posities</h2>
+          <button class="btn sm" data-goto="positions">Alles bekijken</button></div>
+        <div class="scroll" id="dash-positions"></div>
+      </div>
       <div class="two">
         <div class="panel">
           <div class="panel-h"><h2><svg class="i"><use href="#i-chart"/></svg>Markt nu</h2>
@@ -499,10 +515,6 @@
             <button class="btn sm" data-goto="activity">Alles bekijken</button></div>
           <div class="log short" id="dash-activity"></div>
         </div>
-      </div>
-      <div class="panel gap">
-        <div class="panel-h"><h2><svg class="i"><use href="#i-brief"/></svg>Open posities</h2></div>
-        <div class="scroll" id="dash-positions"></div>
       </div>
       <div class="panel gap" id="dash-summary-wrap">
         <div class="panel-h"><h2><svg class="i"><use href="#i-cpu"/></svg>Dagoverzicht</h2><span class="hint" id="dash-summary-meta"></span></div>
@@ -555,14 +567,13 @@
         <div class="panel-b" id="ln-decisions"></div></div>
     </section>
     <section data-section="trainer" hidden>
-      <div class="row-actions trtabs" role="tablist" style="margin:0 0 14px">
-        <button class="btn primary" type="button" data-trtab="overzicht">Overzicht</button>
-        <button class="btn" type="button" data-trtab="recepten">Recepten</button>
-        <button class="btn" type="button" data-trtab="beloningen">Beloningen</button>
-        <button class="btn" type="button" data-trtab="live">Live &amp; test</button>
-        <button class="btn" type="button" data-trtab="overig">Overig</button>
+      <div class="tabs" role="tablist" aria-label="Onderdelen van de trainer">
+        <button class="btn primary" type="button" role="tab" data-trtab="agent">AI-trader</button>
+        <button class="btn" type="button" role="tab" data-trtab="beter">Wordt hij beter?</button>
+        <button class="btn" type="button" role="tab" data-trtab="server">Leerserver</button>
+        <button class="btn" type="button" role="tab" data-trtab="strat">Strategieën</button>
       </div>
-      <div data-trpane="overzicht">
+      <div class="tabpane" data-trpane="agent">
       <div class="panel">
         <div class="panel-h"><h2><svg class="i"><use href="#i-cpu"/></svg>Wat doet de trainer?</h2><span class="hint" id="tr-badge"></span></div>
         <div class="panel-b" id="tr-now"></div>
@@ -571,16 +582,10 @@
         <div class="panel-h"><h2><svg class="i"><use href="#i-pulse"/></svg>AI-trader</h2><span class="hint" id="ag-hint"></span></div>
         <div class="panel-b" id="ag-body"></div>
       </div>
-      <div class="panel gap" data-agentpanel hidden>
-        <div class="panel-h"><h2><svg class="i"><use href="#i-cpu"/></svg>Helpers</h2><span class="hint" id="hl-hint"></span></div>
-        <div class="panel-b" id="hl-body"></div>
-      </div>
       <div class="panel gap" id="tr-think-panel" hidden>
         <div class="panel-h"><h2><svg class="i"><use href="#i-chat"/></svg>Wat denkt het model?</h2><span class="hint">nieuwste onderaan</span></div>
         <div class="think" id="think-list"></div>
       </div>
-      </div>
-      <div data-trpane="recepten" hidden>
       <div class="panel" data-agentpanel hidden>
         <div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Recepten</h2><span class="hint">elke ronde probeert hij er een; gekozen op de validatie in 3 periodes na elkaar, gecontroleerd met de eindtest</span></div>
         <div class="scroll" id="ag-table"></div>
@@ -601,22 +606,24 @@
         </form>
       </div>
       </div>
-      <div data-trpane="beloningen" hidden>
+      <div class="tabpane" data-trpane="beter" hidden>
       <div class="panel" data-agentpanel hidden>
         <div class="panel-h"><h2><svg class="i"><use href="#i-pulse"/></svg>Wordt hij beter?</h2><span class="hint" id="rw-hint"></span></div>
         <div class="panel-b" id="rw-body"></div>
       </div>
-      </div>
-      <div data-trpane="live" hidden>
       <div class="panel" data-agentpanel hidden>
         <div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Live & paper-test</h2></div>
         <div class="panel-b" id="ag-live"></div>
       </div>
-      </div>
-      <div data-trpane="overig" hidden>
       <div class="panel gap" id="tr-team-panel" hidden>
         <div class="panel-h"><h2><svg class="i"><use href="#i-pulse"/></svg>Samenwerking AI + model</h2><span class="hint" id="tw-hint"></span></div>
         <div class="panel-b" id="tw-body"></div>
+      </div>
+      </div>
+      <div class="tabpane" data-trpane="server" hidden>
+      <div class="panel gap" data-agentpanel hidden>
+        <div class="panel-h"><h2><svg class="i"><use href="#i-cpu"/></svg>Helpers</h2><span class="hint" id="hl-hint"></span></div>
+        <div class="panel-b" id="hl-body"></div>
       </div>
       <div class="panel gap" id="tr-micro-panel" hidden>
         <div class="panel-h"><h2><svg class="i"><use href="#i-list"/></svg>Orderboek en transacties</h2><span class="hint" id="mc-hint"></span></div>
@@ -650,8 +657,16 @@
         <div class="scroll" id="tr-history"></div>
       </div>
       </details>
-      <details class="trgroup gap" id="tg-old">
-        <summary><span class="tg-title">Oude methode: strategie-zoeker</span><span class="tg-sub">vervangen door de AI-trader; alleen in gebruik als de AI-trader uit staat</span></summary>
+      <details class="trgroup gap" id="tg-log">
+        <summary><span class="tg-title">Logboek</span><span class="tg-sub">technische regels van de trainer, live</span></summary>
+        <div class="panel gap">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-list"/></svg>Logboek</h2><span class="hint">live, nieuwste onderaan</span></div>
+        <pre class="tr-log" id="tr-log"></pre>
+      </div>
+      </details>
+      </div>
+      <div class="tabpane" data-trpane="strat" hidden>
+      <div class="help" style="margin:0">Oude methode: de strategie-zoeker en het zelflerend kiezen (bandit). Vervangen door de AI-trader; alleen in gebruik als de AI-trader uit staat.</div>
         <div class="panel gap" id="tr-search-panel" hidden>
         <div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Strategie-zoeker</h2><span class="hint" id="ss-hint"></span></div>
         <form class="panel-b" id="tr-search">
@@ -673,14 +688,6 @@
         <div class="panel-b" id="bd-body" style="padding-bottom:6px"></div>
         <div class="scroll" id="bd-table"></div>
       </div>
-      </details>
-      <details class="trgroup gap" id="tg-log">
-        <summary><span class="tg-title">Logboek</span><span class="tg-sub">technische regels van de trainer, live</span></summary>
-        <div class="panel gap">
-        <div class="panel-h"><h2><svg class="i"><use href="#i-list"/></svg>Logboek</h2><span class="hint">live, nieuwste onderaan</span></div>
-        <pre class="tr-log" id="tr-log"></pre>
-      </div>
-      </details>
       </div>
     </section>
 
@@ -736,6 +743,15 @@
     </section>
 
     <section data-section="settings" hidden>
+      <div class="tabs" role="tablist" aria-label="Onderdelen van de instellingen">
+        <button class="btn primary" type="button" role="tab" data-sttab="handel">Handel &amp; risico</button>
+        <button class="btn" type="button" role="tab" data-sttab="ai">AI-trader &amp; AI</button>
+        <button class="btn" type="button" role="tab" data-sttab="coins">Coins</button>
+        <button class="btn" type="button" role="tab" data-sttab="meldingen">Meldingen</button>
+        <button class="btn" type="button" role="tab" data-sttab="trainer">Trainer-koppeling</button>
+        <button class="btn" type="button" role="tab" data-sttab="account">API-keys &amp; account</button>
+      </div>
+      <div class="tabpane" data-stpane="handel">
       <div class="panel" id="follow" hidden>
         <div class="panel-h"><h2><svg class="i"><use href="#i-users"/></svg>Strategie volgen</h2><span class="hint" id="fl-state"></span></div>
         <div class="panel-b">
@@ -750,8 +766,7 @@
           <div class="row-actions"><button class="btn primary" id="fl-toggle" type="button"></button><span class="msg" id="fl-msg"></span></div>
         </div>
       </div>
-
-      <div class="panel gap">
+      <div class="panel gap" id="modepanel">
         <div class="panel-h"><h2><svg class="i"><use href="#i-bolt"/></svg>Handelsmodus</h2></div>
         <div class="panel-b modecard">
           <div><div class="big" id="mc-title"></div><p id="mc-text"></p></div>
@@ -765,7 +780,6 @@
           <div class="help">Wist alle paper-trades en -posities en begint met dit saldo. Live wordt niet aangeraakt. <span class="msg" id="paper-msg"></span></div>
         </div>
       </div>
-
       <div class="panel gap" id="schedule">
         <div class="panel-h"><h2><svg class="i"><use href="#i-history"/></svg>Planning</h2></div>
         <form class="panel-b" id="sched-form">
@@ -783,7 +797,6 @@
           <div class="row-actions"><button class="btn primary" type="submit">Opslaan</button><span class="msg" id="sch-msg"></span></div>
         </form>
       </div>
-
       <div class="panel gap" id="risk">
         <div class="panel-h"><h2><svg class="i"><use href="#i-shield"/></svg>Risico &amp; inzet</h2>
           <span class="hint">Jij bepaalt deze waarden; de AI kan ze niet veranderen</span></div>
@@ -818,7 +831,8 @@
           <div class="row-actions"><button class="btn primary" type="submit">Opslaan</button><span class="msg" id="risk-msg"></span></div>
         </form>
       </div>
-
+      </div>
+      <div class="tabpane" data-stpane="ai" hidden>
       <div class="panel gap" id="strategy">
         <div class="panel-h"><h2><svg class="i"><use href="#i-pulse"/></svg>Strategie</h2>
           <span class="hint">Wie koopt: de AI-trader, of de zelflerende strategieën</span></div>
@@ -846,27 +860,7 @@
           <div class="row-actions"><button class="btn primary" type="submit">Opslaan</button><span class="msg" id="strat-msg"></span></div>
         </form>
       </div>
-
-      <div class="panel gap" id="coins">
-        <div class="panel-h"><h2><svg class="i"><use href="#i-coins"/></svg>Coins</h2><span class="hint" id="coin-count"></span></div>
-        <div class="panel-b">
-          <div class="chips" id="coin-chips"></div>
-          <div class="coin-tools">
-            <input id="coin-search" placeholder="Zoek coin, bijv. SOL of XRP" autocomplete="off">
-            <button class="btn sm" id="coin-top10" type="button">Top 10 op volume</button>
-            <button class="btn sm" id="coin-clear" type="button">Leegmaken</button>
-          </div>
-          <div class="coinlist" id="coin-list"><div class="empty">Markten laden…</div></div>
-          <div class="help">Standaard gesorteerd op handelsvolume van de afgelopen 24 uur. Klik op een kolomkop om op koers, 24u-verandering of naam te sorteren; nog een keer klikken draait de volgorde om. Coins met weinig volume hebben een grotere spread, dus duurdere trades.</div>
-          <div class="row-actions">
-            <button class="btn primary" id="coin-save" type="button">Coins opslaan</button>
-            <button class="btn" id="coin-reset" type="button">Ongedaan maken</button>
-            <span class="msg" id="coin-msg"></span>
-          </div>
-        </div>
-      </div>
-
-      <div class="panel gap">
+      <div class="panel gap" id="aipanel">
         <div class="panel-h"><h2><svg class="i"><use href="#i-cpu"/></svg>AI-controleur</h2></div>
         <form class="panel-b" id="ai-form">
           <div class="help" style="margin:0 0 12px">De AI-controleur mag alleen aankopen afwijzen (van de AI-trader als dat aan staat, en van de strategieën); hij doet ook de AI-winstcheck en het dagoverzicht; bedragen, stop-loss en verkopen bepaalt hij nooit.
@@ -890,31 +884,28 @@
           <div id="ai-result" hidden style="margin-top:14px"></div>
         </form>
       </div>
-
-      <div class="panel gap" id="mlpanel">
-        <div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Trainer en eigen model</h2><span class="hint" id="ml-hint"></span></div>
+      </div>
+      <div class="tabpane" data-stpane="coins" hidden>
+      <div class="panel gap" id="coins">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-coins"/></svg>Coins</h2><span class="hint" id="coin-count"></span></div>
         <div class="panel-b">
-          <p class="muted" style="margin:0 0 6px;font-size:13.5px"><b>vetobot-trainer</b> op je VPS leert van maanden koersgeschiedenis en van je eigen trades. Hij maakt twee dingen:
-            de <b>AI-trader</b>, die zelf beslist wanneer hij koopt en verkoopt (aanzetten bij Strategie), en een <b>voorspelmodel</b> dat de AI bij elk signaal een winstkans geeft.
-            Alles wat de trainer doet en denkt zie je op de pagina <a href="#" data-go="trainer">Trainer</a>.</p>
-          <form id="ml-form" data-admin>
-            <div class="fields" style="margin-top:12px">
-              <div><label for="ml-url">Adres van de trainer <span class="kstate" id="st-trainerUrl"></span></label>
-                <input id="ml-url" type="password" autocomplete="off" placeholder="https://trainer.jouwdomein.nl (leeg = niet wijzigen)"></div>
-              <div><label for="ml-token">Code van de trainer <span class="kstate" id="st-trainerToken"></span></label>
-                <input id="ml-token" type="password" autocomplete="off" placeholder="staat in de logs van de trainer (leeg = niet wijzigen)"></div>
-            </div>
-            <div class="row-actions">
-              <button class="btn" type="submit">Opslaan</button>
-              <button class="btn primary" type="button" id="ml-train">Voorspelmodel nu trainen met mijn instellingen</button>
-              <button class="btn" type="button" id="ml-fetch">Model nu ophalen</button>
-              <span class="msg" id="ml-msg"></span>
-            </div>
-          </form>
-          <div id="ml-status" style="margin-top:14px"></div>
+          <div class="chips" id="coin-chips"></div>
+          <div class="coin-tools">
+            <input id="coin-search" placeholder="Zoek coin, bijv. SOL of XRP" autocomplete="off">
+            <button class="btn sm" id="coin-top10" type="button">Top 10 op volume</button>
+            <button class="btn sm" id="coin-clear" type="button">Leegmaken</button>
+          </div>
+          <div class="coinlist" id="coin-list"><div class="empty">Markten laden…</div></div>
+          <div class="help">Standaard gesorteerd op handelsvolume van de afgelopen 24 uur. Klik op een kolomkop om op koers, 24u-verandering of naam te sorteren; nog een keer klikken draait de volgorde om. Coins met weinig volume hebben een grotere spread, dus duurdere trades.</div>
+          <div class="row-actions">
+            <button class="btn primary" id="coin-save" type="button">Coins opslaan</button>
+            <button class="btn" id="coin-reset" type="button">Ongedaan maken</button>
+            <span class="msg" id="coin-msg"></span>
+          </div>
         </div>
       </div>
-
+      </div>
+      <div class="tabpane" data-stpane="meldingen" hidden>
       <div class="panel gap" id="notify">
         <div class="panel-h"><h2><svg class="i"><use href="#i-bell"/></svg>Meldingen</h2>
           <span class="hint">Discord-meldingen en een waarschuwing als de server offline gaat</span></div>
@@ -980,10 +971,36 @@
           </div>
         </div>
       </div>
-
-      <div class="panel gap">
+      </div>
+      <div class="tabpane" data-stpane="trainer" hidden>
+      <div class="panel gap" id="mlpanel">
+        <div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Trainer en eigen model</h2><span class="hint" id="ml-hint"></span></div>
+        <div class="panel-b">
+          <p class="muted" style="margin:0 0 6px;font-size:13.5px"><b>vetobot-trainer</b> op je VPS leert van maanden koersgeschiedenis en van je eigen trades. Hij maakt twee dingen:
+            de <b>AI-trader</b>, die zelf beslist wanneer hij koopt en verkoopt (aanzetten bij Strategie), en een <b>voorspelmodel</b> dat de AI bij elk signaal een winstkans geeft.
+            Alles wat de trainer doet en denkt zie je op de pagina <a href="#" data-go="trainer">Trainer</a>.</p>
+          <form id="ml-form" data-admin>
+            <div class="fields" style="margin-top:12px">
+              <div><label for="ml-url">Adres van de trainer <span class="kstate" id="st-trainerUrl"></span></label>
+                <input id="ml-url" type="password" autocomplete="off" placeholder="https://trainer.jouwdomein.nl (leeg = niet wijzigen)"></div>
+              <div><label for="ml-token">Code van de trainer <span class="kstate" id="st-trainerToken"></span></label>
+                <input id="ml-token" type="password" autocomplete="off" placeholder="staat in de logs van de trainer (leeg = niet wijzigen)"></div>
+            </div>
+            <div class="row-actions">
+              <button class="btn" type="submit">Opslaan</button>
+              <button class="btn primary" type="button" id="ml-train">Voorspelmodel nu trainen met mijn instellingen</button>
+              <button class="btn" type="button" id="ml-fetch">Model nu ophalen</button>
+              <span class="msg" id="ml-msg"></span>
+            </div>
+          </form>
+          <div id="ml-status" style="margin-top:14px"></div>
+        </div>
+      </div>
+      </div>
+      <div class="tabpane" data-stpane="account" hidden>
+      <div class="panel gap" id="keyspanel">
         <div class="panel-h"><h2><svg class="i"><use href="#i-key"/></svg>API-keys</h2>
-          <span class="hint">Versleuteld opgeslagen, nooit meer volledig zichtbaar. AI-keys staan bij AI-controleur.</span></div>
+          <span class="hint">Versleuteld opgeslagen, nooit meer volledig zichtbaar. AI-keys staan bij <a href="#" data-go="settings" data-anchor="aipanel">AI-controleur</a>.</span></div>
         <form class="panel-b" id="keys-form">
           <div class="fields">
             <div><label for="k-bv">Bitvavo API-key <span class="kstate" id="st-bitvavoApiKey"></span></label>
@@ -1000,8 +1017,7 @@
           </div>
         </form>
       </div>
-
-      <div class="panel gap">
+      <div class="panel gap" id="account">
         <div class="panel-h"><h2><svg class="i"><use href="#i-lock"/></svg>Account</h2></div>
         <form class="panel-b" id="un-form" style="max-width:460px;border-bottom:1px solid var(--line)">
           <label for="u-new" style="margin-top:0">Gebruikersnaam</label>
@@ -1018,6 +1034,7 @@
           <input id="p-new" type="password" autocomplete="new-password" required minlength="10">
           <div class="row-actions"><button class="btn" type="submit">Wijzigen</button><span class="msg err" id="pw-error"></span></div>
         </form>
+      </div>
       </div>
     </section>
   </main>
@@ -1160,7 +1177,9 @@ function show(view) {
   clearTimeout(pollTimer);
   if (view === 'app') {
     load().then(poll).catch(() => {});
-    const start = location.hash.slice(1);
+    // Pagina uit de link (#trades), anders de laatst bekeken pagina (per browser).
+    let start = location.hash.slice(1);
+    if (!titles[start]) { try { start = localStorage.getItem('vb-page') ?? ''; } catch { start = ''; } }
     go(titles[start] && (start !== 'users' || me?.role === 'admin') ? start : 'dashboard');
   }
 }
@@ -1202,12 +1221,16 @@ function go(section, anchor) {
   if (section === 'aichat' && Date.now() - (chatsLoadedAt ?? 0) > 1000) loadChats();
   else if (section === 'aichat') renderChats();
   if (anchor) {
-    const pane = $(anchor)?.closest('[data-trpane]');
-    if (pane) showTrTab(pane.dataset.trpane);
+    // Een link naar een blok opent eerst de tab waar dat blok in staat (Trainer of Instellingen).
+    const tr = $(anchor)?.closest('[data-trpane]');
+    if (tr) showTab('tr', tr.dataset.trpane);
+    const st = $(anchor)?.closest('[data-stpane]');
+    if (st) showTab('st', st.dataset.stpane);
     setTimeout(() => $(anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
   }
   else window.scrollTo({ top: 0 });
   history.replaceState(null, '', `#${section}`);
+  try { localStorage.setItem('vb-page', section); } catch { /* geen opslag */ }
 }
 document.querySelectorAll('.nav').forEach(n => n.onclick = () => go(n.dataset.view));
 document.addEventListener('click', (e) => { const b = e.target.closest('[data-goto]'); if (b) go(b.dataset.goto, b.dataset.anchor); });
@@ -1862,7 +1885,7 @@ function renderTrainer() {
   const when = (iso) => iso ? esc(String(iso).replace('T', ' ').slice(0, 16)) : '–';
   if (!d.configured) {
     $('tr-badge').innerHTML = '<span class="badge soft">niet gekoppeld</span>';
-    $('tr-now').innerHTML = `<p style="margin:0">Er is nog geen trainer gekoppeld. Zet de trainer op je VPS (zie de README onder "Eigen model") en vul het adres en de code in bij <a href="#" data-go="settings">Instellingen → Trainer en eigen model</a>.</p>`;
+    $('tr-now').innerHTML = `<p style="margin:0">Er is nog geen trainer gekoppeld. Zet de trainer op je VPS (zie de README onder "Eigen model") en vul het adres en de code in bij <a href="#" data-go="settings" data-anchor="mlpanel">Instellingen → Trainer-koppeling</a>.</p>`;
     ['tr-model', 'tr-config', 'tr-log', 'tr-history'].forEach((id) => { $(id).innerHTML = ''; });
     return;
   }
@@ -1914,7 +1937,7 @@ function renderTrainer() {
         ${m.metrics.live.selectedAvgReturnPct != null ? `Die het model zou nemen (${m.metrics.live.nSelected}): ${m.metrics.live.selectedAvgReturnPct > 0 ? '+' : ''}${nl(m.metrics.live.selectedAvgReturnPct, 2)}%` : ''}${m.metrics.live.skippedAvgReturnPct != null ? `, die het zou overslaan: ${m.metrics.live.skippedAvgReturnPct > 0 ? '+' : ''}${nl(m.metrics.live.skippedAvgReturnPct, 2)}%` : ''}</dd>` : ''}
       ${m.metrics?.regimes ? `<dt>Per soort markt</dt><dd>${Object.entries(m.metrics.regimes).map(([k, v]) => `<span style="white-space:nowrap">${esc(k)}: ${v.avgReturnPct == null ? '–' : `<span class="${v.avgReturnPct > 0 ? 'up' : 'down'}">${v.avgReturnPct > 0 ? '+' : ''}${nl(v.avgReturnPct, 2)}%</span>`} <span class="muted">(${v.nSelected} trades)</span></span>`).join(' · ')}</dd>` : ''}
       <dt>Opgehaald door bot</dt><dd>${d.fetchedAt ? time(d.fetchedAt) : '–'}${d.fetchError ? ` <span class="warnc">(${esc(d.fetchError)})</span>` : ''}</dd>
-    </dl><div class="help">Alle cijfers per drempel staan bij <a href="#" data-go="settings">Instellingen → Trainer en eigen model</a>.</div>`
+    </dl><div class="help">Alle cijfers per drempel staan bij <a href="#" data-go="settings" data-anchor="mlpanel">Instellingen → Trainer-koppeling</a>.</div>`
     : '<p class="muted" style="margin:0">Nog geen model. Na de eerste geslaagde training verschijnt het hier.</p>';
 
   // Schema (niet overschrijven terwijl je aan het typen bent)
@@ -2240,14 +2263,30 @@ function rewardChart(pts, sign) {
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Beloningen en straffen per trade door de tijd, met het gemiddelde van de laatste 20" style="display:block;max-height:340px">${grid}${xl}${marks}${line}</svg>`;
 }
 
-// Trainer in tabbladen; de laatst gekozen tab onthouden (per browser).
-function showTrTab(name) {
-  document.querySelectorAll('[data-trpane]').forEach((el) => { el.hidden = el.dataset.trpane !== name; });
-  document.querySelectorAll('[data-trtab]').forEach((b) => { b.classList.toggle('primary', b.dataset.trtab === name); b.setAttribute('aria-selected', String(b.dataset.trtab === name)); });
-  try { localStorage.setItem('trtab', name); } catch { /* geen opslag: geen probleem */ }
+// Trainer en Instellingen in tabbladen; de laatst gekozen tab onthouden (per browser).
+// kind 'tr' = Trainer (data-trtab/data-trpane), 'st' = Instellingen (data-sttab/data-stpane).
+function showTab(kind, name) {
+  if (!document.querySelector(`[data-${kind}pane="${name}"]`)) return;
+  document.querySelectorAll(`[data-${kind}pane]`).forEach((el) => { el.hidden = el.dataset[`${kind}pane`] !== name; });
+  document.querySelectorAll(`[data-${kind}tab]`).forEach((b) => { const on = b.dataset[`${kind}tab`] === name; b.classList.toggle('primary', on); b.setAttribute('aria-selected', String(on));
+    // Op een smal scherm de gekozen tab in beeld schuiven binnen de tabbalk (niet de pagina).
+    const bar = b.parentElement;
+    if (on && bar && bar.scrollWidth > bar.clientWidth) bar.scrollLeft = Math.max(0, b.offsetLeft - bar.offsetLeft - 16);
+  });
+  try { localStorage.setItem(`${kind}tab`, name); } catch { /* geen opslag: geen probleem */ }
 }
-document.addEventListener('click', (e) => { const b = e.target.closest('[data-trtab]'); if (b) showTrTab(b.dataset.trtab); });
-try { const t = localStorage.getItem('trtab'); if (t && document.querySelector(`[data-trpane="${t}"]`)) showTrTab(t); } catch { /* geen opslag */ }
+const showTrTab = (name) => showTab('tr', name);
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-trtab], [data-sttab]');
+  if (!b) return;
+  if (b.dataset.trtab) showTab('tr', b.dataset.trtab); else showTab('st', b.dataset.sttab);
+  window.scrollTo({ top: 0 });
+});
+// Oude tabnamen van de Trainer (vóór de nieuwe indeling) naar de nieuwe tab.
+const oldTrTabs = { overzicht: 'agent', recepten: 'agent', beloningen: 'beter', live: 'beter', overig: 'server' };
+for (const kind of ['tr', 'st']) {
+  try { const t = localStorage.getItem(`${kind}tab`); if (t) showTab(kind, kind === 'tr' ? (oldTrTabs[t] ?? t) : t); } catch { /* geen opslag */ }
+}
 // Helpers: andere apparaten die recepten trainen voor de leerserver.
 let hlShow = false;
 let hlPair = null;
@@ -2579,7 +2618,7 @@ document.addEventListener('click', (e) => {
   const a = e.target.closest('[data-go]');
   if (!a) return;
   e.preventDefault();
-  go(a.dataset.go);
+  go(a.dataset.go, a.dataset.anchor);
 });
 
 // ---------- Learning ----------
