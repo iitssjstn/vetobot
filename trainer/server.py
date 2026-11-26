@@ -889,6 +889,8 @@ def add_agent_trades(items):
                           'expectedPct': _float_or_none(t.get('expectedPct'))})
         except (KeyError, TypeError, ValueError):
             continue
+        if not math.isfinite(clean[-1]['pct']):  # NaN/Infinity: zou de live-tellingen en de JSON voor de bot bederven
+            clean.pop()
     if not clean:
         return 0
     with feedback_lock:
