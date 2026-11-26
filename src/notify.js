@@ -20,6 +20,7 @@ export const NOTIFY_EVENTS = {
   aiFailed: 'Alle AI-modellen faalden',
   dailySummary: 'Dagelijks overzicht',
   strategy: 'Automatisch overgestapt op een nieuwe strategie (trainer)',
+  health: 'Gezondheid: bot hangt, posities niet bewaakt, Bitvavo onbereikbaar, onverwacht herstart (en opgelost)',
 };
 
 const COLORS = { info: 0x5aa9f0, ok: 0x3ccf8e, warn: 0xf0b24a, error: 0xf26d6d, live: 0xf26d6d };
@@ -76,8 +77,11 @@ export class Notifier {
         signal: AbortSignal.timeout(10000),
       });
       if (!res.ok) throw new Error(`Discord gaf HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      this.lastFailure = null;
       return true;
     } catch (err) {
+      // Bewaren, zodat het dashboard laat zien dat meldingen niet aankomen (via Discord kan dat niet).
+      this.lastFailure = { at: new Date().toISOString(), error: err.message };
       this.log.error(`Discord-melding mislukt: ${err.message}`);
       if (event === 'test') throw err;
       return false;

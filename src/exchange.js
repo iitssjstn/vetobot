@@ -23,6 +23,13 @@ export function createExchange(secrets) {
 
 export const hasTradingKeys = (ex) => Boolean(ex.apiKey && ex.secret);
 
+// Is dit een verbindingsfout (time-out, Bitvavo niet bereikbaar, onderhoud), en geen fout in de order zelf?
+export function isNetworkError(err) {
+  if (!err) return false;
+  if (err instanceof ccxt.NetworkError) return true; // RequestTimeout, ExchangeNotAvailable, DDoSProtection, ...
+  return /ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|fetch failed|socket hang up|timed? ?out/i.test(String(err.message ?? err));
+}
+
 // Weigerde Bitvavo de order duidelijk (dan is er zeker niets gebeurd)? Ongeldige order, te weinig saldo,
 // keys of rechten. Bij al het andere (time-out, verbinding weg, order niet gevuld) is de uitkomst onzeker.
 export const isOrderRefusal = (err) => err instanceof ccxt.InvalidOrder || err instanceof ccxt.InsufficientFunds || err instanceof ccxt.BadSymbol || err instanceof ccxt.AuthenticationError

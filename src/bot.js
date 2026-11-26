@@ -4,7 +4,7 @@ import { computeFeatures, predict, predictRaw, contributions, explain, positionF
 import { askVetoChain, askTeamChain, askExitChain, testChain, listModels, writeSummaryChain } from './ai.js';
 import { TIMEFRAME_MINUTES, fmtInterval, LIVE_MIN_STAKE_EUR } from './settings.js';
 import { cleanSuggestions, currentValues, applySuggestions } from './suggest.js';
-import { fetchClosedCandles, fetchPrice, hasTradingKeys, isOrderRefusal } from './exchange.js';
+import { fetchClosedCandles, fetchPrice, hasTradingKeys, isOrderRefusal, isNetworkError } from './exchange.js';
 import { checkEntry } from './risk.js';
 import { Bandit } from './bandit.js';
 import { analyzeBook, bookProblem } from './orderbook.js';
@@ -12,6 +12,7 @@ import { Journal, journalOptionsFromEnv, volRegimeOf, pickIndicators, ruleOf } f
 import { MARKET_TF, RISK, LEARN, EXPLORE, explorationOutcome, rewardSummary, onlineCorrection, correctedExpectation, exploreWanted, exploreScore, agentParts, agentForRecipe, allAgentCoins, chooseForRegime, volLoses, assessRisk, riskStake, sizeStake, slippagePct, execSummary, lossStreak } from './agents.js';
 import { SAFETY, exchangeStopPrice, stopStatus, compareBalances, issueKey } from './safety.js';
 import path from 'node:path';
+import { Health, alertMessage } from './health.js';
 
 // Bedragen en koersen in Nederlandse notatie voor meldingen (€ 81,31 / € 0,3455 / −€ 0,36).
 const nl = (n, digits, min = digits) => new Intl.NumberFormat('nl-NL', { minimumFractionDigits: min, maximumFractionDigits: digits }).format(n);
@@ -49,6 +50,8 @@ export class Bot {
     this.ex = exchange;
     this.brokers = brokers;
     this.stores = stores;
+    // Gezondheid: wanneer slaagden de check, de positiecontrole en het contact met Bitvavo (zie health.js).
+    this.health = new Health();
     this.settings = settings;
     this.secrets = secrets;
     this.notifier = notifier;
@@ -81,6 +84,57 @@ export class Bot {
   #notify(event, payload) {
     if (!this.notifier) return;
     this.notifier.send(event, payload).catch(() => {});
+  }
+
+  // Gezondheid nu (voor het dashboard en de bewaking). scheduled: draait de planner van deze bot nog.
+  healthStatus({ scheduled = true } = {}) {
+    let safety = null;
+    try { safety = this.safetyStatus?.() ?? null; } catch { safety = null; }
+    const stops = Object.fromEntries((safety?.exchangeStop?.positions ?? []).map((p) => [p.pair, p.status]));
+    const live = this.mode === 'live';
+    const openPositions = Object.values(this.store.state.positions).map((p) => ({
+      pair: p.pair, live, stop: stops[p.pair] ?? null, openedAt: Date.parse(p.openedAt) || 0 }));
+    return this.health.assess({
+      mode: this.mode, intervalMs: this.checkIntervalMinutes * 60000, watchSeconds: this.risk.watchSeconds,
+      running: this.running, scheduled, halted: this.store.state.halted, openPositions,
+      buyBlock: safety?.buyBlock ?? null, uncleanRestart: this.uncleanRestart ?? null,
+    });
+  }
+
+  // Door de bewaking (manager) elke halve minuut aangeroepen: beoordelen en zo nodig melden.
+  // Kritiek over de handelsronde of onbewaakte posities: ook de heartbeat op "fout" (hooguit elke 5 min),
+  // zodat een externe monitor (bijv. Healthchecks) het meteen ziet.
+  async healthCheck(opts = {}) {
+    const r = this.healthStatus(opts);
+    for (const a of this.health.alerts(r)) {
+      const m = alertMessage(a);
+      this.#event(a.kind === 'resolved' ? 'info' : a.problem.level === 'critical' ? 'error' : 'warn', null,
+        `${m.title}${a.kind === 'problem' ? `: ${a.problem.detail}` : ''}`);
+      await this.#notifyReliable('health', m);
+    }
+    const hard = r.problems.some((p) => ['loop-hang', 'scheduler', 'positions'].includes(p.key));
+    if (hard && this.heartbeatEnabled !== false && Date.now() - (this.healthHeartbeatAt ?? 0) > 5 * 60000) {
+      this.healthHeartbeatAt = Date.now();
+      this.notifier?.heartbeat(false).catch(() => {});
+    }
+    return r;
+  }
+
+  // Een melding die echt moet aankomen: tot 3 keer proberen. Lukt het niet, dan staat dat op het dashboard.
+  async #notifyReliable(event, payload, waits = [5000, 20000]) {
+    if (!this.notifier) return false;
+    const configured = Boolean(this.notifier.secrets?.get?.('discordWebhook'));
+    for (let i = 0; ; i++) {
+      let ok = false;
+      this.notifier.lastFailure = null;
+      try { ok = await this.notifier.send(event, payload); } catch (err) { this.notifier.lastFailure = { at: new Date().toISOString(), error: err.message }; }
+      if (ok) { this.health.notifyOk(); return true; }
+      if (!configured || !this.notifier.lastFailure) return false; // niet ingesteld of uitgezet: geen fout
+      if (i >= waits.length) break;
+      await new Promise((r) => setTimeout(r, this.notifyRetryMs ?? waits[i]));
+    }
+    this.health.notifyFailed(this.notifier.lastFailure?.error ?? 'Discord niet bereikbaar');
+    return false;
   }
 
   // BTC-filter: één keer per check de trend van BTC/EUR bepalen (koers boven EMA 50).
@@ -819,8 +873,10 @@ export class Bot {
     // Eerst wachten op wat er al loopt (bijv. een handmatige verkoop), daarna pas beginnen.
     await this.#exclusive(async () => {});
     this.running = true;
+    this.health.tickStarted();
     const started = Date.now();
     let errors = 0;
+    let firstError = null;
     // Telt per check wat er gebeurde, voor de samenvatting in het activiteitenlog.
     this.tickStats = { pairs: 0, buySignals: 0, aiCalls: 0, blocked: 0, opened: 0, closed: 0 };
     try {
@@ -843,6 +899,9 @@ export class Bot {
           await this.#exclusive(() => this.#handlePair(pair));
         } catch (err) {
           errors++;
+          firstError ??= `${pair}: ${err.message}`;
+          if (isNetworkError(err)) this.health.exchangeFailed(err);
+          if (this.store.state.positions[pair]) this.health.positionFailed(pair, err);
           this.#event('error', pair, err.message);
           this.#notify('errors', { title: `Fout bij ${pair}`, message: err.message, level: 'error' });
           this.lastError = { at: new Date().toISOString(), pair, message: err.message };
@@ -872,7 +931,15 @@ export class Bot {
           this.#summary(errors));
         if (quiet) this.lastQuietLog = Date.now();
       }
+      this.health.tickFinished(errors, firstError);
       if (this.heartbeatEnabled !== false) this.notifier?.heartbeat(errors === 0).catch(() => {});
+    } catch (err) {
+      // Een fout buiten de coins om (bijv. BTC-trend, ophalen van koersen): niet alleen in de console.
+      this.health.tickFailed(err);
+      if (isNetworkError(err)) this.health.exchangeFailed(err);
+      this.lastError = { at: new Date().toISOString(), pair: null, message: err.message };
+      this.#event('error', null, `Check mislukt: ${err.message}`);
+      throw err;
     } finally {
       this.running = false;
       this.#step(null);
@@ -890,6 +957,7 @@ export class Bot {
       // Bitvavo geeft af en toe een losse storing (bijv. 's nachts "errorCode 101"). Pas melden als het
       // 10 minuten aanhoudt, en één keer melden als het weer werkt. Zolang koopt de bot niets nieuws.
       await this.refreshLiveBalance().then(() => {
+        this.health.exchangeOk();
         if (this.balanceFail?.notified) {
           this.#notify('errors', { title: 'Saldo ophalen bij Bitvavo werkt weer', message: `Na ${Math.round((Date.now() - this.balanceFail.since) / 60000)} minuten storing.`, level: 'info' });
         }
@@ -897,6 +965,7 @@ export class Bot {
         this.balanceFail = null;
       }).catch((err) => {
         errors++;
+        this.health.exchangeFailed(err);
         this.#event('error', null, `Saldo ophalen mislukt: ${err.message}`);
         this.balanceFail ??= { since: Date.now(), notified: false };
         this.balanceFail.error = String(err?.message ?? err).slice(0, 200);
@@ -1026,6 +1095,8 @@ export class Bot {
     if (position) {
       this.#step(`${pair}: positie controleren`);
       const price = await fetchPrice(this.ex, pair);
+      this.health.positionChecked(pair);
+      this.health.exchangeOk();
       positionChangePct = ((price - position.entryPrice) / position.entryPrice) * 100;
       if (await this.#manageExit(pair, position, price, risk)) return;
       // Positie van de AI-trader: hij beslist zelf wanneer hij verkoopt.
@@ -2382,11 +2453,15 @@ export class Bot {
         const risk = this.risk;
         const exploring = this.mode === 'paper' && Boolean(this.store.state.explorations?.length);
         let changed = exploring;
+        let failed = 0;
+        let firstError = null;
         for (const pair of Object.keys(this.store.state.positions)) {
           const position = this.store.state.positions[pair];
           if (!position) continue;
           try {
             const price = await fetchPrice(this.ex, pair);
+            this.health.positionChecked(pair);
+            this.health.exchangeOk();
             // Een nieuw hoogste punt (voor de trailing stop) moet bewaard blijven.
             if (price > (position.highest ?? position.entryPrice)) changed = true;
             // Net zo het laagste punt (voor de MAE in het leerdagboek).
@@ -2401,9 +2476,14 @@ export class Bot {
               positionChangePct: ((price - position.entryPrice) / position.entryPrice) * 100,
             };
           } catch (err) {
+            failed++;
+            firstError ??= `${pair}: ${err.message}`;
+            this.health.positionFailed(pair, err);
+            if (isNetworkError(err)) this.health.exchangeFailed(err);
             this.#event('error', pair, `Positie bewaken: ${err.message}`);
           }
         }
+        this.health.watchFinished(failed, firstError);
         await this.#settleExplorations();
         // Alleen opslaan als er iets veranderde (verkoop, nieuw hoogste punt, AI-winstcheck).
         if (changed) this.store.save();

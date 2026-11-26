@@ -68,8 +68,8 @@ export const AI_FAIL_MODES = ['reject', 'approve'];
 const DEFAULT_ON = new Set(['agentLiveSmallStart', 'agentSizing', 'agentVolGuard', 'exchangeStop']);
 const NOTIFY_DEFAULTS = {
   discordUserId: '',
-  events: { startup: true, trades: true, stoploss: true, errors: true, dailyLimit: true, mode: true, aiVeto: false, dailySummary: true, aiFallback: true, aiFailed: true, strategy: true },
-  mentions: { startup: true, trades: false, stoploss: true, errors: true, dailyLimit: true, mode: true, aiVeto: false, dailySummary: false, aiFallback: false, aiFailed: true, strategy: true },
+  events: { startup: true, trades: true, stoploss: true, errors: true, dailyLimit: true, mode: true, aiVeto: false, dailySummary: true, aiFallback: true, aiFailed: true, strategy: true, health: true },
+  mentions: { startup: true, trades: false, stoploss: true, errors: true, dailyLimit: true, mode: true, aiVeto: false, dailySummary: false, aiFallback: false, aiFailed: true, strategy: true, health: true },
   summaryTime: '08:00',
 };
 const RISK_LABELS = {

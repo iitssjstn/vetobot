@@ -2,6 +2,7 @@ import { config, validateConfig } from './config.js';
 import { Users } from './users.js';
 import { BotManager } from './manager.js';
 import { startServer } from './server.js';
+import { openRunState } from './runstate.js';
 
 const errors = validateConfig();
 if (errors.length) {
@@ -13,6 +14,22 @@ if (errors.length) {
 // allemaal, met één gedeelde verbinding voor marktdata.
 const users = new Users(config.dataDir);
 const manager = new BotManager({ config, users });
+
+// Onverwacht gestopt? Bij elke start: is de vorige keer netjes afgesloten (SIGTERM/SIGINT)? Zo niet
+// (crash, stroom weg, Docker die de container afschoot), dan meldt de bot dat bij het opstarten.
+// Elke minuut wordt 'lastAlive' bijgewerkt, zodat bekend is wanneer hij voor het laatst leefde.
+const runState = openRunState(config.dataDir);
+manager.uncleanRestart = runState.unclean;
+setInterval(() => runState.alive(), 60000).unref();
+
+// Een fout die nergens wordt opgevangen mag niet alleen in de console belanden.
+process.on('unhandledRejection', (err) => manager.reportProcessError('niet opgevangen fout (promise)', err));
+process.on('uncaughtException', (err) => {
+  // Na een exception is de toestand onzeker: melden, dan stoppen. Docker start de container opnieuw;
+  // bij die start ziet de bot dat het niet netjes ging, meldt dat en bewaakt de posities weer.
+  manager.reportProcessError('onverwachte crash', err);
+  setTimeout(() => process.exit(1), 3000).unref();
+});
 
 if (!users.isSetUp()) {
   console.warn('==================================================================');
@@ -32,12 +49,18 @@ for (const ctx of manager.contexts.values()) {
   );
   if (settings.mode === 'live') console.warn(`LET OP: live trading staat aan voor ${user.username}. Er worden echte orders geplaatst.`);
   const open = Object.keys(bot.store.state.positions);
-  notifier.send('startup', {
-    title: 'vetobot is gestart',
-    message: open.length
-      ? `Weer online. Er staan ${open.length} positie(s) open die weer bewaakt worden: ${open.join(', ')}.`
-      : 'Weer online. Er staan geen posities open.',
-    level: settings.mode === 'live' ? 'live' : 'ok',
+  const unclean = manager.uncleanRestart;
+  if (unclean) bot.health.recovered(`herstart na een onverwachte stop (laatst actief ${unclean.lastAlive ?? 'onbekend'}); posities weer bewaakt`);
+  const msg = open.length
+    ? `Weer online. Er staan ${open.length} positie(s) open die weer bewaakt worden: ${open.join(', ')}.`
+    : 'Weer online. Er staan geen posities open.';
+  notifier.send(unclean ? 'health' : 'startup', {
+    title: unclean ? '🟠 vetobot is onverwacht herstart' : 'vetobot is gestart',
+    message: unclean
+      ? `De vorige keer stopte vetobot niet netjes (crash, stroomuitval of een geforceerde herstart). Laatst actief: ${unclean.lastAlive ?? 'onbekend'}. ${msg} ` +
+        'Live controleert hij eerst saldo en stop-orders bij Bitvavo voordat hij iets nieuws koopt.'
+      : msg,
+    level: unclean ? 'warn' : settings.mode === 'live' ? 'live' : 'ok',
     fields: [
       { name: 'Modus', value: settings.mode === 'live' ? 'LIVE' : 'paper' },
       { name: 'Coins', value: bot.following ? 'volgt de admin' : String(bot.pairs.length) },
@@ -50,6 +73,7 @@ const server = startServer({ config, users, manager });
 function shutdown(sig) {
   console.info(`${sig} ontvangen, afsluiten...`);
   manager.stopAll();
+  runState.clean();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 5000).unref();
 }

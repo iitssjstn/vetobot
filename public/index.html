@@ -497,6 +497,7 @@
         <span class="sub" id="st-sub"></span>
         <div class="progress" title="Tijd tot de volgende check"><div id="st-bar"></div></div>
       </div>
+      <div class="panel gap" id="dash-health"></div>
       <div id="dash-alerts"></div>
       <div class="grid tiles gap" id="tiles"></div>
       <div class="two">
@@ -1437,6 +1438,7 @@ function render() {
 
   renderStatus();
   renderDashAlerts(s);
+  renderHealth(s.health);
 
   const trend = (p) => p.trend === 'up' ? '<span class="up">▲ omhoog</span>' : p.trend === 'down' ? '<span class="down">▼ omlaag</span>' : '<span class="muted">–</span>';
   const judgement = (p) => p.error ? `<span class="down">Fout: ${esc(p.error)}</span>`
@@ -1578,6 +1580,40 @@ const sumBox = () => document.activeElement?.closest('#dash-summary');
 
 // ---------- Status ----------
 let lastForcedLoad = 0;
+// Gezondheid van de bot: niet alleen "draait hij", maar "doet hij wat hij moet doen".
+function renderHealth(h) {
+  const el = $('dash-health');
+  if (!el) return;
+  if (!h) { el.hidden = true; return; }
+  el.hidden = false;
+  const rel = (iso) => {
+    if (!iso) return '<span class="muted">nog niet</span>';
+    const sec = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+    const txt = sec < 60 ? `${sec} sec geleden` : sec < 7200 ? `${Math.round(sec / 60)} min geleden` : `${Math.round(sec / 3600)} uur geleden`;
+    return `<span title="${esc(String(iso).replace('T', ' ').slice(0, 19))}">${txt}</span>`;
+  };
+  const cls = { healthy: 'ok', degraded: 'wait', critical: 'bad', paused: 'soft', stopped: 'soft' }[h.level] ?? 'soft';
+  const probs = (h.problems ?? []).filter((p) => p.key !== 'paused' || h.level === 'paused');
+  el.innerHTML = `<div class="panel-h"><h2>${esc(h.emoji ?? '')} Gezondheid: <span class="badge ${cls}">${esc(h.label ?? h.level)}</span></h2>
+      <span class="hint">${h.tickRunningSince ? `check loopt sinds ${rel(h.tickRunningSince)}` : `laatste geslaagde check ${rel(h.lastTickOkAt)}`}</span></div>
+    <div class="panel-b">
+      ${probs.length ? `<ul style="margin:0 0 10px;padding-left:18px;font-size:13.5px">${probs.map((p) => `<li><b>${esc(p.title)}</b>: ${esc(p.detail ?? '')}${p.manual ? ' <span class="badge bad">actie nodig</span>' : ''}</li>`).join('')}</ul>` : ''}
+      ${h.uncleanRestart ? `<div class="alert" style="margin:0 0 10px">${icon('alert')}<div>Bij de laatste start bleek dat vetobot de vorige keer niet netjes stopte (laatst actief ${esc(String(h.uncleanRestart.lastAlive ?? 'onbekend').replace('T', ' ').slice(0, 16))}).</div></div>` : ''}
+      <details${h.level === 'healthy' ? '' : ' open'}><summary class="muted" style="font-size:13px">Details</summary>
+      <dl class="kv" style="margin-top:8px">
+        <dt>Laatste geslaagde check</dt><dd>${rel(h.lastTickOkAt)}</dd>
+        <dt>Laatste positiecontrole</dt><dd>${h.openLivePositions || h.lastPositionCheckAt ? rel(h.lastPositionCheckAt) : '<span class="muted">geen open posities</span>'}</dd>
+        <dt>Laatste contact met Bitvavo</dt><dd>${rel(h.lastExchangeOkAt)}</dd>
+        <dt>Laatste fout</dt><dd>${h.lastError ? `${esc(h.lastError.where)}: ${esc(h.lastError.message)} <span class="muted">(${rel(h.lastError.at)})</span>` : '<span class="muted">geen</span>'}</dd>
+        <dt>Fouten op rij</dt><dd>${h.consecutiveErrors ?? 0}${h.consecutiveExchangeErrors ? ` <span class="muted">(Bitvavo: ${h.consecutiveExchangeErrors})</span>` : ''}</dd>
+        <dt>Open live-posities</dt><dd>${h.openLivePositions ?? 0}</dd>
+        <dt>Posities bewaakt</dt><dd>${h.positionsWatched ? '<span class="up">ja</span>' : '<span class="down">NEE</span>'}</dd>
+        <dt>Live trading actief</dt><dd>${h.liveTrading ? 'ja' : 'nee'}</dd>
+        <dt>Laatste herstel</dt><dd>${h.lastRecovery ? `${esc(h.lastRecovery.what)} <span class="muted">(${rel(h.lastRecovery.at)})</span>` : '<span class="muted">nog niet nodig geweest</span>'}</dd>
+      </dl></details>
+    </div>`;
+}
+
 // Waarschuwingen bovenaan de homepage, alleen live: anders lijkt alles goed terwijl de bot niets koopt.
 function renderDashAlerts(s) {
   const el = $('dash-alerts');
