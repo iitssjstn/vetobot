@@ -494,3 +494,17 @@ test('notice van de leerserver: model teruggedraaid → één melding per notice
   await bot2.tick();
   assert.equal(sent2.filter((s) => s.title === 'AI-trader: nieuw model teruggedraaid').length, 1);
 });
+
+test('Strategy Agent: gekozen recept handelt deze coin niet → ander toegestaan recept dat hem wel handelt', async () => {
+  const alt = { ...greedy({ recipeKey: 'R2', coins: ['BTC/EUR'] }), regimes: undefined };
+  const main = greedy({ coins: ['ETH/EUR'], regimes: { stijgend: { key: 'R', why: 'best' }, zijwaarts: { key: 'R', why: 'best' }, dalend: { key: 'R', why: 'best' }, extra: { key: 'R2', agent: alt } } });
+  const bot = await agentRun(main);
+  const pos = bot.store.state.positions['BTC/EUR'];
+  assert.ok(pos, bot.pairStatus['BTC/EUR']?.reason);
+  assert.equal(pos.agent.recipe, 'R2');
+  assert.ok(bot.store.state.agentChats.some((c) => c.talk.some((m) => /handelt BTC\/EUR niet; ik gebruik recept R2/.test(m.text))));
+  // Mag dat andere recept niet: zoals voorheen niet kopen ("coin niet gekozen").
+  const bot2 = await agentRun({ ...main, regimes: { ...main.regimes, extra: { key: 'R2', agent: { ...alt, stage: 'geblokkeerd' } } } });
+  assert.equal(bot2.store.state.positions['BTC/EUR'], undefined);
+  assert.match(bot2.pairStatus['BTC/EUR'].reason, /handelt deze coin niet/);
+});
