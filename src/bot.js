@@ -1185,9 +1185,8 @@ export class Bot {
 
     if (result.signal !== 'buy') return;
 
-    // Alle posities bezet: stil overslaan. Geen AI, geen regel bij AI-signalen, en de
-    // kruising niet als beoordeeld markeren, zodat hij nog kan als er binnen het
-    // terugkijkvenster een plek vrijkomt.
+    // Alle posities bezet: stil overslaan. Geen AI, geen regel bij AI-signalen, en het
+    // signaal niet als beoordeeld markeren.
     // De verkenner (alleen paper) heeft een eigen plek naast de gewone trades.
     const exploring = Boolean(result.indicators?.agent?.explore);
     const openCount = Object.values(this.store.state.positions).filter((p) => !p?.explore).length;

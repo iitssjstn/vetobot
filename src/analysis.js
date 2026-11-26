@@ -7,6 +7,7 @@ export const EXIT_KINDS = [
   ['trailing', 'Trailing stop', /^Trailing stop/],
   ['takeprofit', 'Take-profit', /^Take-profit/],
   ['ai', 'AI neemt winst', /^AI neemt winst/],
+  // Alleen nog bij oude trades: de vroegere klassieke strategie verkocht op de EMA-kruising.
   ['signal', 'Verkoopsignaal (trend omlaag)', /^(Trend omlaag|EMA fast kruist onder)/],
   ['manual', 'Handmatig gesloten', /^Handmatig/i],
   ['follow', 'Gevolgd (leider verkocht)', /^Gevolgd/],
