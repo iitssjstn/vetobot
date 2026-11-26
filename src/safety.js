@@ -14,10 +14,54 @@ export const SAFETY = {
   filledShare: 0.99,          // zoveel van de positie uitgevoerd = de stop heeft de positie gesloten
 };
 
+// Uitschieter (winstgrens), alleen voor posities van de AI-trader (niet de verkenner): staat de top
+// minstens pumpTriggerPct boven de instapprijs, dan gaat een meeschuivende winstgrens aan die nooit omlaag
+// gaat: niveau = min(instap × (1 + (1 − teruggeven) × topwinst), top × (1 − minimale ruimte)).
+// Live schuift de stop bij Bitvavo mee, hooguit eens per stopEveryMs en pas vanaf stopStepPct hoger.
+export const PUMP = { stopStepPct: 0.3, stopEveryMs: 60000 };
+export const PUMP_DEFAULTS = { pumpTriggerPct: 3, pumpGivebackPct: 30, pumpMinGapPct: 1 };
+
+export const pumpApplies = (position) => Boolean(position?.agent) && !position.explore && !position.agent?.explore;
+
+const pumpSetting = (risk, key) => {
+  const v = Number(risk?.[key]);
+  return Number.isFinite(v) ? v : PUMP_DEFAULTS[key];
+};
+
+// Niveau van de winstgrens bij deze instap en top (zonder het eerdere niveau), of null.
+export function pumpRawLevel(entry, top, risk = {}) {
+  const give = Math.min(90, Math.max(5, pumpSetting(risk, 'pumpGivebackPct')));
+  const gap = Math.min(10, Math.max(0.2, pumpSetting(risk, 'pumpMinGapPct')));
+  if (!(entry > 0) || !(top > 0)) return null;
+  const gain = top / entry - 1;
+  return Math.min(entry * (1 + (1 - give / 100) * gain), top * (1 - gap / 100));
+}
+
+// Winstgrens van een positie nu (rekening houdend met het eerdere niveau: nooit omlaag), of null als hij
+// (nog) niet aan staat of uit staat (pumpTriggerPct 0). Verandert de positie niet.
+export function pumpLevel(position, risk = {}) {
+  if (!pumpApplies(position)) return null;
+  const trigger = pumpSetting(risk, 'pumpTriggerPct');
+  if (!(trigger > 0)) return null;
+  const entry = Number(position.entryPrice);
+  const top = Math.max(Number(position.highest) || 0, entry);
+  if (!(entry > 0)) return null;
+  if (!position.pump && (top / entry - 1) * 100 < trigger) return null;
+  const lvl = pumpRawLevel(entry, top, risk);
+  return Math.max(lvl ?? 0, Number(position.pump?.level) || 0) || null;
+}
+
 // Stopprijs van de noodstop van een positie, of null (geen stop).
 // - eigen plan (AI-trader: de veiligheidsstop van het recept; zelflerende strategie: haar stop);
 // - anders de ATR-stop als die aan staat en er bij de aankoop een ATR was, of de vaste stop-loss.
+// Staat de winstgrens (uitschieter) aan, dan het hoogste van de noodstop en de winstgrens.
 export function exchangeStopPrice(position, risk = {}) {
+  const base = emergencyStopPrice(position, risk);
+  const pump = pumpLevel(position, risk);
+  return pump && pump > (base ?? 0) ? pump : base;
+}
+
+function emergencyStopPrice(position, risk = {}) {
   const entry = Number(position?.entryPrice);
   if (!(entry > 0)) return null;
   if (position.plan) {
@@ -35,7 +79,8 @@ export function exchangeStopPrice(position, risk = {}) {
 // Status van de exchange-stop van één positie voor het dashboard.
 export function stopStatus(position, { live, enabled }) {
   const s = position?.exchangeStop ?? null;
-  const row = { pair: position.pair, orderId: s?.orderId ?? null, stopPrice: s?.stopPrice ?? null, placedAt: s?.placedAt ?? null, status: 'geen', error: s?.error ?? s?.skipped ?? null };
+  const row = { pair: position.pair, orderId: s?.orderId ?? null, stopPrice: s?.stopPrice ?? null, placedAt: s?.placedAt ?? null, status: 'geen', error: s?.error ?? s?.skipped ?? null,
+    ...(position?.pump ? { pump: { level: position.pump.level ?? null, topPct: position.pump.topPct ?? null, levelPct: position.pump.levelPct ?? null } } : {}) };
   if (!live) return { ...row, status: 'n.v.t.', error: null };
   if (s?.orderId) return { ...row, status: 'actief' };
   if (s?.error) return { ...row, status: 'mislukt' };

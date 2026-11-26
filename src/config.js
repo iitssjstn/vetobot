@@ -82,6 +82,11 @@ export const config = {
     maxHoldMinutes: num('MAX_HOLD_MINUTES', 0),
     // Live: na elke aankoop ook een stop-loss-order bij Bitvavo zelf zetten, op de noodstop (1 = aan, 0 = uit).
     exchangeStop: num('EXCHANGE_STOP', 1),
+    // Uitschieter (AI-trader): vanaf zoveel % winst een winstgrens die meeschuift en nooit omlaag gaat (0 = uit);
+    // hooguit zoveel % van de winst teruggeven, minstens zoveel % ruimte onder de top. Live schuift de stop bij Bitvavo mee.
+    pumpTriggerPct: num('PUMP_TRIGGER_PCT', 3),
+    pumpGivebackPct: num('PUMP_GIVEBACK_PCT', 30),
+    pumpMinGapPct: num('PUMP_MIN_GAP_PCT', 1),
   },
 
   paper: {

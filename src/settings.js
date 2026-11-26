@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { PUMP_DEFAULTS } from './safety.js';
 
 // Instellingen die je in het dashboard wijzigt: handelsmodus en AI-provider.
 // Opgeslagen in data/settings.json. Bij de eerste start komen de waarden uit
@@ -36,6 +37,11 @@ export const RISK_LIMITS = {
   maxBookCostPct: [0, 10],
   // 1 = live na elke aankoop ook een stop-loss-order bij Bitvavo zelf zetten (op de noodstop).
   exchangeStop: [0, 1],
+  // Uitschieter (AI-trader): vanaf zoveel % winst een meeschuivende winstgrens (0 = uit), hooguit zoveel %
+  // van de winst teruggeven, en minstens zoveel % ruimte onder de top.
+  pumpTriggerPct: [0, 50],
+  pumpGivebackPct: [5, 90],
+  pumpMinGapPct: [0.2, 10],
 };
 export const LIVE_MIN_STAKE_EUR = 5;
 export const STRATEGY_LIMITS = {
@@ -92,6 +98,9 @@ const RISK_LABELS = {
   makerFeePct: 'Maker-fee',
   maxHoldMinutes: 'Maximale tijd in positie',
   feePct: 'Fee',
+  pumpTriggerPct: 'Uitschieter: winstgrens vanaf',
+  pumpGivebackPct: 'Uitschieter: hooguit teruggeven',
+  pumpMinGapPct: 'Uitschieter: minimale ruimte onder de top',
 };
 
 function validated(values, limits, integers) {
@@ -134,7 +143,8 @@ export class Settings {
       timeframe: saved.timeframe ?? defaults.timeframe,
       checkIntervalMinutes: saved.checkIntervalMinutes ?? defaults.checkIntervalMinutes,
       // De stop-loss bij Bitvavo (live) staat standaard aan.
-      risk: Object.fromEntries(Object.keys(RISK_LIMITS).map((k) => [k, saved.risk?.[k] ?? defaults.risk?.[k] ?? (DEFAULT_ON.has(k) ? 1 : 0)])),
+      // De uitschieter-instellingen hebben eigen standaardwaarden (ook voor een oud settings.json zonder deze velden).
+      risk: Object.fromEntries(Object.keys(RISK_LIMITS).map((k) => [k, saved.risk?.[k] ?? defaults.risk?.[k] ?? PUMP_DEFAULTS[k] ?? (DEFAULT_ON.has(k) ? 1 : 0)])),
       notify: {
         discordUserId: saved.notify?.discordUserId ?? NOTIFY_DEFAULTS.discordUserId,
         events: { ...NOTIFY_DEFAULTS.events, ...saved.notify?.events },

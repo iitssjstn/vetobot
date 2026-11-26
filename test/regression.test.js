@@ -17,6 +17,7 @@ import { analyzeBook, bookProblem } from '../src/orderbook.js';
 import { askVetoChain } from '../src/ai.js';
 import { agentForRecipe } from '../src/agents.js';
 import { config as envConfig, validateConfig } from '../src/config.js';
+import { PUMP_DEFAULTS } from '../src/safety.js';
 
 orderTiming.sleep = async () => {};
 orderTiming.pollMs = 0;
@@ -380,7 +381,8 @@ test('maximale duur: 0 = uit, anders na de tijd verkopen', async () => {
 });
 
 test('plan van de AI-trader/strategie: eigen stop geldt, trailing stop en vaste take-profit niet', async () => {
-  const { bot, ex, pos, entry } = await withPosition({ stopLossPct: 2, takeProfitPct: 1, trailingStopPct: 1 });
+  // Winstgrens bij een uitschieter uit: die heeft eigen tests (test/pump.test.js).
+  const { bot, ex, pos, entry } = await withPosition({ stopLossPct: 2, takeProfitPct: 1, trailingStopPct: 1, pumpTriggerPct: 0 });
   pos.plan = { key: null, stopLossPct: 10, takeProfitPct: 0, maxHoldMinutes: 0 };
   pos.agent = { timeframe: '15m', recipe: 'R' };
   ex.fetchTicker = async () => ({ last: entry * 1.05 });
@@ -783,7 +785,8 @@ test('settings: standaardwaarden zonder bestand (paper, alles uit behalve de vei
   assert.equal('mode' in s.ai, false, 'geen AI-werkwijze meer (het AI-team is weg)');
   assert.deepEqual(Object.keys(s.risk).sort(), Object.keys(RISK_LIMITS).sort());
   assert.deepEqual(Object.keys(s.strategy).sort(), Object.keys(STRATEGY_LIMITS).sort());
-  for (const [k, v] of Object.entries(s.risk)) assert.equal(v, k === 'exchangeStop' ? 1 : 0, k);
+  // Behalve de stop bij Bitvavo en de uitschieter (eigen standaardwaarden) staat alles op 0.
+  for (const [k, v] of Object.entries(s.risk)) assert.equal(v, k === 'exchangeStop' ? 1 : PUMP_DEFAULTS[k] ?? 0, k);
   const on = ['agentLiveSmallStart', 'agentSizing', 'agentVolGuard'];
   for (const [k, v] of Object.entries(s.strategy)) assert.equal(v, on.includes(k) ? 1 : 0, k);
   assert.deepEqual(s.agentLive.approved, []);
