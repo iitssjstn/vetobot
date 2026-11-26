@@ -397,3 +397,29 @@ test('Review: live aankoop en verkoop staan direct op schijf (niet pas aan het e
   assert.ok(atClose, 'verkocht');
   assert.equal(atClose['BTC/EUR'], undefined, 'gesloten positie al van schijf');
 });
+
+test('Live: kleinste verkoopbare inzet (boven het Bitvavo-minimum bij de noodstop) en herkennen van de minimum-weigering', async () => {
+  const { sellableStake, belowMinimum } = await import('../src/bot.js');
+  // Bij 10% noodstop: € 5 × 1,03 / 0,9 = € 5,73; bij de stop is hij dan nog ruim € 5 waard.
+  assert.equal(sellableStake(10), 5.73);
+  assert.ok(sellableStake(10) * 0.9 * 0.9975 >= 5);
+  assert.equal(sellableStake(5), 5.43);
+  assert.equal(sellableStake(0), 5.73); // geen stop bekend: uitgaan van 10%
+  assert.ok(belowMinimum(new Error('bitvavo {"errorCode":212,"error":"You set amount to less than the minimum value possible for this market."}')));
+  assert.equal(belowMinimum(new Error('bitvavo {"errorCode":216,"error":"insufficient balance"}')), false);
+});
+
+test('Live: verkoop geweigerd onder het Bitvavo-minimum (212) → duidelijke fout, één melding, positie blijft; later lukt het', async () => {
+  const { bot, ex, sent } = setupLive();
+  await buyTicks(bot, ex, () => bot.store.state.positions['BTC/EUR']);
+  assert.ok(bot.store.state.positions['BTC/EUR']);
+  const orig = ex.createMarketOrder;
+  ex.createMarketOrder = async () => { throw new ccxt.InvalidOrder('bitvavo {"errorCode":212,"error":"You set amount to less than the minimum value possible for this market."}'); };
+  await assert.rejects(bot.closeManual('BTC/EUR'), /onder het minimum van Bitvavo/);
+  await assert.rejects(bot.closeManual('BTC/EUR'), /onder het minimum van Bitvavo/);
+  assert.ok(bot.store.state.positions['BTC/EUR'], 'positie blijft open en bewaakt');
+  assert.equal(sent.filter((m) => /te klein om te verkopen/.test(m.title ?? '')).length, 1, 'één melding, geen spam');
+  ex.createMarketOrder = orig;
+  await bot.closeManual('BTC/EUR');
+  assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
+});
