@@ -23,6 +23,13 @@ export function createExchange(secrets) {
 
 export const hasTradingKeys = (ex) => Boolean(ex.apiKey && ex.secret);
 
+// Is dit een verbindingsfout (time-out, Bitvavo niet bereikbaar, onderhoud), en geen fout in de order zelf?
+export function isNetworkError(err) {
+  if (!err) return false;
+  if (err instanceof ccxt.NetworkError) return true; // RequestTimeout, ExchangeNotAvailable, DDoSProtection, ...
+  return /ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|fetch failed|socket hang up|timed? ?out/i.test(String(err.message ?? err));
+}
+
 // Weigerde Bitvavo de order duidelijk (dan is er zeker niets gebeurd)? Ongeldige order, te weinig saldo,
 // keys of rechten. Bij al het andere (time-out, verbinding weg, order niet gevuld) is de uitkomst onzeker.
 export const isOrderRefusal = (err) => err instanceof ccxt.InvalidOrder || err instanceof ccxt.InsufficientFunds || err instanceof ccxt.BadSymbol || err instanceof ccxt.AuthenticationError
@@ -286,6 +293,22 @@ export class LiveBroker {
     return o;
   }
 
+  // Wachten op een limietorder mislukte (bijv. verbinding weg) terwijl hij al bij Bitvavo staat: annuleren
+  // en de echte stand ophalen, zodat hij niet ongemerkt open blijft (en later alsnog gevuld wordt). Is de stand
+  // niet op te halen, dan een fout: dan is onbekend wat er gevuld is.
+  async #abandon(order, pair, err) {
+    try {
+      await this.ex.cancelOrder(order.id, pair);
+    } catch {
+      // Al gevuld of al geannuleerd; de stand hieronder is leidend.
+    }
+    try {
+      return await this.ex.fetchOrder(order.id, pair);
+    } catch {
+      throw new Error(`Limietorder ${order.id} bij Bitvavo: stand onbekend (${err?.message ?? err})`);
+    }
+  }
+
   // Zelfde betekenis als in paper: bij kopen is costEur wat je in totaal betaalde (inclusief fee),
   // bij verkopen wat je netto ontving (na fee). Zonder dit telden de fees live niet mee in de winst.
   // Een fee in de coin zelf (bij kopen) gaat van de ontvangen hoeveelheid af.
@@ -317,7 +340,12 @@ export class LiveBroker {
         if (err instanceof ccxt.InvalidOrder && !(err instanceof ccxt.InsufficientFunds)) return null;
         throw err;
       }
-      const o = await this.#waitFill(order, pair, opts.waitSec ?? 20);
+      let o;
+      try {
+        o = await this.#waitFill(order, pair, opts.waitSec ?? 20);
+      } catch (err) {
+        o = await this.#abandon(order, pair, err);
+      }
       if (!o.filled) return null;
       return { ...this.#fillOf(o, 'buy', pair), limit: true, partial: o.filled < amount };
     }
@@ -340,11 +368,14 @@ export class LiveBroker {
       const t = await this.ex.fetchTicker(pair);
       const price = Number(this.ex.priceToPrecision(pair, t.ask ?? t.last));
       let o = null;
+      let order = null;
       try {
-        const order = await this.ex.createOrder(pair, 'limit', 'sell', amt, price, { postOnly: true });
+        order = await this.ex.createOrder(pair, 'limit', 'sell', amt, price, { postOnly: true });
         o = await this.#waitFill(order, pair, opts.waitSec ?? 20);
-      } catch {
-        o = null;
+      } catch (err) {
+        // Stond de order al bij Bitvavo, dan eerst annuleren en de echte stand: anders verkoopt de market-order
+        // hieronder alles nog eens terwijl de limietorder (deels) gevuld is of nog openstaat.
+        o = order?.id ? await this.#abandon(order, pair, err) : null;
       }
       const filled = o?.filled ?? 0;
       if (filled >= amt) return { ...this.#fillOf(o, 'sell', pair), limit: true };

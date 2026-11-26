@@ -4,7 +4,7 @@ import { computeFeatures, predict, predictRaw, contributions, explain, positionF
 import { askVetoChain, askTeamChain, askExitChain, testChain, listModels, writeSummaryChain } from './ai.js';
 import { TIMEFRAME_MINUTES, fmtInterval, LIVE_MIN_STAKE_EUR } from './settings.js';
 import { cleanSuggestions, currentValues, applySuggestions } from './suggest.js';
-import { fetchClosedCandles, fetchPrice, hasTradingKeys, isOrderRefusal } from './exchange.js';
+import { fetchClosedCandles, fetchPrice, hasTradingKeys, isOrderRefusal, isNetworkError } from './exchange.js';
 import { checkEntry } from './risk.js';
 import { Bandit } from './bandit.js';
 import { analyzeBook, bookProblem } from './orderbook.js';
@@ -12,6 +12,7 @@ import { Journal, journalOptionsFromEnv, volRegimeOf, pickIndicators, ruleOf } f
 import { MARKET_TF, RISK, LEARN, EXPLORE, explorationOutcome, rewardSummary, onlineCorrection, correctedExpectation, exploreWanted, exploreScore, agentParts, agentForRecipe, allAgentCoins, chooseForRegime, volLoses, assessRisk, riskStake, sizeStake, slippagePct, execSummary, lossStreak } from './agents.js';
 import { SAFETY, exchangeStopPrice, stopStatus, compareBalances, issueKey } from './safety.js';
 import path from 'node:path';
+import { Health, alertMessage } from './health.js';
 
 // Bedragen en koersen in Nederlandse notatie voor meldingen (€ 81,31 / € 0,3455 / −€ 0,36).
 const nl = (n, digits, min = digits) => new Intl.NumberFormat('nl-NL', { minimumFractionDigits: min, maximumFractionDigits: digits }).format(n);
@@ -49,6 +50,8 @@ export class Bot {
     this.ex = exchange;
     this.brokers = brokers;
     this.stores = stores;
+    // Gezondheid: wanneer slaagden de check, de positiecontrole en het contact met Bitvavo (zie health.js).
+    this.health = new Health();
     this.settings = settings;
     this.secrets = secrets;
     this.notifier = notifier;
@@ -81,6 +84,57 @@ export class Bot {
   #notify(event, payload) {
     if (!this.notifier) return;
     this.notifier.send(event, payload).catch(() => {});
+  }
+
+  // Gezondheid nu (voor het dashboard en de bewaking). scheduled: draait de planner van deze bot nog.
+  healthStatus({ scheduled = true } = {}) {
+    let safety = null;
+    try { safety = this.safetyStatus?.() ?? null; } catch { safety = null; }
+    const stops = Object.fromEntries((safety?.exchangeStop?.positions ?? []).map((p) => [p.pair, p.status]));
+    const live = this.mode === 'live';
+    const openPositions = Object.values(this.store.state.positions).map((p) => ({
+      pair: p.pair, live, stop: stops[p.pair] ?? null, openedAt: Date.parse(p.openedAt) || 0 }));
+    return this.health.assess({
+      mode: this.mode, intervalMs: this.checkIntervalMinutes * 60000, watchSeconds: this.risk.watchSeconds,
+      running: this.running || Boolean(this.tickQueued), scheduled, halted: this.store.state.halted, openPositions,
+      buyBlock: safety?.buyBlock ?? null, uncleanRestart: this.uncleanRestart ?? null,
+    });
+  }
+
+  // Door de bewaking (manager) elke halve minuut aangeroepen: beoordelen en zo nodig melden.
+  // Kritiek over de handelsronde of onbewaakte posities: ook de heartbeat op "fout" (hooguit elke 5 min),
+  // zodat een externe monitor (bijv. Healthchecks) het meteen ziet.
+  async healthCheck(opts = {}) {
+    const r = this.healthStatus(opts);
+    for (const a of this.health.alerts(r)) {
+      const m = alertMessage(a);
+      this.#event(a.kind === 'resolved' ? 'info' : a.problem.level === 'critical' ? 'error' : 'warn', null,
+        `${m.title}${a.kind === 'problem' ? `: ${a.problem.detail}` : ''}`);
+      await this.#notifyReliable('health', m);
+    }
+    const hard = r.problems.some((p) => ['loop-hang', 'scheduler', 'positions'].includes(p.key));
+    if (hard && this.heartbeatEnabled !== false && Date.now() - (this.healthHeartbeatAt ?? 0) > 5 * 60000) {
+      this.healthHeartbeatAt = Date.now();
+      this.notifier?.heartbeat(false).catch(() => {});
+    }
+    return r;
+  }
+
+  // Een melding die echt moet aankomen: tot 3 keer proberen. Lukt het niet, dan staat dat op het dashboard.
+  async #notifyReliable(event, payload, waits = [5000, 20000]) {
+    if (!this.notifier) return false;
+    const configured = Boolean(this.notifier.secrets?.get?.('discordWebhook'));
+    for (let i = 0; ; i++) {
+      let ok = false;
+      this.notifier.lastFailure = null;
+      try { ok = await this.notifier.send(event, payload); } catch (err) { this.notifier.lastFailure = { at: new Date().toISOString(), error: err.message }; }
+      if (ok) { this.health.notifyOk(); return true; }
+      if (!configured || !this.notifier.lastFailure) return false; // niet ingesteld of uitgezet: geen fout
+      if (i >= waits.length) break;
+      await new Promise((r) => setTimeout(r, this.notifyRetryMs ?? waits[i]));
+    }
+    this.health.notifyFailed(this.notifier.lastFailure?.error ?? 'Discord niet bereikbaar');
+    return false;
   }
 
   // BTC-filter: één keer per check de trend van BTC/EUR bepalen (koers boven EMA 50).
@@ -380,6 +434,15 @@ export class Bot {
         return a ? { ...r, stage: a.stage ?? 'bevestigd', timeframe: a.timeframe, targetPct: a.targetPct, stopPct: a.stopPct, holdMinutes: a.holdMinutes } : r;
       }),
     };
+  }
+
+  // Opslaan direct na een order; een fout hierbij mag de afhandeling van de order niet afbreken.
+  #saveNow(pair) {
+    try {
+      this.store.save();
+    } catch (err) {
+      this.#event('error', pair, `Opslaan na de order mislukt: ${err.message}`);
+    }
   }
 
   // Zorgt dat een check, een handmatige verkoop en een modus-wissel nooit tegelijk lopen.
@@ -811,6 +874,9 @@ export class Bot {
   tick() {
     if (this.tickPromise) return this.tickPromise;
     this.tickQueued = true;
+    // Al bij het in de wachtrij zetten: wacht de check op iets dat hangt (bijv. een handmatige verkoop),
+    // dan ziet de bewaking een hangende handelsronde en niet "geen checks meer" (geen planner-herstart).
+    this.health.tickStarted();
     this.tickPromise = this.#tick().finally(() => { this.tickPromise = null; this.tickQueued = false; });
     return this.tickPromise;
   }
@@ -821,6 +887,7 @@ export class Bot {
     this.running = true;
     const started = Date.now();
     let errors = 0;
+    let firstError = null;
     // Telt per check wat er gebeurde, voor de samenvatting in het activiteitenlog.
     this.tickStats = { pairs: 0, buySignals: 0, aiCalls: 0, blocked: 0, opened: 0, closed: 0 };
     try {
@@ -843,6 +910,9 @@ export class Bot {
           await this.#exclusive(() => this.#handlePair(pair));
         } catch (err) {
           errors++;
+          firstError ??= `${pair}: ${err.message}`;
+          if (isNetworkError(err)) this.health.exchangeFailed(err);
+          if (this.store.state.positions[pair]) this.health.positionFailed(pair, err);
           this.#event('error', pair, err.message);
           this.#notify('errors', { title: `Fout bij ${pair}`, message: err.message, level: 'error' });
           this.lastError = { at: new Date().toISOString(), pair, message: err.message };
@@ -872,7 +942,15 @@ export class Bot {
           this.#summary(errors));
         if (quiet) this.lastQuietLog = Date.now();
       }
+      this.health.tickFinished(errors, firstError);
       if (this.heartbeatEnabled !== false) this.notifier?.heartbeat(errors === 0).catch(() => {});
+    } catch (err) {
+      // Een fout buiten de coins om (bijv. BTC-trend, ophalen van koersen): niet alleen in de console.
+      this.health.tickFailed(err);
+      if (isNetworkError(err)) this.health.exchangeFailed(err);
+      this.lastError = { at: new Date().toISOString(), pair: null, message: err.message };
+      this.#event('error', null, `Check mislukt: ${err.message}`);
+      throw err;
     } finally {
       this.running = false;
       this.#step(null);
@@ -890,6 +968,7 @@ export class Bot {
       // Bitvavo geeft af en toe een losse storing (bijv. 's nachts "errorCode 101"). Pas melden als het
       // 10 minuten aanhoudt, en één keer melden als het weer werkt. Zolang koopt de bot niets nieuws.
       await this.refreshLiveBalance().then(() => {
+        this.health.exchangeOk();
         if (this.balanceFail?.notified) {
           this.#notify('errors', { title: 'Saldo ophalen bij Bitvavo werkt weer', message: `Na ${Math.round((Date.now() - this.balanceFail.since) / 60000)} minuten storing.`, level: 'info' });
         }
@@ -897,6 +976,7 @@ export class Bot {
         this.balanceFail = null;
       }).catch((err) => {
         errors++;
+        this.health.exchangeFailed(err);
         this.#event('error', null, `Saldo ophalen mislukt: ${err.message}`);
         this.balanceFail ??= { since: Date.now(), notified: false };
         this.balanceFail.error = String(err?.message ?? err).slice(0, 200);
@@ -1026,6 +1106,8 @@ export class Bot {
     if (position) {
       this.#step(`${pair}: positie controleren`);
       const price = await fetchPrice(this.ex, pair);
+      this.health.positionChecked(pair);
+      this.health.exchangeOk();
       positionChangePct = ((price - position.entryPrice) / position.entryPrice) * 100;
       if (await this.#manageExit(pair, position, price, risk)) return;
       // Positie van de AI-trader: hij beslist zelf wanneer hij verkoopt.
@@ -2252,6 +2334,8 @@ export class Bot {
     delete this.lastFeatures[pair];
     // Live: meteen een stop-order bij Bitvavo zelf op de noodstop (mislukt dat, dan blijft de positie gewoon bewaakt).
     await this.#placeExchangeStop(pair, this.store.state.positions[pair]);
+    // Meteen opslaan: na een crash later in de check mag een echte positie niet verloren gaan.
+    this.#saveNow(pair);
     this.#event('info', pair, `Gekocht:${fmtAmount(fill.amount)} @ ${fmtPrice(fill.price)} (${this.broker.mode}${fill.limit ? `, limietorder${fill.partial ? ', deels gevuld' : ''}` : ''})` +
       (stakeInfo.extra > 0 ? `, inzet ${fmtEur(stake)} waarvan ${fmtEur(stakeInfo.extra)} herinvesteerde winst` : '') +
       (stake < stakeInfo.effective ? `, inzet verlaagd naar ${fmtEur(stake)} door de Risk Agent` : ''));
@@ -2382,11 +2466,15 @@ export class Bot {
         const risk = this.risk;
         const exploring = this.mode === 'paper' && Boolean(this.store.state.explorations?.length);
         let changed = exploring;
+        let failed = 0;
+        let firstError = null;
         for (const pair of Object.keys(this.store.state.positions)) {
           const position = this.store.state.positions[pair];
           if (!position) continue;
           try {
             const price = await fetchPrice(this.ex, pair);
+            this.health.positionChecked(pair);
+            this.health.exchangeOk();
             // Een nieuw hoogste punt (voor de trailing stop) moet bewaard blijven.
             if (price > (position.highest ?? position.entryPrice)) changed = true;
             // Net zo het laagste punt (voor de MAE in het leerdagboek).
@@ -2401,9 +2489,14 @@ export class Bot {
               positionChangePct: ((price - position.entryPrice) / position.entryPrice) * 100,
             };
           } catch (err) {
+            failed++;
+            firstError ??= `${pair}: ${err.message}`;
+            this.health.positionFailed(pair, err);
+            if (isNetworkError(err)) this.health.exchangeFailed(err);
             this.#event('error', pair, `Positie bewaken: ${err.message}`);
           }
         }
+        this.health.watchFinished(failed, firstError);
         await this.#settleExplorations();
         // Alleen opslaan als er iets veranderde (verkoop, nieuw hoogste punt, AI-winstcheck).
         if (changed) this.store.save();
@@ -2732,10 +2825,24 @@ export class Bot {
         const opts = this.#orderOpts(reason);
         if (opts.limit) this.#step(`${pair}: limietorder verkopen, wacht max. ${opts.waitSec} sec`);
         expected = await fetchPrice(this.ex, pair).catch(() => null);
-        // Deels uitgevoerde stop: alleen de rest nog verkopen.
-        const rest = done?.fill ? Math.max(0, pos.amount - done.filled) : pos.amount;
-        const sold = await this.broker.sell(pair, rest, opts);
-        fill = done?.fill ? combineFills(done.fill, sold) : sold;
+        // Deels uitgevoerde stop: die coins zijn echt verkocht. Meteen vastleggen (zoals #onStopState), zodat
+        // het niet verloren gaat als de verkoop hieronder mislukt; dan alleen de rest nog verkopen.
+        if (done?.fill) {
+          pos.stopFill = combineFills(pos.stopFill, done.fill);
+          pos.amount = Math.max(0, pos.amount - done.filled);
+        }
+        const sold = await this.broker.sell(pair, pos.amount, opts);
+        // Live maar deels uitgevoerd (bijv. Bitvavo annuleerde de rest door marktbescherming): de positie houdt
+        // de rest, zodat die bewaakt blijft en een nieuwe stop-order krijgt. Te weinig over om te verkopen: dicht.
+        const left = pos.amount - (Number(sold?.amount) || 0);
+        const minCost = Number(this.ex.markets?.[pair]?.limits?.cost?.min) > 0 ? Number(this.ex.markets[pair].limits.cost.min) : 5;
+        if (this.broker.mode === 'live' && left > pos.amount * (1 - SAFETY.filledShare) && left * (sold?.price || expected || 0) >= minCost) {
+          pos.stopFill = combineFills(pos.stopFill, sold);
+          pos.amount = left;
+          this.#saveNow(pair);
+          throw new Error(`Maar deels verkocht bij Bitvavo (${fmtAmount(sold?.amount ?? 0)}); de rest (${fmtAmount(left)}) blijft open en bewaakt`);
+        }
+        fill = sold;
       }
     }
     if (this.tickStats) this.tickStats.closed++;
@@ -2779,6 +2886,8 @@ export class Bot {
     });
     const how = fill.limitFallback ? (fill.limit ? ', limietorder deels gevuld, rest market' : ', limietorder niet gevuld, market') : fill.limit ? ', limietorder' : '';
     this.#event(pnlEur >= 0 ? 'info' : 'warn', pair, `Verkocht @ ${fmtPrice(fill.price)}, resultaat ${fmtSigned(pnlEur)} (${reason}${how})`);
+    // Meteen opslaan: na een crash mag een verkochte positie niet terugkomen (dan zou hij nog eens verkopen).
+    this.#saveNow(pair);
     this.#journalTrade({ decisionId: pos.journalId ?? null, mode: this.broker.mode, pair, openedAt: pos.openedAt, closedAt: Date.now(),
       entryPrice: pos.entryPrice, exitPrice: fill.price, costEur: pos.costEur, feesEur: (pos.entryFeeEur ?? 0) + (fill.feeEur ?? 0),
       entrySlipPct: pos.entrySlipPct ?? null, exitSlipPct: sellSlip ?? null, pnlEur, pnlPct: (pnlEur / pos.costEur) * 100, mfePct, maePct,

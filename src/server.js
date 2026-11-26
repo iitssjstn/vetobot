@@ -80,7 +80,22 @@ export function createApp({ users, manager, log = console }) {
   const httpError = (status, message) => Object.assign(new Error(message), { status });
 
   // --- Openbaar -------------------------------------------------------------
-  app.get('/healthz', (_req, res) => res.json({ ok: true, lastTickAt: manager.leaderBot?.lastTickAt ?? null }));
+  // Openbaar (voor Docker/uptime-monitors): alleen de algemene toestand, geen details. 503 als bij een bot
+  // de handelsronde hangt of er geen checks meer draaien: dan is de bot niet gezond, ook al reageert hij.
+  app.get('/healthz', (_req, res) => {
+    const levels = [];
+    let stuck = false;
+    for (const ctx of manager.contexts.values()) {
+      try {
+        const r = ctx.bot.healthStatus({ scheduled: Boolean(ctx.timer) });
+        levels.push(r.level);
+        if (r.problems.some((p) => p.key === 'loop-hang' || p.key === 'scheduler')) stuck = true;
+      } catch { levels.push('critical'); }
+    }
+    const order = ['healthy', 'paused', 'degraded', 'critical', 'stopped'];
+    const status = levels.reduce((w, l) => (order.indexOf(l) > order.indexOf(w) ? l : w), 'healthy');
+    res.status(stuck ? 503 : 200).json({ ok: !stuck, status, lastTickAt: manager.leaderBot?.lastTickAt ?? null });
+  });
   app.get('/', sendPage);
   app.get('/index.html', sendPage);
   app.use(express.static(publicDir));
@@ -310,6 +325,8 @@ export function createApp({ users, manager, log = console }) {
       })(),
       // Live-veiligheid: stop-orders bij Bitvavo en de laatste saldocontrole (licht: geen API-verzoeken).
       safety: (() => { try { return bot.safetyStatus?.() ?? null; } catch { return null; } })(),
+      // Gezondheid: laatste geslaagde check, positiecontrole en contact met Bitvavo, problemen.
+      health: (() => { try { return bot.healthStatus({ scheduled: Boolean(req.ctx.timer) }); } catch { return null; } })(),
       serverTime: new Date().toISOString(),
     });
   });

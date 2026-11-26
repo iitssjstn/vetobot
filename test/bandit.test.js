@@ -70,3 +70,11 @@ test('schaduwtrades: leren van trades die niet echt gedaan zijn', () => {
   assert.equal(+stop[0].pct.toFixed(2), -1.5);
   assert.equal(b.summary(['a', 'b'])[0].shadowTrades, 1);
 });
+
+test('beschadigd bandit.json met arms: null laat niets crashen', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vetobot-bandit-'));
+  const file = path.join(dir, 'bandit.json');
+  fs.writeFileSync(file, JSON.stringify({ arms: null }));
+  const b = new Bandit(file);
+  assert.deepEqual(b.state.arms, {});
+});

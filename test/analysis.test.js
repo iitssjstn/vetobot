@@ -48,3 +48,8 @@ test('weinig trades: cijfers wel, nog geen tips', () => {
   assert.deepEqual(a.advice, []);
   assert.deepEqual(analyzeTrades([]), { trades: 0 });
 });
+
+test('kapotte tijdstempel geeft geen NaN in de gemiddelde looptijd', () => {
+  const r = analyzeTrades([t(1, 'Take-profit'), { ...t(-1, 'Stop-loss'), openedAt: 'kapot' }]);
+  assert.ok(Number.isFinite(r.avgHoldMin), String(r.avgHoldMin));
+});

@@ -147,3 +147,38 @@ test('live: een echte fout bij een limiet-koop wordt niet verstopt als "niet gev
   ex.createOrder = async () => { throw new ccxt.InvalidOrder('post-only order would take liquidity'); };
   assert.equal(await new LiveBroker(ex).buy('X/EUR', 50, { limit: true, waitSec: 0 }), null, 'geweigerde post-only: niet gevuld');
 });
+
+// Review live: verbinding valt weg terwijl de limietorder al bij Bitvavo staat.
+test('live: limiet-verkoop, verbinding weg tijdens het wachten (order half gevuld) → eerst annuleren, alleen de rest met market', async () => {
+  const ccxt = (await import('ccxt')).default;
+  const ex = fakeLive({ fillLimit: 'half' });
+  const fo = ex.fetchOrder.bind(ex);
+  let n = 0;
+  ex.fetchOrder = async (id) => { if (n++ === 0) throw new ccxt.RequestTimeout('timed out'); return fo(id); };
+  const f = await new LiveBroker(ex).sell('X/EUR', 2, { limit: true, waitSec: 5 });
+  assert.ok(ex.calls.some((c) => c[0] === 'cancel'), 'limietorder geannuleerd');
+  assert.deepEqual(ex.calls.find((c) => c[0] === 'market'), ['market', 'sell', 1], 'alleen de rest, niet nog eens alles');
+  assert.equal(f.amount, 2);
+});
+
+test('live: limiet-verkoop, stand van de limietorder onbekend → fout, geen market-verkoop erachteraan', async () => {
+  const ccxt = (await import('ccxt')).default;
+  const ex = fakeLive({ fillLimit: 'half' });
+  ex.fetchOrder = async () => { throw new ccxt.RequestTimeout('timed out'); };
+  await assert.rejects(new LiveBroker(ex).sell('X/EUR', 2, { limit: true, waitSec: 5 }), /timed out/);
+  assert.ok(ex.calls.some((c) => c[0] === 'cancel'));
+  assert.ok(!ex.calls.some((c) => c[0] === 'market'), 'geen tweede verkoop');
+});
+
+test('live: limiet-koop, verbinding weg tijdens het wachten → limietorder geannuleerd (blijft niet open staan)', async () => {
+  const ccxt = (await import('ccxt')).default;
+  const ex = fakeLive({ fillLimit: 'none' });
+  const fo = ex.fetchOrder.bind(ex);
+  let n = 0;
+  ex.fetchOrder = async (id) => { if (n++ === 0) throw new ccxt.RequestTimeout('timed out'); return fo(id); };
+  assert.equal(await new LiveBroker(ex).buy('X/EUR', 50, { limit: true, waitSec: 5 }), null);
+  assert.ok(ex.calls.some((c) => c[0] === 'cancel'), 'limietorder geannuleerd');
+  ex.fetchOrder = async () => { throw new ccxt.RequestTimeout('timed out'); };
+  await assert.rejects(new LiveBroker(ex).buy('X/EUR', 50, { limit: true, waitSec: 5 }), /timed out/);
+  assert.equal(ex.calls.filter((c) => c[0] === 'cancel').length, 2, 'ook bij onbekende stand eerst annuleren');
+});

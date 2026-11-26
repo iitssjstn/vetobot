@@ -180,6 +180,54 @@ Valt je server uit, dan kan vetobot zelf niets meer sturen. Daarom stuurt hij na
 2. Plak de ping-URL bij Heartbeat-URL in vetobot en klik op **Heartbeat testen**.
 3. Kies in healthchecks.io bij **Integrations** de **Webhook**-integratie met als URL je Discord-webhook, methode POST, header `Content-Type: application/json` en body `{"content": "<@JOUW_ID> vetobot is offline ($NAME)"}`. Dan word je getagd. Zonder tag kun je ook de Discord-integratie gebruiken.
 
+### Gezondheid en meldingen bij stille uitval
+
+Vetobot kijkt niet alleen of hij "draait", maar of hij doet wat hij moet doen. Elke 30 seconden beoordeelt hij zichzelf op basis van tijdstempels: de laatste geslaagde check, de laatste geslaagde koerscontrole per open positie, en het laatste geslaagde contact met Bitvavo.
+
+| Status | Betekenis |
+|---|---|
+| 🟢 Gezond | Checks lopen, posities worden gecontroleerd, Bitvavo bereikbaar |
+| 🟠 Met problemen | Bijv. 3+ checks op rij met fouten, nieuwe aankopen geblokkeerd, Discord-meldingen komen niet aan, Bitvavo onbereikbaar zonder open live positie |
+| 🔴 Kritiek | De handelsronde hangt, er draaien geen checks meer, een **live positie wordt niet meer gecontroleerd**, Bitvavo onbereikbaar mét open live positie, een stop bij Bitvavo niet bevestigd, of 10+ checks op rij met fouten |
+| 🟡 Gepauzeerd | Zelf gepauzeerd of daglimiet bereikt; open posities worden bewaakt |
+| ⚪ Gestopt | De planner van de bot draait niet |
+
+**Meldingen** (Discord, soort *Gezondheid*, standaard aan en met tag):
+- Kritiek: direct. Een probleem pas als het 5 minuten aanhoudt, zodat korte haperingen geen melding geven.
+- Een melding vertelt wat er misging, wat getroffen is, of live trading nog loopt, of open posities bewaakt worden, wat de bot zelf deed en of jij iets moet doen.
+- Geen spam: hetzelfde probleem niet opnieuw, behalve als het erger wordt (dan direct) of lang aanhoudt (kritiek elk uur, een probleem elke 6 uur).
+- Is het weg, dan één melding **Opgelost**.
+- Een melding die niet aankomt, wordt nog 2 keer geprobeerd. Lukt het niet, dan staat dat op het dashboard.
+- Bij een hangende ronde, gestopte checks of onbewaakte posities gaat ook de heartbeat op *fout* (hooguit elke 5 minuten), zodat je externe monitor het meteen ziet.
+- Een onverwachte crash wordt gemeld. Bij de volgende start zegt vetobot dat hij **onverwacht herstart** is (crash, stroom weg, geforceerde herstart), met het tijdstip waarop hij voor het laatst actief was.
+
+**Automatisch herstel**, alleen wat veilig kan:
+- Draaien er geen checks meer, dan start de bewaking de planner opnieuw.
+- Bitvavo-storingen: elke check en bewakingsronde probeert het opnieuw. Live staan nieuwe aankopen intussen stil.
+- Na een herstart controleert de bot live eerst saldo en stop-orders bij Bitvavo, voordat hij iets nieuws koopt.
+- Een **hangende** check breekt de bot nooit af, want een lopende order zou dan dubbel kunnen gaan. Dan alleen melden.
+- Je live posities blijven beschermd door de stop-loss bij Bitvavo zelf, ook als de bot hangt of uitvalt.
+
+**Dashboard**: bovenaan staat het blok **Gezondheid** met de status en, uitklapbaar:
+- de laatste geslaagde check, positiecontrole en contact met Bitvavo;
+- de laatste fout en het aantal fouten op rij;
+- het aantal open live-posities, en of ze bewaakt worden;
+- of live trading actief is, en de laatste herstelpoging.
+
+**Docker**: `/healthz` geeft fout 503 als een handelsronde hangt of er geen checks meer draaien. Met een healthcheck en `autoheal` (of je eigen monitor) kan de container dan herstart worden. Voorbeeld voor je compose (alleen `vetobot`):
+
+```yaml
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/healthz"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 2m
+```
+
+Docker zelf herstart een container niet op een mislukte healthcheck. Hij toont dan alleen *unhealthy*. Automatisch herstarten doet bijvoorbeeld de container `willfarrell/autoheal`.
+
 ### AI-trader (leert zelf kopen en verkopen)
 
 Een lerende agent (reinforcement learning, *fitted Q-iteration*) die zelf uitzoekt wanneer kopen en wanneer verkopen loont. Geen EMA-kruisingen, vaste winstdoelen, stops of strategieën: zijn enige beloning is de winst na kosten.

@@ -30,7 +30,7 @@ export class Bandit {
     this.state = { arms: {}, recent: [], shadows: [] };
     try {
       const s = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (s && typeof s.arms === 'object') this.state = { arms: s.arms, recent: Array.isArray(s.recent) ? s.recent : [], shadows: Array.isArray(s.shadows) ? s.shadows : [] };
+      if (s && s.arms && typeof s.arms === 'object' && !Array.isArray(s.arms)) this.state = { arms: s.arms, recent: Array.isArray(s.recent) ? s.recent : [], shadows: Array.isArray(s.shadows) ? s.shadows : [] };
     } catch {
       // nog niets geleerd
     }

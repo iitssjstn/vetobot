@@ -316,3 +316,31 @@ test('Live op eigen risico in bulk: meerdere tegelijk, per recept een verliesgre
     close();
   }
 });
+
+test('healthz: 200 als het goed gaat, 503 als een handelsronde hangt; /api/state geeft de gezondheid', async () => {
+  const { users, manager, client, close, base } = await setup();
+  try {
+    const admin = client();
+    await admin.post('/api/auth/setup', { username: 'Justin', password: PW, code: users.setupCode });
+    let res = await fetch(`${base}/healthz`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.ok(['healthy', 'degraded', 'paused'].includes(body.status));
+    const st = await admin.get('/api/state');
+    assert.ok(st.body.health?.label, 'gezondheid in /api/state');
+    assert.ok('lastTickOkAt' in st.body.health && 'positionsWatched' in st.body.health);
+    // Handelsronde hangt al lang.
+    const bot = manager.get(users.list()[0].id).bot;
+    await bot.tickPromise;
+    bot.running = true;
+    bot.health.s.tickStartedAt = Date.now() - 60 * 60000;
+    res = await fetch(`${base}/healthz`);
+    assert.equal(res.status, 503);
+    assert.equal((await res.json()).status, 'critical');
+    assert.equal(JSON.stringify(await (await fetch(`${base}/healthz`)).json()).includes('loop-hang'), false, 'geen details naar buiten');
+    bot.running = false;
+  } finally {
+    close();
+  }
+});

@@ -313,6 +313,7 @@ export class BotManager {
     const notifier = new Notifier({ secrets, settings });
     const bot = new Bot({ config: this.config, exchange, brokers, stores, settings, secrets, notifier });
     bot.userId = user.id;
+    bot.uncleanRestart = this.uncleanRestart ?? null;
     bot.username = user.username;
     // De heartbeat gaat over de server, dus alleen de admin stuurt hem.
     bot.heartbeatEnabled = user.role === 'admin';
@@ -387,6 +388,49 @@ export class BotManager {
     }, wait);
   }
 
+  // Bewaking van de bots zelf (elke 30 sec): hangt de handelsronde, lopen de checks nog, worden de
+  // open posities nog gecontroleerd, is Bitvavo bereikbaar? Meldt via Discord (zonder spam) en herstelt
+  // wat veilig kan: een planner die niet meer loopt opnieuw starten. Een hangende check wordt nooit
+  // afgebroken (een lopende order zou dan dubbel kunnen gaan); dan alleen melden.
+  async checkHealth() {
+    for (const ctx of [...this.contexts.values()]) {
+      try {
+        if (this.contexts.get(ctx.user.id) !== ctx) continue;
+        const r = await ctx.bot.healthCheck({ scheduled: Boolean(ctx.timer) });
+        // Intussen gestopt (uitgeschakeld/verwijderd)? Dan niet opnieuw inplannen.
+        if (this.contexts.get(ctx.user.id) !== ctx) continue;
+        if (r.problems.some((p) => p.key === 'scheduler') && !ctx.bot.running) {
+          this.log.warn(`Planner van ${ctx.user.username} liep niet meer; opnieuw gestart`);
+          ctx.bot.health.recovered('planner opnieuw gestart (er draaiden geen checks meer)');
+          this.#run(ctx);
+          this.#watch(ctx);
+        }
+      } catch (err) {
+        this.log.error(`Gezondheidscontrole mislukt (${ctx.user.username}):`, err);
+      }
+    }
+  }
+
+  // Een onverwachte fout in het proces (niet opgevangen promise of exception): bij elke bot vastleggen
+  // en melden (hooguit eens per 10 minuten), zodat het niet alleen in de console staat.
+  reportProcessError(kind, err) {
+    const text = `${kind}: ${err?.message ?? err}`.slice(0, 500);
+    this.log.error(`Onverwachte fout (${kind}):`, err);
+    const now = Date.now();
+    const notify = now - (this.lastProcessAlert ?? 0) > 10 * 60000;
+    if (notify) this.lastProcessAlert = now;
+    for (const ctx of this.contexts.values()) {
+      ctx.bot.health.error('proces', text);
+      if (notify) {
+        ctx.notifier.send('health', {
+          title: '🔴 Kritiek: onverwachte fout in vetobot',
+          message: `${text}\n\nDe bot draait nog (of wordt door Docker opnieuw gestart). Open posities: ${Object.keys(ctx.bot.store.state.positions).length}. Kijk op het dashboard of de checks weer lopen.`,
+          level: 'error',
+        }).catch(() => {});
+      }
+    }
+  }
+
   start(user) {
     const ctx = this.ensure(user);
     ctx.bot.onScheduleChange = () => this.#schedule(ctx);
@@ -403,6 +447,8 @@ export class BotManager {
     // Dagoverzicht: elke minuut per gebruiker kijken of het tijd is.
     clearInterval(this.summaryTimer);
     this.summaryTimer = setInterval(() => this.checkSummaries(), 60 * 1000);
+    clearInterval(this.healthTimer);
+    this.healthTimer = setInterval(() => { this.checkHealth().catch(() => {}); }, 30 * 1000);
     // Eigen model: bij de start en daarna elk half uur kijken of er een nieuwe is.
     clearInterval(this.modelTimer);
     clearInterval(this.microTimer);
@@ -457,6 +503,7 @@ export class BotManager {
 
   stopAll() {
     clearInterval(this.summaryTimer);
+    clearInterval(this.healthTimer);
     clearInterval(this.modelTimer);
     clearInterval(this.microTimer);
     clearInterval(this.armsTimer);

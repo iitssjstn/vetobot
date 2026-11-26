@@ -29,7 +29,10 @@ export function analyzeTrades(trades, { feePct = 0.25 } = {}) {
   const sum = (a, f) => a.reduce((x, t) => x + f(t), 0);
   const avg = (a, f) => (a.length ? sum(a, f) / a.length : null);
   const fees = (t) => (Number.isFinite(t.feesEur) ? t.feesEur : ((t.costEur ?? 0) * feePct * 2) / 100);
-  const holdMin = (t) => (t.openedAt && t.closedAt ? (Date.parse(t.closedAt) - Date.parse(t.openedAt)) / 60000 : null);
+  const holdMin = (t) => {
+    const m = (Date.parse(t.closedAt) - Date.parse(t.openedAt)) / 60000;
+    return t.openedAt && t.closedAt && Number.isFinite(m) ? m : null;
+  };
 
   const byExit = {};
   for (const [key, label] of [...EXIT_KINDS, ['other', 'Overig']]) byExit[key] = { key, label, count: 0, wins: 0, pnlEur: 0 };

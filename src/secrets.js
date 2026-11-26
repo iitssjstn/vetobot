@@ -93,16 +93,19 @@ export class SecretStore {
   // updates: { naam: 'nieuwe waarde' } om te zetten, { naam: null } om te verwijderen.
   // Namen die ontbreken blijven ongewijzigd.
   update(updates) {
+    // Eerst alles controleren, dan pas wijzigen: een afgewezen update mag niet half doorgevoerd zijn.
+    const next = { ...this.values };
     for (const [name, value] of Object.entries(updates)) {
       if (!SECRET_NAMES.includes(name)) throw new Error(`Onbekende key "${name}"`);
-      if (value === null || value === '') delete this.values[name];
+      if (value === null || value === '') delete next[name];
       else if (typeof value === 'string') {
         const check = VALIDATORS[name]?.(value.trim());
         if (typeof check === 'string') throw new Error(check);
-        this.values[name] = value.trim();
+        next[name] = value.trim();
       }
       else throw new Error(`Ongeldige waarde voor "${name}"`);
     }
+    this.values = next;
     this.#save();
     for (const fn of this.listeners) fn();
   }
