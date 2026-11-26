@@ -11,6 +11,7 @@ Laatste opdrachten (25–26 november 2026):
 - "Live Trading Reliability & Failure Alerts Audit": gezondheidsbewaking tegen stille uitval + bugcontrole van de hele repo (PR #11, gemerged).
 - AI-trader deed een dag niets: oorzaak gevonden en gefixt (PR #12–#14, gemerged).
 - Opschonen (PR #16–#18, gemerged): klassieke strategie + AI-team verwijderd (keuze eigenaar; strategieën/bandit, strategie volgen en verkenner bewust behouden), dashboard in 4 groepen met tabs, CI-build-race opgelost.
+- Koopdrempel van de AI-trader zelf bijstellen (PR #20, gemerged).
 
 De eigenaar handelt live (op eigen risico, met eigen inzet). Eerste echte trade via Bitvavo is gelukt (+€ 0,17).
 
@@ -24,10 +25,10 @@ De eigenaar handelt live (op eigen risico, met eigen inzet). Eerste echte trade 
 
 ## Staat van de code
 
-- `main` = `ceb89cb` "Merge pull request #18 from iitssjstn/claude/ci-concurrency" (bevat PR #4 t/m #18).
+- `main` = `ef69911` "Merge pull request #20 from iitssjstn/claude/threshold-adjust" (bevat PR #4 t/m #20).
 - CI draait `npm test` en **alle** Python-tests; images worden alleen gebouwd bij een push naar `main`. Sinds PR #18 stopt een nieuwere build een oudere (`concurrency`), anders kon een oude build `latest` overschrijven.
 - De eigenaar heeft de thuisserver bijgewerkt tot en met PR #17 (26 november) en ziet de nieuwe indeling; VPS t/m PR #11. Na elke update van de bot zet hij de recepten opnieuw live (Trainer → Live, bulkknop).
-- Tests op `main`: `npm test` 300/300 (minder door het weghalen van de klassieke strategie); `cd trainer && python -m unittest discover -p "test*.py"` 144 OK.
+- Tests op `main`: `npm test` 301/301 (minder door het weghalen van de klassieke strategie); `cd trainer && python -m unittest discover -p "test*.py"` 144 OK.
 - Eigenaar werkt via Termius (mobiel) op de thuisserver (`/opt/media-stack`). Claude Code draait daar niet (CPU zonder AVX: "Illegal instruction").
 
 ## Active files
@@ -64,7 +65,8 @@ De eigenaar handelt live (op eigen risico, met eigen inzet). Eerste echte trade 
    - Marktbeeld nu uit `marketIndicators()` (EMA 12/26, RSI 14, ATR/ADX 14). AI-controleur gebruikt vaste grenzen "normaal" (staat bij de eigenaar uit).
    - AI-trader én strategieën uit = niets kopen, rode melding op de homepage.
    - Dashboard: menu Overzicht / Handel / AI-trader & leren / Systeem. Trainer-tabs: AI-trader, Wordt hij beter?, Leerserver, Strategieën. Instellingen-tabs: Handel & risico, AI-trader & AI, Coins, Meldingen, Trainer-koppeling, API-keys & account. Deep links openen de juiste tab; pagina en tab worden onthouden.
-7. Live-instellingen eigenaar: drempel AI-trader zelf iets verlaagd om te testen; Limietorders op "Alleen winst nemen (kopen direct)", omdat limiet-kopen na een dip vaak niet gevuld werden.
+7. Koopdrempel (PR #20): de leerserver kiest per recept een drempel (bijv. +0,50%, +1,20%); er was geen instelling. Nu `strategy.agentThrAdjust` (−1…+1 %-punt, standaard 0) bij Instellingen → AI-trader & AI; `bot.agentThreshold(agent)` = max(0, recept + bijstelling), overal gebruikt (koop, sizing, verkenner, whyNot, dagboek, plan); AI-chat toont "(recept +0,50%, door jou −0,20)".
+8. Live-instellingen eigenaar: wil de drempel ±−0,2 lager zetten om de keten te testen; Limietorders op "Alleen winst nemen (kopen direct)", omdat limiet-kopen na een dip vaak niet gevuld werden.
 
 ## Failed attempts
 
