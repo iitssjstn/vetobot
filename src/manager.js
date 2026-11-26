@@ -395,7 +395,10 @@ export class BotManager {
   async checkHealth() {
     for (const ctx of [...this.contexts.values()]) {
       try {
+        if (this.contexts.get(ctx.user.id) !== ctx) continue;
         const r = await ctx.bot.healthCheck({ scheduled: Boolean(ctx.timer) });
+        // Intussen gestopt (uitgeschakeld/verwijderd)? Dan niet opnieuw inplannen.
+        if (this.contexts.get(ctx.user.id) !== ctx) continue;
         if (r.problems.some((p) => p.key === 'scheduler') && !ctx.bot.running) {
           this.log.warn(`Planner van ${ctx.user.username} liep niet meer; opnieuw gestart`);
           ctx.bot.health.recovered('planner opnieuw gestart (er draaiden geen checks meer)');

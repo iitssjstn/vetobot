@@ -145,7 +145,8 @@ export class Health {
     const posStale = Math.max(HEALTH.positionStaleMinMs, interval * 3, (Number(ctx.watchSeconds) || 0) * 3000);
     const unwatched = (ctx.openPositions ?? []).filter((p) => {
       const ok = s.positions[p.pair]?.okAt ?? null;
-      return now - (ok ?? Math.max(this.startedAt, p.openedAt ?? 0)) > posStale;
+      // Een controle van een eerdere (gesloten) positie op dezelfde coin telt niet: vanaf de opening rekenen.
+      return now - Math.max(ok ?? this.startedAt, p.openedAt ?? 0) > posStale;
     });
     if (unwatched.length) {
       const liveOnes = unwatched.filter((p) => p.live);
