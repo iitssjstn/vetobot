@@ -421,7 +421,7 @@ async function askOpenAICompatible(cfg, prompt, { system = SYSTEM_PROMPT, json =
 
 // Met de AI-trader aan: alleen analyseren, geen instellingen voorstellen. De AI-trader test zijn
 // eigen manier van handelen (recepten) op de leerserver; een ongetest voorstel van de AI zou dat
-// doorkruisen, en de klassieke strategie-instellingen gebruikt hij niet eens.
+// doorkruisen, en de oude strategie-instellingen (EMA, RSI) bestaan niet meer.
 const SUMMARY_PROMPT_AGENT = `Je schrijft het dagelijkse overzicht van een crypto trading bot voor de eigenaar.
 De bot handelt met de AI-trader: een lerend model op een eigen leerserver dat zelf beslist wanneer hij koopt en
 verkoopt. De klassieke instellingen (EMA's, RSI, stop-loss, take-profit, candle-tijd) gebruikt hij NIET; noem ze niet.
@@ -445,8 +445,7 @@ Verzin geen cijfers die niet in de data staan. Geef geen garanties en voorspel g
 Doe daarnaast, alleen als de data daar echt aanleiding toe geeft, een voorstel voor andere instellingen.
 Een voorstel is NIET getest: baseer het alleen op wat in de data te zien is (bijv. "8 van de 10 trades eindigden op
 de stop-loss") en noem dat bewijs in de toelichting. Zonder zulk bewijs: geen voorstel. Liever niets dan een gok.
-Je mag ALLEEN deze velden voorstellen: emaFast, emaSlow, rsiPeriod, rsiMaxEntry, trendEma (0 = uit), adxMin (0 = uit),
-volumeMult (0 = uit), btcFilter (0 of 1), stopLossPct, takeProfitPct, trailingStopPct (0 = uit), atrStopMult (0 = uit), cooldownMinutes,
+Je mag ALLEEN deze velden voorstellen: stopLossPct, takeProfitPct, trailingStopPct (0 = uit), atrStopMult (0 = uit), cooldownMinutes,
 timeframe (een van 1m, 5m, 15m, 30m, 1h, 2h, 4h, 1d) en checkIntervalMinutes. Stel nooit bedragen voor.
 Laat velden weg die je niet wilt veranderen. Geen goede reden? Laat "voorstel" dan leeg ({}).
 
@@ -669,95 +668,6 @@ export async function runChain(chain, fn) {
   const e = new Error(errors.map((x) => `${x.label}: ${x.error}`).join(' | ') || 'Geen AI ingesteld');
   e.chainErrors = errors;
   throw e;
-}
-
-// ---------- Team van drie: analist, criticus, beslisser ----------
-// Drie rollen, elk met een eigen model uit de volgorde (model 1, 2 en 3). Heb je er minder,
-// dan speelt een model meerdere rollen. Faalt een model, dan neemt het volgende in de volgorde
-// die rol over. Alleen de beslisser antwoordt met JSON; de anderen schrijven gewone tekst.
-export const TEAM_ROLES = [
-  { key: 'analyst', label: 'Analist' },
-  { key: 'critic', label: 'Criticus' },
-  { key: 'decider', label: 'Beslisser' },
-];
-
-const ANALYST_PROMPT = `Je bent de ANALIST in een team van drie AI's dat beslist of een crypto trading bot een positie opent.
-Je krijgt de marktdata bij een koopsignaal. Schrijf een beknopte, eerlijke analyse voor je teamgenoten:
-- het marktbeeld en de trend (ook de hogere timeframe en Bitcoin);
-- momentum en volume: zet de stijging door of zwakt hij af?
-- waar de eerstvolgende weerstand ligt en hoeveel ruimte er naar boven is;
-- je schatting van de winstkans (in %) en de verwachte winst als "x keer het risico", na kosten;
-- je voorlopige advies: kopen of niet, en waarom.
-Houd je aan de cijfers in de data; verzin niets. Je bepaalt geen bedragen of stops.
-Schrijf in gewoon Nederlands, maximaal 8 zinnen, zonder opsommingstekens of kopjes, zonder JSON.`;
-
-const CRITIC_PROMPT = `Je bent de CRITICUS in een team van drie AI's dat beslist of een crypto trading bot een positie opent.
-Je krijgt de marktdata en de analyse van de analist. Jouw taak is advocaat van de duivel:
-- controleer de cijfers van de analist tegen de data; noem elke fout of overdreven schatting;
-- zoek de sterkste redenen waarom deze trade verlies kan opleveren (valse uitbraak, te laat, te weinig
-  volume, weerstand vlakbij, kosten te hoog ten opzichte van het risico, harde filters met ✗);
-- zeg ook eerlijk als je weinig tegenargumenten vindt.
-Sluit af met jouw schatting van de winstkans (in %) en of je het advies van de analist steunt.
-Schrijf in gewoon Nederlands, maximaal 8 zinnen, zonder opsommingstekens of kopjes, zonder JSON.`;
-
-const DECIDER_PROMPT = `${SYSTEM_PROMPT}
-
-Je bent de BESLISSER in een team van drie AI's. Je krijgt de marktdata, de analyse van de analist en de
-kritiek van de criticus. Weeg beide eerlijk af tegen de data en tegen de regels hierboven; volg niet
-blind de analist of de criticus. Noem in je reden kort welk argument de doorslag gaf.`;
-
-// Geeft de modellen voor een rol: het toegewezen model eerst, daarna de rest als reserve.
-function roleChain(chain, index) {
-  const usable = chain.filter((c) => c.apiKey);
-  if (!usable.length) return chain;
-  const start = index % usable.length;
-  return [...usable.slice(start), ...usable.slice(0, start)];
-}
-
-// Gooit nooit. Geeft de beslissing plus het hele gesprek (transcript) terug.
-export async function askTeamChain(chain, failMode, context) {
-  if (!chain.length) return { decision: 'approve', reason: 'Geen AI ingesteld, signaal automatisch goedgekeurd', provider: 'none', transcript: [] };
-  const data = buildPrompt(context);
-  const transcript = [];
-  const errors = [];
-  const say = async (roleIndex, system, prompt, json, parse) => {
-    const role = TEAM_ROLES[roleIndex];
-    const started = Date.now();
-    const r = await runChain(roleChain(chain, roleIndex), async (cfg) => {
-      const raw = await callModel(cfg, prompt, { system, json, temperature: roleIndex === 2 ? 0.1 : 0.3 });
-      return parse ? parse(raw) : cleanText(raw);
-    });
-    errors.push(...r.errors);
-    const text = parse ? r.result.reason : r.result;
-    transcript.push({ role: role.key, label: role.label, model: aiLabel(r.cfg), ms: Date.now() - started, text, ...(parse ? { decision: r.result.decision } : {}) });
-    return r.result;
-  };
-
-  // Harde filters met een kruisje: dan staat de uitkomst al vast; geen drie AI-vragen verspillen.
-  const hard = data.split('\n').filter((l) => l.startsWith('✗ ')).map((l) => l.slice(2).trim());
-  if (hard.length) {
-    const reason = `Afgewezen op ${hard.length === 1 ? 'een harde eis' : `${hard.length} harde eisen`}: ${hard.join('; ')}.`;
-    transcript.push({ role: 'filters', label: 'Harde filters', model: 'vetobot', ms: 0, text: reason, decision: 'reject' });
-    return { decision: 'reject', reason, provider: 'team (harde filters)', transcript, skipped: true };
-  }
-
-  try {
-    const analysis = await say(0, ANALYST_PROMPT, data, false);
-    const critique = await say(1, CRITIC_PROMPT, `${data}\n\n== Analyse van de analist ==\n${analysis}`, false);
-    const verdict = await say(2, DECIDER_PROMPT, `${data}\n\n== Analyse van de analist ==\n${analysis}\n\n== Kritiek van de criticus ==\n${critique}`, true, parseDecision);
-    return { ...verdict, provider: `team: ${transcript.map((t) => t.model).join(' → ')}`, usedSlot: null, fallbackErrors: errors, transcript };
-  } catch (err) {
-    const decision = failMode === 'approve' ? 'approve' : 'reject';
-    transcript.push({ role: 'error', label: 'Fout', model: 'vetobot', ms: 0, text: `Het team kon geen besluit nemen: ${err.message}` });
-    return { decision, reason: `Team-AI faalde, fail-mode "${decision}"`, provider: 'geen', error: true, chainErrors: err.chainErrors ?? [], transcript };
-  }
-}
-
-// Gewone tekst van een rol: denkblokken weg, en niet eindeloos lang.
-function cleanText(raw) {
-  const t = String(raw ?? '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-  if (!t) throw new Error('Leeg antwoord');
-  return t.slice(0, 2500);
 }
 
 // Veto via de volgorde. Een afwijzing is een geldig antwoord; alleen fouten gaan door naar het volgende model.

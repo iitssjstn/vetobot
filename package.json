@@ -1,7 +1,7 @@
 {
   "name": "vetobot",
   "version": "0.1.0",
-  "description": "Crypto trading bot voor Bitvavo met regelgebaseerde signalen, een AI-veto en paper trading.",
+  "description": "Crypto trading bot voor Bitvavo met een zelflerende AI-trader, een AI-controleur en paper trading.",
   "type": "module",
   "main": "src/index.js",
   "scripts": {

@@ -39,21 +39,6 @@ export const RISK_LIMITS = {
 };
 export const LIVE_MIN_STAKE_EUR = 5;
 export const STRATEGY_LIMITS = {
-  emaFast: [2, 500],
-  emaSlow: [3, 1000],
-  rsiPeriod: [2, 200],
-  rsiMaxEntry: [1, 100],
-  trendEma: [0, 1000],
-  adxMin: [0, 100],
-  volumeMult: [0, 20],
-  btcFilter: [0, 1],
-  maxChasePct: [0, 50],
-  useOpenCandle: [0, 1],
-  sellConfirmCandles: [0, 20],
-  minHoldCandles: [0, 500],
-  aiStrictness: [0, 2],
-  mlMinProb: [0, 100],
-  mlSkipBadRegime: [0, 1],
   mlBandit: [0, 1],
   mlTrialPaper: [0, 1],
   agentMode: [0, 1],
@@ -85,18 +70,7 @@ const RISK_LABELS = {
   liveBudgetEur: 'Live budgetplafond',
   trailingStopPct: 'Trailing stop',
   atrStopMult: 'ATR-stop',
-  trendEma: 'Trend-EMA',
-  adxMin: 'Minimale ADX',
-  volumeMult: 'Volumefilter',
-  btcFilter: 'BTC-filter',
-  maxChasePct: 'Max. stijging na signaal',
-  useOpenCandle: 'Lopende candle meenemen',
   watchSeconds: 'Posities bewaken elke',
-  sellConfirmCandles: 'Verkoopsignaal bevestigen',
-  minHoldCandles: 'Minimaal in positie',
-  aiStrictness: 'AI-strengheid',
-  mlMinProb: 'Minimale modelkans',
-  mlSkipBadRegime: 'Slechte marktfase overslaan',
   mlBandit: 'Zelflerend kiezen tussen strategieën',
   mlTrialPaper: 'Proefstrategieën in paper',
   agentMode: 'AI-trader',
@@ -115,10 +89,6 @@ const RISK_LABELS = {
   makerFeePct: 'Maker-fee',
   maxHoldMinutes: 'Maximale tijd in positie',
   feePct: 'Fee',
-  emaFast: 'EMA fast',
-  emaSlow: 'EMA slow',
-  rsiPeriod: 'RSI-periode',
-  rsiMaxEntry: 'Max RSI bij instap',
 };
 
 function validated(values, limits, integers) {
@@ -152,8 +122,6 @@ export class Settings {
         model: saved.ai?.model ?? defaults.ai.model,
         baseUrl: saved.ai?.baseUrl ?? defaults.ai.baseUrl,
         failMode: saved.ai?.failMode ?? defaults.ai.failMode ?? 'reject',
-        // Eén model of het team van drie; moet bij een herstart behouden blijven.
-        mode: saved.ai?.mode === 'team' ? 'team' : 'single',
         fallbacks: Array.isArray(saved.ai?.fallbacks) ? saved.ai.fallbacks : [],
       },
       // Ontbreekt een instelling, dan 0 (uit); alleen de kleinste live-start, de eigen inzet van de AI-trader (die
@@ -237,8 +205,7 @@ export class Settings {
   }
 
   setStrategy(values) {
-    const next = validated({ ...this.data.strategy, ...values }, STRATEGY_LIMITS, ['emaFast', 'emaSlow', 'rsiPeriod', 'trendEma', 'btcFilter', 'useOpenCandle', 'sellConfirmCandles', 'minHoldCandles', 'aiStrictness', 'mlSkipBadRegime', 'mlBandit', 'mlTrialPaper', 'agentMode', 'agentVeto', 'agentExplore', 'agentLiveSmallStart', 'agentSizing', 'agentVolGuard']);
-    if (next.emaFast >= next.emaSlow) throw new Error('EMA fast moet kleiner zijn dan EMA slow');
+    const next = validated({ ...this.data.strategy, ...values }, STRATEGY_LIMITS, ['mlBandit', 'mlTrialPaper', 'agentMode', 'agentVeto', 'agentExplore', 'agentLiveSmallStart', 'agentSizing', 'agentVolGuard']);
     this.data.strategy = next;
     this.#save();
   }
@@ -320,7 +287,7 @@ export class Settings {
   }
 
   // fallbacks: maximaal 4 back-upmodellen, op volgorde. Ontbreekt de lijst, dan blijft hij gelijk.
-  setAi({ provider, model, baseUrl, failMode, fallbacks, mode }) {
+  setAi({ provider, model, baseUrl, failMode, fallbacks }) {
     const entry = (e, n) => {
       if (!['gemini', 'openai'].includes(e?.provider)) throw new Error(`Model ${n}: kies Gemini of OpenAI-compatibel`);
       const url = String(e.baseUrl ?? '').trim();
@@ -336,8 +303,6 @@ export class Settings {
       model: String(model ?? '').trim().slice(0, 100),
       baseUrl: String(baseUrl ?? '').trim() || 'https://api.groq.com/openai/v1',
       failMode: AI_FAIL_MODES.includes(failMode) ? failMode : 'reject',
-      // 'single' = één model beslist; 'team' = analist, criticus en beslisser.
-      mode: ['single', 'team'].includes(mode) ? mode : this.data.ai?.mode ?? 'single',
       fallbacks: list.map((e, i) => entry(e, i + 2)),
     };
     this.#save();

@@ -24,7 +24,6 @@ orderTiming.pollMs = 0;
 const H = 3600000;
 const quiet = { info() {}, warn() {}, error() {} };
 const near = (a, b, eps = 1e-6) => Math.abs(a - b) < eps;
-const crossPrices = (n) => [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66, 68]).slice(0, n);
 const wavy = () => [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
 
 // Nep-exchange (zoals in bot.test.js): alle candles gesloten, koersen instelbaar.
@@ -45,19 +44,21 @@ function fakeExchange(prices, { keys = false } = {}) {
 
 function setup({ keys = false, ex: given = null, risk = {} } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vetobot-reg-'));
-  const ex = given ?? fakeExchange(crossPrices(44), { keys });
+  const ex = given ?? fakeExchange(wavy(), { keys });
   const baseRisk = { stakeEur: 25, maxOpenTrades: 2, stopLossPct: 50, takeProfitPct: 50, maxDailyLossEur: 100, feePct: 0.25, ...risk };
   const config = {
     timeframe: '1h',
-    strategy: { emaFast: 3, emaSlow: 8, rsiPeriod: 5, rsiMaxEntry: 100 },
+    strategy: {},
     risk: baseRisk,
     ai: { provider: 'none', failMode: 'reject' },
   };
   const settings = new Settings(dir, { liveTrading: false, pairs: ['BTC/EUR'], timeframe: '1h', checkIntervalMinutes: 15, risk: baseRisk,
-    strategy: { emaFast: 3, emaSlow: 8, rsiPeriod: 5, rsiMaxEntry: 100 }, ai: { provider: 'none', model: '', baseUrl: '' } });
+    strategy: { agentMode: 1, agentVeto: 1, agentExplore: 0, agentLiveSmallStart: 0 }, ai: { provider: 'none', model: '', baseUrl: '' } });
   const stores = { paper: new Store(dir, 'paper', 500), live: new Store(dir, 'live', 500) };
   const live = given ? new LiveBroker(ex) : { mode: 'live', buy: async () => { throw new Error('geen echte orders in tests'); } };
   const bot = new Bot({ config, exchange: ex, settings, stores, log: quiet, brokers: { paper: new PaperBroker(ex, 0.25), live } });
+  // Koper in de tests: een AI-trader die altijd wil kopen (noodstop gelijk aan de stop-loss van 50%); live pas na setAgentLive.
+  bot.getAgent = () => greedyAgent({ stage: 'bewezen', liveCheck: { allMet: true, checks: [] }, safetyStopPct: 50 });
   return { bot, ex, dir, settings, stores };
 }
 
@@ -68,13 +69,21 @@ function liveBook(ex) {
   };
 }
 
-// De EMA-kruising laten ontstaan (zoals openPaperPosition in bot.test.js), zonder te eisen dat er gekocht wordt.
-async function crossTicks(bot, ex) {
-  for (let n = 41; n <= 44 && !bot.store.state.positions['BTC/EUR']; n++) {
-    ex.prices = crossPrices(n);
-    await bot.tick();
-  }
+// Het koopsignaal van de AI-trader laten beoordelen (één check, en nog één op dezelfde candle),
+// zonder te eisen dat er gekocht wordt.
+async function crossTicks(bot) {
+  for (let n = 0; n < 2 && !bot.store.state.positions['BTC/EUR']; n++) await bot.tick();
   return bot.store.state.positions['BTC/EUR'];
+}
+
+// Een bestaande positie zonder eigen plan, zoals de vroegere klassieke strategie die kocht (oude state).
+async function legacyPosition(bot, ex, pair = 'BTC/EUR') {
+  const fill = await bot.broker.buy(pair, bot.stakeInfo().effective);
+  bot.store.state.balanceEur -= fill.costEur;
+  bot.store.state.positions[pair] = { pair, openedAt: new Date().toISOString(), entryPrice: fill.price, amount: fill.amount, costEur: fill.costEur,
+    entryFeeEur: fill.feeEur, reason: 'EMA fast kruist boven EMA slow (op de laatste candle)', highest: fill.price, lowest: fill.price, atrAtEntry: 1 };
+  bot.store.save();
+  return bot.store.state.positions[pair];
 }
 
 async function openPosition(bot, ex) {
@@ -92,7 +101,7 @@ function fakeBitvavo() {
     calls, orders,
     apiKey: 'k', secret: 's',
     has: { createMarketBuyOrderWithCost: true },
-    prices: crossPrices(44),
+    prices: wavy(),
     markets: { 'BTC/EUR': { symbol: 'BTC/EUR', limits: { amount: { min: 0.00001 }, cost: { min: 5 } } } },
     parseTimeframe: () => 3600,
     async fetchOHLCV(_p, _tf, _s, limit) {
@@ -232,6 +241,7 @@ test('live: koop en verkoop via de LiveBroker, fees in pnl, vrij saldo bijgehoud
   const { bot } = setup({ ex, risk: { cooldownMinutes: 0 } });
   await goLive(bot, 1000);
   assert.equal(bot.mode, 'live');
+  bot.settings.setAgentLive('R', true);
   const pos = await openPosition(bot, ex);
   const p1 = ex.prices.at(-1);
   // Aankoop: market order met de inzet als bedrag; betaald = inzet + fee.
@@ -287,7 +297,7 @@ test('LiveBroker: zonder keys geen enkele order', async () => {
 async function withPosition(risk) {
   const s = setup({ risk: { cooldownMinutes: 0, aiExitMinPct: 0, ...risk } });
   await s.bot.setRisk({ cooldownMinutes: 0, aiExitMinPct: 0, ...risk });
-  const pos = await openPosition(s.bot, s.ex);
+  const pos = await legacyPosition(s.bot, s.ex);
   return { ...s, pos, entry: pos.entryPrice };
 }
 
@@ -397,11 +407,11 @@ test('AI-veto: goedgekeurd → gekocht; afgewezen → niet gekocht, als vetoed b
   };
   const yes = await run('approve');
   assert.ok(yes.store.state.positions['BTC/EUR']);
-  assert.equal(aiCalls, 1, 'één AI-vraag per kruising');
+  assert.equal(aiCalls, 1, 'één AI-vraag per signaal');
   assert.equal(yes.store.state.decisions[0].outcome, 'approved');
   const no = await run('reject');
   assert.equal(no.store.state.positions['BTC/EUR'], undefined);
-  assert.equal(aiCalls, 1, 'dezelfde kruising niet nog eens gevraagd');
+  assert.equal(aiCalls, 1, 'hetzelfde signaal niet nog eens gevraagd');
   const d = no.store.state.decisions[0];
   assert.equal(d.outcome, 'vetoed');
   assert.equal(d.aiError, false);
@@ -457,7 +467,7 @@ test('AI-veto: onbekende fail-mode wordt "reject" (veilig)', () => {
 async function agentBot(agent, { risk = {}, strategy = {}, prep = () => {} } = {}) {
   const { bot, ex } = setup({ risk: { cooldownMinutes: 0 } });
   await bot.setRisk({ cooldownMinutes: 0, ...risk });
-  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0, agentExplore: 0, ...strategy });
+  await bot.setStrategy({ agentMode: 1, agentVeto: 0, agentExplore: 0, ...strategy });
   bot.getAgent = () => agent;
   bot.fb = [];
   bot.onFeedback = (t) => bot.fb.push(t);
@@ -547,7 +557,7 @@ test('AI-trader live: kleinste start aan → hooguit € 5; uit → je eigen inz
     ex.prices = wavy();
     const { bot } = setup({ ex, risk: { cooldownMinutes: 0 } });
     await bot.setRisk({ cooldownMinutes: 0, stakeEur: 20, exchangeStop: 0 });
-    await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0, agentExplore: 0, agentLiveSmallStart: small });
+    await bot.setStrategy({ agentMode: 1, agentVeto: 0, agentExplore: 0, agentLiveSmallStart: small });
     await goLive(bot, 1000);
     bot.getAgent = () => greedyAgent({ stage: 'bewezen', liveCheck: { allMet: true, checks: [] } });
     bot.settings.setAgentLive('R', true);
@@ -617,19 +627,21 @@ test('orderboek: spread- en kostendrempels (grens, 0 = uit, te dun, geen boek)',
   assert.equal(analyzeBook({ bids: [[101, 1]], asks: [[100, 1]] }, 10), null, 'gekruist boek is ongeldig');
 });
 
-test('orderboek bij een klassiek signaal: paper zonder boek koopt; live zonder boek niet, live met boek wel', async () => {
+test('orderboek bij een koopsignaal: paper zonder boek koopt; live zonder boek niet, live met boek wel', async () => {
   const paper = setup({ risk: { cooldownMinutes: 0 } });
   assert.ok(await crossTicks(paper.bot, paper.ex), 'paper zonder boek');
   const noBook = fakeBitvavo();
   noBook.fetchOrderBook = async () => { throw new Error('timeout'); };
   const a = setup({ ex: noBook, risk: { cooldownMinutes: 0 } });
   await goLive(a.bot);
+  a.bot.settings.setAgentLive('R', true);
   assert.equal(await crossTicks(a.bot, noBook), undefined);
   assert.match(a.bot.store.state.decisions[0].reason, /Orderboek niet beschikbaar: in live koop ik niet blind \(timeout\)/);
   assert.equal(noBook.calls.filter((c) => c[0] === 'buy').length, 0);
   const withBook = fakeBitvavo();
   const b = setup({ ex: withBook, risk: { cooldownMinutes: 0 } });
   await goLive(b.bot);
+  b.bot.settings.setAgentLive('R', true);
   assert.ok(await crossTicks(b.bot, withBook), 'live met boek');
 });
 
@@ -693,7 +705,6 @@ test('daglimiet: na een verliestrade boven de limiet wordt de handel gepauzeerd;
   await bot.watchPositions();
   assert.match(bot.store.state.halted.reason, /^Dagverlies -/);
   bot.store.state.halted.at = new Date(Date.now() - 2 * 86400000).toISOString();
-  ex.prices = crossPrices(40);
   delete ex.fetchTicker;
   await bot.tick();
   assert.equal(bot.store.state.halted, null, 'nieuwe dag');
@@ -735,6 +746,8 @@ test('modus: standaard paper, een check zet nooit vanzelf live, live → paper a
   assert.equal(ex.calls.length, 0, 'in paper geen enkele order bij Bitvavo');
   await bot.closeManual('BTC/EUR');
   await goLive(bot);
+  bot.settings.setAgentLive('R', true);
+  ex.prices = [...ex.prices, ex.prices.at(-1)]; // nieuwe candle: de AI-trader beoordeelt opnieuw
   await openPosition(bot, ex);
   await assert.rejects(bot.switchMode('paper'), /nog 1 positie\(s\) open in live/);
   assert.equal(bot.mode, 'live');
@@ -767,7 +780,7 @@ test('settings: standaardwaarden zonder bestand (paper, alles uit behalve de vei
   const s = new Settings(dir, { ai: { provider: 'none' } });
   assert.equal(s.mode, 'paper');
   assert.equal(s.ai.failMode, 'reject');
-  assert.equal(s.ai.mode, 'single');
+  assert.equal('mode' in s.ai, false, 'geen AI-werkwijze meer (het AI-team is weg)');
   assert.deepEqual(Object.keys(s.risk).sort(), Object.keys(RISK_LIMITS).sort());
   assert.deepEqual(Object.keys(s.strategy).sort(), Object.keys(STRATEGY_LIMITS).sort());
   for (const [k, v] of Object.entries(s.risk)) assert.equal(v, k === 'exchangeStop' ? 1 : 0, k);
@@ -783,7 +796,7 @@ test('settings: standaardwaarden zonder bestand (paper, alles uit behalve de vei
 
 test('settings: validatiegrenzen voor elke risico- en strategie-instelling', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vetobot-reg-set-'));
-  const s = new Settings(dir, { ai: { provider: 'none' }, strategy: { emaFast: 3, emaSlow: 8, rsiPeriod: 5, rsiMaxEntry: 70 }, risk: { stakeEur: 25, maxOpenTrades: 2 } });
+  const s = new Settings(dir, { ai: { provider: 'none' }, strategy: {}, risk: { stakeEur: 25, maxOpenTrades: 2 } });
   for (const [k, [min, max]] of Object.entries(RISK_LIMITS)) {
     assert.throws(() => s.setRisk({ [k]: min - 1 }), /moet tussen/, `${k} onder min`);
     assert.throws(() => s.setRisk({ [k]: max + 1 }), /moet tussen/, `${k} boven max`);
@@ -797,7 +810,6 @@ test('settings: validatiegrenzen voor elke risico- en strategie-instelling', () 
   s.setRisk({ stakeEur: 0.1, maxOpenTrades: 2.6 });
   assert.equal(s.risk.stakeEur, 0.1);
   assert.equal(s.risk.maxOpenTrades, 3);
-  assert.throws(() => s.setStrategy({ emaFast: 10, emaSlow: 10 }), /kleiner/);
   assert.throws(() => s.setMode('demo'), /Ongeldige modus/);
   assert.throws(() => s.setSchedule({ timeframe: '3m', checkIntervalMinutes: 5 }), /candle-tijd/);
   assert.throws(() => s.setAi({ provider: 'claude' }), /Onbekende AI-provider/);
@@ -810,23 +822,29 @@ test('settings: validatiegrenzen voor elke risico- en strategie-instelling', () 
 
 test('settings: onbekende sleutels worden genegeerd (bij opslaan en bij laden)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vetobot-reg-set-'));
-  const s = new Settings(dir, { ai: { provider: 'none' }, risk: { stakeEur: 25, maxOpenTrades: 2 }, strategy: { emaFast: 3, emaSlow: 8, rsiPeriod: 5, rsiMaxEntry: 70 } });
+  const s = new Settings(dir, { ai: { provider: 'none' }, risk: { stakeEur: 25, maxOpenTrades: 2 }, strategy: {} });
   s.setRisk({ stakeEur: 30, hackerMode: 1, __proto__x: 2 });
   assert.equal(s.risk.stakeEur, 30);
   assert.equal('hackerMode' in s.risk, false);
-  s.setStrategy({ emaFast: 5, emaSlow: 9, onzin: 3 });
+  s.setStrategy({ agentMode: 1, emaFast: 5, onzin: 3 });
   assert.equal('onzin' in s.strategy, false);
+  assert.equal('emaFast' in s.strategy, false, 'velden van de vroegere klassieke strategie worden niet bewaard');
   const file = path.join(dir, 'settings.json');
   const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
   raw.risk.extraKey = 7;
   raw.strategy.nogEen = 1;
-  raw.ai.mode = 'iets';
+  // Oud settings.json van vóór het verwijderen van de klassieke strategie en het AI-team.
+  Object.assign(raw.strategy, { emaFast: 12, emaSlow: 26, rsiPeriod: 14, rsiMaxEntry: 70, btcFilter: 1, aiStrictness: 0, mlMinProb: 55 });
+  raw.ai.mode = 'team';
   raw.onbekend = { a: 1 };
   fs.writeFileSync(file, JSON.stringify(raw));
   const again = new Settings(dir, { ai: { provider: 'none' } });
   assert.equal('extraKey' in again.risk, false);
   assert.equal('nogEen' in again.strategy, false);
-  assert.equal(again.ai.mode, 'single', 'onbekende AI-werkwijze: single');
+  assert.equal('emaFast' in again.strategy, false);
+  assert.equal('aiStrictness' in again.strategy, false);
+  assert.equal(again.strategy.agentMode, 1, 'de rest blijft');
+  assert.equal('mode' in again.ai, false, 'oude AI-werkwijze (team) valt weg');
   assert.equal('onbekend' in again.data, false);
   assert.equal(again.risk.stakeEur, 30);
 });

@@ -105,3 +105,30 @@ export function volumeRatio(candles, period = 20) {
   const prev = candles.slice(-period - 1, -1).reduce((a, c) => a + c[5], 0) / period;
   return prev > 0 ? candles.at(-1)[5] / prev : null;
 }
+
+// Marktbeeld van een coin uit gesloten candles, voor het dashboard (Markt nu), de AI-controleur,
+// de beslissingen en het leerdagboek. Vaste periodes (EMA 12/26, RSI 14, ATR/ADX 14): dit is alleen
+// een beschrijving van de markt, geen koopsignaal. Te weinig data: null.
+// candles: [[timestamp, open, high, low, close, volume], ...]
+export function marketIndicators(candles) {
+  const closes = (candles ?? []).map((c) => c[4]);
+  const fast = ema(closes, 12);
+  const slow = ema(closes, 26);
+  const r = rsi(closes, 14);
+  if (closes.length < 28 || last(slow) == null || last(r) == null) return null;
+  const lastAtr = last(atr(candles, 14));
+  const close = last(closes);
+  const from = closes.length > 24 ? closes[closes.length - 25] : null;
+  return {
+    close,
+    emaFast: last(fast),
+    emaSlow: last(slow),
+    rsi: last(r),
+    change24: from ? ((close - from) / from) * 100 : null,
+    emaTrend: null,
+    adx: last(adx(candles, 14)),
+    atr: lastAtr,
+    atrPct: lastAtr != null ? (lastAtr / close) * 100 : null,
+    volumeRatio: volumeRatio(candles, 20),
+  };
+}

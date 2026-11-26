@@ -249,13 +249,10 @@ export class BotManager {
     const before = { timeframe: bot.timeframe, stopLossPct: bot.risk.stopLossPct, takeProfitPct: bot.risk.takeProfitPct, maxHoldMinutes: bot.risk.maxHoldMinutes };
     if (s.timeframe !== bot.timeframe) await bot.setSchedule({ timeframe: s.timeframe, checkIntervalMinutes: bot.checkIntervalMinutes });
     await bot.setRisk({ stopLossPct: s.stopPct, takeProfitPct: s.targetPct, maxHoldMinutes: s.holdMinutes });
-    const best = model.meta?.metrics?.best?.minProb ?? s.minProb;
-    const minProb = best ? Math.round(best * 100) : null;
-    if (minProb) await bot.setStrategy({ mlMinProb: minProb });
     fs.writeFileSync(this.#appliedFile(), JSON.stringify({ key: s.key, at: new Date().toISOString(), before }));
     this.ml.appliedStrategy = { key: s.key, at: new Date().toISOString() };
     const hold = s.holdMinutes >= 60 ? `${s.holdMinutes / 60} uur` : `${s.holdMinutes} min`;
-    const text = `${s.timeframe}-candles, winstdoel +${s.targetPct}%, stop −${s.stopPct}%, maximaal ${hold}${minProb ? `, minimale modelkans ${minProb}%` : ''}`;
+    const text = `${s.timeframe}-candles, winstdoel +${s.targetPct}%, stop −${s.stopPct}%, maximaal ${hold}`;
     this.log.warn(`Automatisch overgestapt op de beste strategie van de trainer: ${text}`);
     ctx.notifier?.send('strategy', {
       title: 'Nieuwe strategie van de trainer',

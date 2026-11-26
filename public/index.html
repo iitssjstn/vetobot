@@ -261,18 +261,6 @@
   .an-bar i { display: block; height: 100%; }
   .an-tips { margin: 0; padding: 12px 16px 12px 34px; border-bottom: 1px solid var(--line); background: var(--warn-soft); font-size: 13.5px; line-height: 1.55; }
   .an-tips li + li { margin-top: 6px; }
-  .presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; margin-top: 12px; }
-  .preset { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--panel); display: flex; flex-direction: column; }
-  .preset.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
-  .preset .top { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 8px; margin-bottom: 6px; }
-  .preset .meter { display: flex; gap: 3px; }
-  .preset .meter i { width: 9px; height: 9px; border-radius: 2px; background: var(--line); }
-  .preset .for { font-size: 12px; margin-top: 6px; }
-  .preset .tag { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 999px; white-space: nowrap; }
-  .preset button { margin-top: auto; align-self: flex-start; }
-  .preset h4 { margin: 0 0 4px; font-size: 14px; color: var(--text); }
-  .preset .muted { font-size: 12.5px; }
-  .preset ul { margin: 8px 0 10px; padding-left: 16px; font-size: 12.5px; }
   .picker { margin-top: 10px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--panel); overflow: hidden; }
   .picker .ph { display: flex; gap: 8px; align-items: center; padding: 8px; border-bottom: 1px solid var(--line); }
   .picker .ph input { flex: 1; }
@@ -778,17 +766,6 @@
         </div>
       </div>
 
-      <div class="panel gap" id="profiles">
-        <div class="panel-h"><h2><svg class="i"><use href="#i-target"/></svg>Strategieën</h2>
-          <span class="hint" id="profile-current"></span></div>
-        <div class="panel-b">
-          <p class="muted" style="margin:0 0 4px;font-size:13.5px">Kies een kant-en-klare strategie, van zeer voorzichtig tot zeer riskant. Toepassen zet planning, strategie, filters, stops en afkoelperiode.
-            <b>Je inzet per trade, max. open trades en daglimiet blijven altijd van jou.</b> Daarna kun je alles nog zelf bijstellen. Dit is een startpunt om mee te testen, geen advies: probeer een strategie eerst een tijd in paper.</p>
-          <div class="presets" id="presets"></div>
-          <div class="msg" id="preset-msg" style="margin-top:8px"></div>
-        </div>
-      </div>
-
       <div class="panel gap" id="schedule">
         <div class="panel-h"><h2><svg class="i"><use href="#i-history"/></svg>Planning</h2></div>
         <form class="panel-b" id="sched-form">
@@ -844,33 +821,18 @@
 
       <div class="panel gap" id="strategy">
         <div class="panel-h"><h2><svg class="i"><use href="#i-pulse"/></svg>Strategie</h2>
-          <span class="hint">Koopsignaal: EMA fast kruist boven EMA slow en RSI onder het maximum</span></div>
+          <span class="hint">Wie koopt: de AI-trader, of de zelflerende strategieën</span></div>
         <form class="panel-b" id="strat-form">
+          <div class="alert err" id="st-nobuyer" hidden style="margin:0 0 12px">De AI-trader en de strategieën staan allebei uit: de bot koopt niets nieuws. Open posities worden wel bewaakt en verkocht (stop-loss, take-profit, trailing stop, tijdslimiet). Zet hieronder de AI-trader aan.</div>
           <details class="explain">
-            <summary>Hoe werkt de strategie? Uitleg</summary>
+            <summary>Hoe koopt en verkoopt de bot? Uitleg</summary>
             <div class="body">
-              <p><b>Candles.</b> De koers wordt opgedeeld in blokjes van een vaste tijd, bijvoorbeeld 15 minuten. Elk blokje (een candle) heeft een begin-, hoogste, laagste en slotkoers. De bot kijkt alleen naar afgesloten candles, zodat hij nooit beslist op een koers die nog verandert.</p>
-              <p><b>EMA (gemiddelde).</b> Een EMA is het gemiddelde van de slotkoersen over een aantal candles, waarbij de nieuwste zwaarder tellen. De <b>EMA fast</b> (bijv. 12) volgt de koers snel, de <b>EMA slow</b> (bijv. 26) is rustiger en laat de grote lijn zien.</p>
-              <p><b>Kruising = signaal.</b> Gaat de snelle lijn bóven de trage lijn, dan begint de koers waarschijnlijk te stijgen: een <b>koopsignaal</b>. Gaat hij eronder, dan een <b>verkoopsignaal</b>. Kleinere getallen geven sneller signalen, maar ook vaker een vals alarm.</p>
-              <p><b>RSI (oververhit).</b> De RSI loopt van 0 tot 100 en laat zien hoe hard een coin de laatste tijd gestegen is. Boven de 70 geldt een coin vaak als "oververhit": de kans op een terugval is groter. Met <b>Max RSI bij instap</b> koopt de bot niet meer als de RSI boven die grens ligt.</p>
-              <p><b>Extra filters (optioneel).</b> Ze houden alleen koopsignalen tegen, nooit verkopen. Het <b>trendfilter</b> koopt alleen boven een lange gemiddelde lijn, de <b>ADX</b> slaat zijwaartse markten over, het <b>volumefilter</b> wil meer handel dan normaal en het <b>BTC-filter</b> koopt geen altcoins als Bitcoin daalt. Elk filter geeft minder, maar meestal betere signalen.</p>
-              <p><b>Slimmer uitstappen (bij Risico &amp; inzet).</b> Een <b>trailing stop</b> schuift mee omhoog met de koers, zodat een sterke stijging niet te vroeg wordt afgekapt. Een <b>ATR-stop</b> past de stop-loss aan de beweeglijkheid van de coin aan.</p>
-              <p><b>Daarna de AI.</b> Komt een koopsignaal door je regels en limieten, dan mag de AI het nog afwijzen. Verkopen gaat via de regels (signaal, stop-loss, trailing stop, take-profit). Staat <b>AI mag winst nemen</b> aan bij Risico &amp; inzet, dan mag de AI bij een positie in de winst ook adviseren om eerder te verkopen.</p>
-              <p><b>Kant-en-klare strategieën</b> vind je bovenaan Instellingen, van zeer voorzichtig tot zeer riskant.</p>
+              <p><b>De AI-trader</b> van de trainer beslist zelf wanneer hij koopt en verkoopt, op zijn eigen candle-tijd en met zijn eigen recepten. Daaromheen werken de Market Agent, Strategy Agent, Risk Agent en Execution Agent; de <b>AI-controleur</b> (het taalmodel bij AI-controleur) mag een aankoop nog afwijzen.</p>
+              <p><b>Strategieën (zelflerend kiezen)</b> is de oudere methode: de bevestigde strategieën van de strategie-zoeker kopen elk met hun eigen model, doel en stop; de bandit kiest welke.</p>
+              <p><b>Staat allebei uit</b>, dan koopt de bot niets nieuws. Bestaande posities worden altijd bewaakt en verkocht via stop-loss, take-profit, trailing stop, ATR-stop en tijdslimiet (bij Risico &amp; inzet), en de AI-winstcheck als die aan staat.</p>
             </div>
           </details>
           <div class="fields">
-            <div><label for="st-fast">EMA fast (candles)</label><input id="st-fast" type="number" min="2" max="500" step="1" required></div>
-            <div><label for="st-slow">EMA slow (candles)</label><input id="st-slow" type="number" min="3" max="1000" step="1" required></div>
-            <div><label for="st-rsi">RSI-periode (candles)</label><input id="st-rsi" type="number" min="2" max="200" step="1" required></div>
-            <div><label for="st-rsimax">Max RSI bij instap</label><input id="st-rsimax" type="number" min="1" max="100" step="any" required></div>
-            <div><label for="st-trend">Trendfilter: EMA (candles, 0 = uit)</label><input id="st-trend" type="number" min="0" max="1000" step="1" required></div>
-            <div><label for="st-adx">Minimale ADX (0 = uit)</label><input id="st-adx" type="number" min="0" max="100" step="any" required></div>
-            <div><label for="st-vol">Volumefilter (× normaal, 0 = uit)</label><input id="st-vol" type="number" min="0" max="20" step="any" required></div>
-            <div><label for="st-btc">BTC-filter (geen altcoins als BTC daalt)</label><select id="st-btc"><option value="0">Uit</option><option value="1">Aan</option></select></div>
-            <div><label for="st-chase">Max. stijging na signaal (%)</label><input id="st-chase" type="number" min="0" max="50" step="any" required></div>
-            <div><label for="st-confirm">Verkoopsignaal bevestigen (candles)</label><input id="st-confirm" type="number" min="1" max="20" step="1" required></div>
-            <div><label for="st-hold">Minimaal in positie (candles, 0 = uit)</label><input id="st-hold" type="number" min="0" max="500" step="1" required></div>
             <div><label for="st-agent">AI-trader</label><select id="st-agent"><option value="0">Uit</option><option value="1">Aan: de AI-trader beslist zelf</option></select></div>
             <div data-agentonly><label for="st-agentveto">AI-controleur bij de AI-trader</label><select id="st-agentveto"><option value="1">Aan: de AI-controleur mag nee zeggen</option><option value="0">Uit: de AI-trader beslist alleen</option></select></div>
             <div data-agentonly><label for="st-agentvol">Volatiliteit meewegen</label><select id="st-agentvol"><option value="1">Aan: niet kopen waar het recept verloor</option><option value="0">Uit</option></select></div>
@@ -878,14 +840,9 @@
             <div data-agentonly><label for="st-agentsmall">Live beginnen met de kleinste inzet</label><select id="st-agentsmall"><option value="1">Aan: € 5 tot 20 live trades met winst</option><option value="0">Uit: meteen mijn eigen inzet</option></select></div>
             <div data-agentonly><label for="st-agentexplore">Verkenner (alleen paper)</label><select id="st-agentexplore"><option value="1">Aan: virtueel verkennen</option><option value="0">Uit</option></select></div>
             <div><label for="st-mltrial">Oefenen in paper</label><select id="st-mltrial"><option value="1">Aan: ook oefenen als hij nog niet bewezen is</option><option value="0">Uit: alleen als hij getest/bewezen is</option></select></div>
-            <div data-noagent><label for="st-mlmin">Minimale modelkans (%, 0 = uit)</label><input id="st-mlmin" type="number" min="0" max="100" step="any" required></div>
-            <div data-noagent><label for="st-mlregime">Marktfase waarin het model verliest</label><select id="st-mlregime"><option value="0">Alleen de AI waarschuwen</option><option value="1">Overslaan</option></select></div>
-            <div data-noagent><label for="st-mlbandit">Kiezen tussen strategieën (oude methode)</label><select id="st-mlbandit"><option value="0">Uit: mijn eigen instellingen</option><option value="1">Zelflerend (beloning)</option></select></div>
-            <div><label for="st-strict">AI-strengheid</label><select id="st-strict"><option value="0">Streng: weinig, sterke trades</option><option value="1">Normaal</option><option value="2">Soepel: meer trades</option></select></div>
-            <div><label for="st-open">Lopende candle meenemen</label><select id="st-open"><option value="0">Nee (aanbevolen)</option><option value="1">Ja, sneller</option></select></div>
+            <div data-noagent><label for="st-mlbandit">Kiezen tussen strategieën (oude methode)</label><select id="st-mlbandit"><option value="0">Uit</option><option value="1">Zelflerend (beloning)</option></select></div>
             <div id="st-pass-wrap"><label for="st-pass">Je wachtwoord (verplicht in live)</label><input id="st-pass" type="password" autocomplete="current-password"></div>
           </div>
-          <div class="help">Lagere EMA-waarden reageren sneller maar geven meer valse signalen. Een max RSI van 100 schakelt het RSI-filter uit.</div>
           <div class="row-actions"><button class="btn primary" type="submit">Opslaan</button><span class="msg" id="strat-msg"></span></div>
         </form>
       </div>
@@ -910,9 +867,9 @@
       </div>
 
       <div class="panel gap">
-        <div class="panel-h"><h2><svg class="i"><use href="#i-cpu"/></svg>AI-veto</h2></div>
+        <div class="panel-h"><h2><svg class="i"><use href="#i-cpu"/></svg>AI-controleur</h2></div>
         <form class="panel-b" id="ai-form">
-          <div class="help" style="margin:0 0 12px">De AI mag alleen koopsignalen afwijzen; bedragen, stop-loss en verkopen bepaalt hij nooit.
+          <div class="help" style="margin:0 0 12px">De AI-controleur mag alleen aankopen afwijzen (van de AI-trader als dat aan staat, en van de strategieën); hij doet ook de AI-winstcheck en het dagoverzicht; bedragen, stop-loss en verkopen bepaalt hij nooit.
             Faalt een model (fout, time-out of tegoed op), dan probeert hij het volgende in de lijst. Een afwijzing is een geldig antwoord en gaat niet door naar de volgende.</div>
           <div id="ai-rows"></div>
           <div class="row-actions" style="margin-top:10px">
@@ -920,8 +877,6 @@
             <span class="help" style="margin:0" id="ai-count"></span>
           </div>
           <div class="fields" style="margin-top:14px">
-            <div><label for="ai-mode">Werkwijze</label>
-              <select id="ai-mode"><option value="single">Eén model beslist</option><option value="team">Team van drie: analist, criticus, beslisser</option></select></div>
             <div><label for="ai-fail">Als alle modellen falen</label>
               <select id="ai-fail"><option value="reject">Trade afwijzen (veilig)</option><option value="approve">Trade doorlaten</option></select></div>
           </div>
@@ -1028,7 +983,7 @@
 
       <div class="panel gap">
         <div class="panel-h"><h2><svg class="i"><use href="#i-key"/></svg>API-keys</h2>
-          <span class="hint">Versleuteld opgeslagen, nooit meer volledig zichtbaar. AI-keys staan bij AI-veto.</span></div>
+          <span class="hint">Versleuteld opgeslagen, nooit meer volledig zichtbaar. AI-keys staan bij AI-controleur.</span></div>
         <form class="panel-b" id="keys-form">
           <div class="fields">
             <div><label for="k-bv">Bitvavo API-key <span class="kstate" id="st-bitvavoApiKey"></span></label>
@@ -1344,7 +1299,7 @@ async function load() {
 // seconden honderden rijen opnieuw op, wat het dashboard traag maakt en hover/scrollen stoort.
 const innerHTMLDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
 for (const id of ['alerts', 'tiles', 'dash-market', 'market', 'dash-positions', 'positions', 'signals', 'trades',
-  'dash-activity', 'activity', 'dash-summary', 'analysis', 'coin-list', 'coin-chips', 'presets', 'users-table', 'invites-table']) {
+  'dash-activity', 'activity', 'dash-summary', 'analysis', 'coin-list', 'coin-chips', 'users-table', 'invites-table']) {
   const el = $(id);
   Object.defineProperty(el, 'innerHTML', {
     get() { return innerHTMLDesc.get.call(el); },
@@ -1385,7 +1340,7 @@ function render() {
   if (s.halted) alerts.push(['', `Nieuwe trades gepauzeerd: ${esc(s.halted.reason)}. Open posities worden nog bewaakt.`]);
   if (live && !s.bitvavoKeysSet) alerts.push(['err', 'Live-modus, maar de Bitvavo-keys ontbreken. Vul ze in bij Instellingen.']);
   if (s.ai.provider !== 'none' && !s.aiKeySet) alerts.push(['', `AI-provider "${esc(s.ai.provider)}" is gekozen, maar er is geen AI-key. Koopsignalen worden afgewezen.`]);
-  if (s.risk.stopLossPct === 0) alerts.push(['', 'Stop-loss staat uit. Posities worden alleen verkocht bij een verkoopsignaal of take-profit.']);
+  if (s.risk.stopLossPct === 0) alerts.push(['', 'Stop-loss staat uit. Posities zonder eigen noodstop worden alleen verkocht bij take-profit, trailing stop, tijdslimiet, de AI-winstcheck of handmatig.']);
   if (s.heartbeatSet && s.lastHeartbeat?.error) alerts.push(['', `De heartbeat kon niet worden verstuurd: ${esc(s.lastHeartbeat.error)}. Je krijgt dan mogelijk een onterechte offline-melding.`]);
   // Saldo te laag voor een nieuwe aankoop: dan blokkeert de bot elk koopsignaal, wat lijkt op "hij doet niets".
   const stakeNow = s.stake?.effective ?? s.risk.stakeEur;
@@ -1486,7 +1441,7 @@ function render() {
     ['Koers', d => `<span class="num">${eur(d.indicators?.close)}</span>`, 'r'],
     ['RSI', d => `<span class="num">${d.indicators?.rsi?.toFixed(1) ?? '–'}</span>`, 'r'],
     ['Model', d => `<span class="num">${d.indicators?.mlProb != null ? `${d.indicators.mlProb.toFixed(0)}%` : '–'}</span>`, 'r'],
-    ['Reden', d => `<div class="reason">${esc(d.reason)}${d.indicators?.mlWhy?.length ? `<div class="muted" style="font-size:12.5px;margin-top:3px">Model: ${d.indicators.mlWhy.slice(0, 3).map((w) => `${esc(w.label)} ${esc(w.text)} <span class="${w.effect > 0 ? 'up' : 'down'}">${w.effect > 0 ? '+' : ''}${Number(w.effect).toFixed(0)}</span>`).join(' · ')}</div>` : ''}${d.aiError ? ' <span class="warnc">(AI-fout)</span>' : ''}${d.hasChat ? ` <a href="#" data-chat="${esc(d.at)}">Bekijk gesprek</a>` : ''}</div>`],
+    ['Reden', d => `<div class="reason">${esc(d.reason)}${d.indicators?.mlWhy?.length ? `<div class="muted" style="font-size:12.5px;margin-top:3px">Model: ${d.indicators.mlWhy.slice(0, 3).map((w) => `${esc(w.label)} ${esc(w.text)} <span class="${w.effect > 0 ? 'up' : 'down'}">${w.effect > 0 ? '+' : ''}${Number(w.effect).toFixed(0)}</span>`).join(' · ')}</div>` : ''}${d.aiError ? ' <span class="warnc">(AI-fout)</span>' : ''}</div>`],
   ], 'Nog geen koopsignalen. Bij 1h-candles kan dat even duren.', 'pulse');
 
   if (isOn('trades')) { $('analysis').innerHTML = analysisHtml(s.analysis); $('an-hint').textContent = s.analysis?.trades ? `${s.analysis.trades} gesloten trades in ${live ? 'live' : 'paper'}${s.analysis.since ? ` sinds ${time(s.analysis.since)}` : ''}` : ''; }
@@ -1618,6 +1573,8 @@ function renderHealth(h) {
   d?.querySelector('summary')?.addEventListener('click', () => { healthDetailsOpen = !d.open; });
 }
 
+// Koopt de bot nog iets? Alleen de AI-trader en de zelflerende strategieën kopen; een volger koopt mee met de leider.
+const noBuyer = (s) => !s?.follow?.enabled && Number(s?.strategy?.agentMode ?? 0) !== 1 && Number(s?.strategy?.mlBandit ?? 0) !== 1;
 // Waarschuwingen bovenaan de homepage, alleen live: anders lijkt alles goed terwijl de bot niets koopt.
 function renderDashAlerts(s) {
   const el = $('dash-alerts');
@@ -1625,6 +1582,10 @@ function renderDashAlerts(s) {
   const out = [];
   const admin = me?.role === 'admin';
   const toLive = admin ? ' <button class="btn sm" type="button" data-goto="trainer" data-anchor="ag-live">Naar Live-toelating</button>' : '';
+  // AI-trader en strategieën allebei uit: de bot koopt niets nieuws (de vroegere klassieke strategie is weg).
+  if (noBuyer(s)) {
+    out.push(`<div class="alert err" style="margin:0 0 12px">${icon('alert')}<div><b>De bot koopt niets nieuws:</b> de AI-trader en de strategieën staan uit. Open posities worden wel bewaakt en verkocht. <button class="btn sm" type="button" data-goto="settings" data-anchor="strategy">Naar Strategie</button></div></div>`);
+  }
   if (s.mode === 'live') {
     const agentOn = Number(s.strategy?.agentMode ?? 0) === 1 && !s.follow?.enabled;
     const recs = s.agent?.recipes ?? [];
@@ -1714,25 +1675,11 @@ function renderSettings() {
   $('mc-switch').innerHTML = live ? `${icon('shield')}Terug naar paper` : `${icon('bolt')}Overschakelen naar live`;
   $('r-pass-wrap').hidden = !live;
   $('st-pass-wrap').hidden = !live;
+  $('st-nobuyer').hidden = !noBuyer(s);
   $('paper-reset').hidden = live;
   renderFollow();
-  renderPresets();
   renderNotify();
   if (!document.activeElement?.closest('#strat-form') && !stratDirty) {
-    $('st-fast').value = s.strategy.emaFast;
-    $('st-slow').value = s.strategy.emaSlow;
-    $('st-rsi').value = s.strategy.rsiPeriod;
-    $('st-rsimax').value = s.strategy.rsiMaxEntry;
-    $('st-trend').value = s.strategy.trendEma ?? 0;
-    $('st-adx').value = s.strategy.adxMin ?? 0;
-    $('st-vol').value = s.strategy.volumeMult ?? 0;
-    $('st-btc').value = String(s.strategy.btcFilter ?? 0);
-    $('st-chase').value = s.strategy.maxChasePct ?? 0;
-    $('st-open').value = String(s.strategy.useOpenCandle ?? 0);
-    $('st-confirm').value = s.strategy.sellConfirmCandles || 1;
-    $('st-strict').value = String(s.strategy.aiStrictness ?? 1);
-    $('st-mlmin').value = s.strategy.mlMinProb ?? 0;
-    $('st-mlregime').value = String(s.strategy.mlSkipBadRegime ?? 0);
     $('st-mlbandit').value = String(s.strategy.mlBandit ?? 0);
     $('st-agent').value = String(s.strategy.agentMode ?? 0);
     $('st-agentveto').value = String(s.strategy.agentVeto ?? 1);
@@ -1742,7 +1689,6 @@ function renderSettings() {
     $('st-agentvol').value = String(s.strategy.agentVolGuard ?? 1);
     $('st-mltrial').value = String(s.strategy.mlTrialPaper ?? 1);
     agentFields();
-    $('st-hold').value = s.strategy.minHoldCandles ?? 0;
   }
   if (!document.activeElement?.closest('#risk-form') && !riskDirty) {
     $('r-stake').value = s.risk.stakeEur;
@@ -1780,7 +1726,6 @@ function renderSettings() {
     aiRows = [{ provider: s.ai.provider, model: s.ai.model ?? '', baseUrl: s.ai.baseUrl ?? '', fromSlot: 1, newKey: '' },
       ...(s.ai.fallbacks ?? []).map((f, i) => ({ ...f, fromSlot: i + 2, newKey: '' }))];
     $('ai-fail').value = s.ai.failMode ?? 'reject';
-    $('ai-mode').value = s.ai.mode ?? 'single';
     renderAiRows();
   }
 }
@@ -2576,7 +2521,7 @@ $('ss-board').addEventListener('click', async (e) => {
   if (!r) return;
   const hold = r.holdMinutes >= 60 ? `${String(r.holdMinutes / 60).replace('.', ',')} uur` : `${r.holdMinutes} min`;
   const dec = (v) => String(v).replace('.', ',');
-  if (!confirm(`Deze strategie toepassen?\n\nCandles: ${r.timeframe}\nWinstdoel: +${dec(r.targetPct)}%\nStop-loss: −${dec(r.stopPct)}%\nMaximale duur: ${hold}\nMinimale modelkans: ${Math.round((r.val?.best?.minProb ?? 0) * 100)}%\n\nDaarna traint de trainer meteen een model met deze instellingen. Het blijft een test op het verleden: geen garantie voor de toekomst.`)) return;
+  if (!confirm(`Deze strategie toepassen?\n\nCandles: ${r.timeframe}\nWinstdoel: +${dec(r.targetPct)}%\nStop-loss: −${dec(r.stopPct)}%\nMaximale duur: ${hold}\n\nDaarna traint de trainer meteen een model met deze instellingen. Het blijft een test op het verleden: geen garantie voor de toekomst.`)) return;
   b.disabled = true;
   try {
     await api('api/admin/trainer/apply', { key: r.key });
@@ -2611,7 +2556,7 @@ function trSchedShow() {
   $('ts-help').innerHTML = `${days} dagen ${esc(tf)}-candles van ${coins} coins = ± ${candles.toLocaleString('nl-NL')} candles. `
     + `De trainer bewaart de koersen: daarna haalt hij alleen nieuwe candles op, en kies je meer dagen dan haalt hij alleen het ontbrekende oudere stuk. `
     + `Hij gebruikt maximaal ${(Number($('ts-max').value) || 300000).toLocaleString('nl-NL')} voorbeelden, gespreid over de hele periode, zodat trainen niet uren duurt.`
-    + (mode === 'off' ? ' <b>Uit:</b> het oude voorspelmodel traint niet meer vanzelf. Dat model gebruikt de bot alleen zonder AI-trader (bij EMA-kruisingen); met de AI-trader aan krijgt die zo meer leertijd op de leerserver, want die pauzeert zolang deze training loopt. Het laatste model blijft bewaard.' : '')
+    + (mode === 'off' ? ' <b>Uit:</b> het oude voorspelmodel traint niet meer vanzelf. De AI-trader gebruikt dat model niet; zo krijgt de leerserver meer leertijd op de leerserver, want die pauzeert zolang deze training loopt. Het laatste model blijft bewaard.' : '')
     + (mode === 'continuous' ? ' <span class="warnc">Doorlopend trainen leert vooral opnieuw van dezelfde data; elke paar uur is meestal genoeg.</span>' : '');
 }
 ['ts-mode', 'ts-hours', 'ts-every', 'ts-pause', 'ts-days', 'ts-max'].forEach((id) => {
@@ -2941,11 +2886,8 @@ function practiceRender(versions, nl, pc) {
 }
 
 // ---------- AI-chat ----------
-let chatsLoadedAt = null, chatData = null, chatFocus = null;
+let chatsLoadedAt = null, chatData = null;
 const ROLE_STYLE = {
-  analyst: { initials: 'AN', color: '#4f7cff', side: 'left' },
-  critic: { initials: 'CR', color: '#e8902a', side: 'right' },
-  decider: { initials: 'BE', color: '#7c5cff', side: 'left' },
   filters: { initials: 'HF', color: '#6b7280', side: 'left' },
   error: { initials: '!', color: '#d64545', side: 'left' },
   market: { initials: 'MA', color: '#0e9f8a', side: 'left' },
@@ -2958,7 +2900,6 @@ const ROLE_STYLE = {
   explore: { initials: 'VK', color: '#b8860b', side: 'right' },
   result: { initials: '€', color: '#6b7280', side: 'left' },
 };
-let chatFilter = 'all';
 const AGENT_OUTCOME = { bought: ['ok', 'Gekocht'], approved: ['ok', 'Goedgekeurd'], vetoed: ['bad', 'Afgewezen door de AI'], blocked: ['bad', 'Tegengehouden'],
   notFilled: ['soft', 'Niet gevuld'], sold: ['wait', 'Verkocht'] };
 async function loadChats() {
@@ -2968,44 +2909,14 @@ async function loadChats() {
 }
 function renderChats() {
   const d = chatData; if (!d) return;
-  const team = d.mode === 'team';
-  $('chat-hint').textContent = team ? 'Team van drie staat aan' : 'Team van drie staat uit';
-  $('chat-intro').innerHTML = team
-    ? `<p style="margin:0">Bij elk koopsignaal overleggen drie AI's: de <b style="color:${ROLE_STYLE.analyst.color}">analist</b> bekijkt het signaal, de <b style="color:${ROLE_STYLE.critic.color}">criticus</b> zoekt wat er mis kan gaan, en de <b style="color:${ROLE_STYLE.decider.color}">beslisser</b> weegt beide af en beslist. Signalen die al op een harde eis afvallen, worden niet besproken. Nieuwste gesprek bovenaan.</p>`
-    : `<p style="margin:0">Hier zie je het overleg van het AI-team. Zet bij Instellingen → AI-veto de werkwijze op <b>Team van drie</b> om het te gebruiken.${d.chats.length ? ' Hieronder staan de gesprekken van toen het nog aan stond.' : ''}</p>`;
-  $('chat-intro').innerHTML += '<p style="margin:8px 0 0">Bij de <b>AI-trader</b> zie je per aankoop, tegengehouden aankoop en verkoop wat elk onderdeel zag en besloot: Market Agent, Strategy Agent, de AI-trader zelf, Risk Agent, de AI-controleur en de Execution Agent. Dit is geen gesprek tussen taalmodellen, maar een verslag met de echte getallen waarop de bot besliste.</p>';
-  const all = [...d.chats.map((c) => ({ ...c, src: 'team' })), ...(d.agentChats ?? []).map((c) => ({ ...c, src: 'agent' }))]
-    .filter((c) => chatFilter === 'all' || c.src === chatFilter).sort((a, b) => (a.at < b.at ? 1 : -1));
-  const tabs = [['all', 'Alles'], ['team', 'AI-team'], ['agent', 'AI-trader']].map(([k, l]) =>
-    `<button class="btn${chatFilter === k ? ' primary' : ''}" type="button" data-chat-filter="${k}">${l}</button>`).join(' ');
-  const html = `<div class="row-actions" style="margin:0 0 12px">${tabs}</div>` + (all.length ? all.map((c) => (c.src === 'agent' ? agentChatHtml(c) : chatHtml(c))).join('')
-    : `<div class="panel"><div class="empty">${icon('chat')}Nog geen gesprekken. Ze verschijnen bij het eerstvolgende koopsignaal${chatFilter === 'agent' ? ' of de eerstvolgende verkoop van de AI-trader' : ''}.</div></div>`);
+  $('chat-hint').textContent = 'AI-trader';
+  $('chat-intro').innerHTML = '<p style="margin:0">Bij de <b>AI-trader</b> zie je per aankoop, tegengehouden aankoop en verkoop wat elk onderdeel zag en besloot: Market Agent, Strategy Agent, de AI-trader zelf, Risk Agent, de AI-controleur en de Execution Agent. Dit is geen gesprek tussen taalmodellen, maar een verslag met de echte getallen waarop de bot besliste. Nieuwste bovenaan.</p>';
+  const all = [...(d.agentChats ?? [])].sort((a, b) => (a.at < b.at ? 1 : -1));
+  const html = all.length ? all.map(agentChatHtml).join('')
+    : `<div class="panel"><div class="empty">${icon('chat')}Nog geen verslagen. Ze verschijnen bij de eerstvolgende aankoop, tegengehouden aankoop of verkoop van de AI-trader.</div></div>`;
   if ($('chats')._html !== html) { $('chats')._html = html; $('chats').innerHTML = html; }
-  if (chatFocus) {
-    const el = document.querySelector(`[data-chat-at="${CSS.escape(chatFocus)}"]`);
-    chatFocus = null;
-    if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1600); }
-  }
 }
-function chatHtml(c) {
-  const ok = c.outcome === 'approved';
-  const msgs = (c.team ?? []).map((m) => {
-    const st = ROLE_STYLE[m.role] ?? ROLE_STYLE.filters;
-    const verdict = m.role === 'decider' || m.role === 'filters';
-    const badge = m.decision ? ` <span class="badge ${m.decision === 'approve' ? 'ok' : 'bad'}">${m.decision === 'approve' ? 'kopen' : 'niet kopen'}</span>` : '';
-    return `<div class="msgrow ${st.side === 'right' ? 'right' : ''}">
-      <div class="avatar" style="background:${st.color}" aria-hidden="true">${st.initials}</div>
-      <div class="bubble ${verdict ? `verdict ${m.decision === 'approve' ? 'ok' : 'no'}` : ''}">
-        <div class="who"><b style="color:${st.color}">${esc(m.label)}</b>${badge}<span>${esc(m.model)}${m.ms >= 100 ? ` · ${(m.ms / 1000).toFixed(1).replace('.', ',')} sec` : ''}</span></div><div class="txt">${esc(m.text)}</div></div></div>`;
-  }).join('');
-  return `<div class="panel chat" data-chat-at="${esc(c.at)}">
-    <div class="panel-h"><h2>${pairHtml(c.pair)} <span class="badge ${ok ? 'ok' : 'bad'}">${ok ? 'Gekocht' : 'Niet gekocht'}</span></h2><span class="when">${time(c.at)}</span></div>
-    <div class="chat-body">
-      <div class="muted" style="font-size:13px">Signaal: ${esc(c.strategyReason ?? 'koopsignaal')}</div>
-      ${msgs}
-    </div></div>`;
-}
-// Overleg van de AI-trader: dezelfde opmaak als het AI-team, met zijn eigen onderdelen.
+// Verslag van de AI-trader en zijn onderdelen.
 function agentChatHtml(c) {
   const [cls, label] = AGENT_OUTCOME[c.outcome] ?? ['soft', c.outcome];
   const msgs = (c.talk ?? []).map((m) => {
@@ -3020,17 +2931,6 @@ function agentChatHtml(c) {
     <div class="panel-h"><h2>${pairHtml(c.pair)} <span class="badge ${cls}">${esc(label)}</span> <span class="muted" style="font-size:13px;font-weight:500">${{ sell: 'AI-trader · verkopen', explore: 'Verkenner · kopen', exploreSell: 'Verkenner · verkopen' }[c.kind] ?? 'AI-trader · kopen'}</span></h2><span class="when">${time(c.at)}</span></div>
     <div class="chat-body">${msgs}</div></div>`;
 }
-document.addEventListener('click', (e) => {
-  const f = e.target.closest('[data-chat-filter]');
-  if (f) { chatFilter = f.dataset.chatFilter; renderChats(); }
-});
-document.addEventListener('click', (e) => {
-  const a = e.target.closest('[data-chat]');
-  if (!a) return;
-  e.preventDefault();
-  chatFocus = a.dataset.chat;
-  go('aichat');
-});
 
 // ---------- Resultaatanalyse ----------
 function analysisHtml(a) {
@@ -3067,7 +2967,7 @@ function analysisHtml(a) {
 
 // ---------- Instellingen: strategie volgen ----------
 // Panelen die van de admin komen zolang je volgt. inert maakt ze niet bedienbaar, ook niet met het toetsenbord.
-const LOCKABLE = { profiles: 'De strategie', schedule: 'De planning', strategy: 'De strategie', coins: 'De coinlijst' };
+const LOCKABLE = { schedule: 'De planning', strategy: 'De strategie', coins: 'De coinlijst' };
 function renderFollow() {
   const s = state; if (!s) return;
   const f = s.follow ?? {};
@@ -3308,7 +3208,7 @@ function riskHelp() {
     })(),
     Number($('r-atr').value) > 0 ? `De ATR-stop vervangt de vaste stop-loss: hij ligt op instapkoers − ${$('r-atr').value} × ATR, dus ruimer bij beweeglijke coins en krapper bij rustige.`
     : sl > 0 ? `Verlies per trade bij de stop-loss: ongeveer ${eur2(eff * sl / 100)}, plus fees.`
-      : '<span class="warnc">Stop-loss staat uit: een positie wordt alleen verkocht bij een verkoopsignaal of take-profit.</span>',
+      : '<span class="warnc">Stop-loss staat uit: een positie zonder eigen noodstop wordt alleen verkocht bij take-profit, trailing stop, tijdslimiet, de AI-winstcheck of handmatig.</span>',
   ];
   if (tp === 0) parts.push('<span class="muted">Take-profit staat uit.</span>');
   else {
@@ -3466,40 +3366,25 @@ const HELP = {
   'r-max': 'Hoeveel posities er maximaal tegelijk open mogen staan, elk in een andere coin. Inzet × dit getal = het bedrag dat maximaal tegelijk in de markt zit.',
   'r-daily': 'Als je vandaag zoveel verloren hebt (gesloten trades plus open verlies), opent de bot tot morgen geen nieuwe posities. Open posities worden nog wel bewaakt. 0 = uit. <b>Tip:</b> zet hem op een bedrag dat je op één dag kunt missen.',
   'r-sl': 'Verkoop automatisch als een positie zoveel procent onder de aankoopprijs zakt. Beperkt je verlies per trade. <b>Te krap</b> (bijv. 1% op 5m-candles) en je wordt vaak door normale schommelingen uitgestopt. 0 = uit, dan verkoopt hij alleen op een signaal of take-profit.',
-  'r-tp': 'Verkoop automatisch als een positie zoveel procent winst staat. Zet je hem uit (0), dan verkoopt hij pas op een verkoopsignaal, waardoor je winst langer kan doorlopen maar ook weer kan verdampen. Vaak ongeveer 2× de stop-loss.',
+  'r-tp': 'Verkoop automatisch als een positie zoveel procent winst staat. Zet je hem uit (0), dan verkoopt hij pas via de trailing stop, de tijdslimiet of de AI-winstcheck, waardoor je winst langer kan doorlopen maar ook weer kan verdampen. Vaak ongeveer 2× de stop-loss.',
   'r-fee': 'De fee die Bitvavo per order rekent, voor paper trading en de P/L-berekening. Bij Bitvavo ligt dit rond 0,15 tot 0,25%, afhankelijk van je handelsvolume. Een volledige ronde (kopen en verkopen) kost dus twee keer de fee.',
   'r-cool': 'Na een verkoop koopt de bot dezelfde coin zoveel minuten niet opnieuw. Voorkomt dat hij bij schommelingen steeds in en uit stapt en dubbel fee betaalt. 0 = uit. <b>Vuistregel:</b> een paar candles lang, bijv. 30 min bij 5m-candles.',
   'r-budget': 'Alleen voor live. De bot zet nooit meer dan dit bedrag tegelijk in open posities, ook als er meer geld op je Bitvavo-account staat of als je later per ongeluk de inzet verhoogt. Gerealiseerde winst of verlies telt niet mee; het gaat om wat er op dat moment in de markt zit. 0 = uit. <b>Voorbeeld:</b> € 25 met € 5 per trade = maximaal 5 trades tegelijk.',
   'r-spread': 'Orderboek-check bij het kopen. Het verschil tussen de hoogste bieding (kopers) en de laagste laat (verkopers). Is dat groter dan dit, dan koopt de bot niet: je zou meteen dit percentage achterstaan. Grote coins: meestal onder 0,1%. Dunne coins soms 0,5% of meer. Werkt ook in paper, want het orderboek is openbaar. 0 = uit.',
   'r-bookcost': 'Orderboek-check bij het kopen. De bot rekent uit tegen welke prijs je inzet écht gevuld wordt als hij door het orderboek loopt, en hoeveel dat boven de middenprijs ligt (halve spread plus wat je "opeet" van het boek). Is dat meer dan dit, dan koopt hij niet. Ook paper-trades worden nu tegen deze echte vulprijs gedaan, zodat paper eerlijker is. 0 = uit.',
   'r-slip': 'Alleen voor paper, als het orderboek niet bereikbaar is (anders vult paper tegen de echte prijzen in het boek). Live koop je iets duurder en verkoop je iets goedkoper dan de laatste koers (de spread). Met slippage doet paper dat ook na, zodat je resultaten eerlijker zijn. Grote coins: 0,05 tot 0,1%. Kleine coins: soms 0,3% of meer.',
-  'st-fast': 'Aantal candles voor de snelle gemiddelde lijn. <b>Lager</b> = reageert sneller op koersbewegingen, maar geeft meer valse signalen. Gebruikelijk: 5 tot 12.',
-  'st-slow': 'Aantal candles voor de trage gemiddelde lijn, die de grote trend laat zien. Moet groter zijn dan de EMA fast. Gebruikelijk: 2 tot 3× de EMA fast, bijv. 21 of 26.',
-  'st-rsi': 'Over hoeveel candles de RSI wordt berekend. 14 is de standaard. Lager = gevoeliger, hoger = rustiger.',
-  'st-rsimax': 'Boven deze RSI koopt de bot niet, omdat de coin dan al hard gestegen is en de kans op terugval groter is. 70 is gebruikelijk; 100 = filter uit.',
-  'st-trend': 'Koop alleen als de koers boven een lange gemiddelde lijn ligt, zodat de bot niet koopt op een kort opveren in een dalende markt. <b>Gebruikelijk:</b> 200 candles bij 15m- of 1h-candles, 50 tot 100 bij 5m. 0 = uit. Hoe groter, hoe meer candles hij moet ophalen.',
-  'st-adx': 'De ADX (0–100) meet hoe sterk een trend is, ongeacht de richting. Onder de 20 beweegt de markt meestal zijwaarts, en dan kruisen de lijnen vaak heen en weer zonder echte beweging. <b>Gebruikelijk:</b> 20 tot 25. 0 = uit.',
-  'st-vol': 'Koop alleen als het volume op de kruising zoveel keer hoger is dan normaal (gemiddelde van de 20 candles ervoor). Een kruising zonder volume is vaak loos. <b>Gebruikelijk:</b> 1,2 tot 2. 0 = uit. Te hoog en er komen bijna geen signalen meer.',
-  'st-chase': 'Een koopsignaal is gebaseerd op de slotkoers van een candle. Is de koers sindsdien al flink gestegen, dan koop je duurder dan het signaal bedoelde en is een deel van de stijging al voorbij. Met deze waarde slaat de bot de aankoop over als de koers nu meer dan zoveel procent boven die slotkoers ligt. <b>Gebruikelijk:</b> 0,5 tot 2. 0 = uit.',
-  'st-mlmin': 'Werkt alleen als er een eigen model is (Instellingen → Eigen model) dat getraind is op dezelfde candle-tijd. Bij elk koopsignaal rekent het model de winstkans uit: de kans dat de koers eerst je winstdoel haalt voordat hij je stop raakt. Ligt die onder dit percentage, dan slaat de bot het signaal over, nog voordat de AI wordt gevraagd. Bij het model staat welke drempel op de testperiode het beste werkte. 0 = niet filteren (de AI krijgt de kans dan alleen als extra argument).',
-  'st-strict': 'Hoe kritisch de AI een koopsignaal beoordeelt. De AI rekent eerst harde eisen na (trendsterkte, volume, RSI, niet te ver doorgeschoten, kosten ten opzichte van je stop-loss) en keurt daarna alleen goed als de verwachte winst na kosten groot genoeg is.<br><b>Streng:</b> trendsterkte (ADX) minimaal 20, volume minimaal 0,8×, RSI maximaal 72, kosten maximaal 35% van je risico, verwachte winst minimaal 0,3× je risico, Bitcoin moet stijgen.<br><b>Normaal:</b> ADX 18, volume 0,6×, RSI 75, kosten maximaal 50% van je risico, verwachte winst minimaal 0,15× je risico.<br><b>Soepel:</b> ADX 15, volume 0,5×, RSI 80, kosten maximaal 70% van je risico, verwachte winst alleen positief; een richtingloze markt en dalende Bitcoin tellen alleen nog mee in de afweging.<br>Wat je zelf hierboven instelt (max RSI, minimale ADX, volumefilter, BTC-filter) gaat altijd voor. Soepeler = meer trades, maar ook meer verliezers; kijk bij Trades in de resultaatanalyse of het loont.',
-  'st-confirm': 'Bij korte candles kruisen de lijnen vaak heen en weer door ruis. De bot koopt dan en verkoopt een paar minuten later met verlies, vooral door de fees (whipsaw). Met deze waarde verkoopt de bot op het verkoopsignaal pas als EMA fast zoveel candles <b>op rij</b> onder EMA slow ligt. Herstelt de koers binnen die tijd, dan blijft de positie staan. Stop-loss, trailing stop, take-profit en de AI-winstcheck werken altijd direct. <b>Gebruikelijk:</b> 2 of 3. 1 = direct verkopen.',
-  'st-hold': 'Hoeveel candles een positie minimaal open blijft voordat het verkoopsignaal mag verkopen. Geeft een nieuwe positie de tijd om te bewegen. Stop-loss, trailing stop, take-profit en de AI-winstcheck werken altijd direct, dus je verlies blijft begrensd. <b>Gebruikelijk:</b> 3 tot 6. 0 = uit.',
-  'st-open': 'Normaal kijkt de bot alleen naar gesloten candles, zodat een signaal vaststaat. Met <b>Ja</b> telt ook de candle die nog loopt mee: je ziet een kruising tot een hele candle eerder, maar hij kan binnen die candle ook weer verdwijnen, waardoor je vaker te vroeg koopt. Vooral nuttig bij lange candles (1 uur of meer). Een kortere candle-tijd bij Planning is meestal de betere manier om sneller te zijn.',
-  'st-mlbandit': 'Zelflerend: de bevestigde strategieën van de strategie-zoeker bepalen zelf wanneer er gekocht wordt, elk op haar eigen candle-tijd en met een eigen model, doel, stop en maximale duur (los van je eigen candle-instelling en EMA-kruisingen). Willen er meerdere kopen, dan kiest de bot er één. Na elke gesloten trade krijgt die strategie een beloning: de echte winst of het verlies. Strategieën die geld opleverden kiest hij daarna vaker; de andere probeert hij af en toe opnieuw, want het kan geluk geweest zijn of de markt kan veranderd zijn. Recente trades tellen zwaarder. De gekozen strategie bepaalt voor die trade de stop, het winstdoel en de maximale duur (jouw ATR-stop en trailing stop gelden dan niet). Zolang er nog geen bevestigde strategie is, gelden gewoon je eigen instellingen. Een positie van een strategie wordt alleen gesloten op haar eigen stop, doel of maximale duur (of handmatig). Paper en live delen hetzelfde geheugen.',
-  'st-agent': 'De AI-trader van de trainer beslist zelf wanneer hij koopt en wanneer hij verkoopt: geen EMA-kruisingen, winstdoelen of vaste strategieën. Hij kijkt op zijn eigen candle-tijd (die hij zelf kiest) en verkoopt zodra hij van langer vasthouden niets meer verwacht. Alleen de noodstop (instelbaar op de pagina Trainer) en een maximale duur gelden als vangnet. Je AI (bij AI) blijft als controleur meekijken, en de orderboek-check blijft gelden. Live handelt hij pas als een recept alle eisen voor live haalt (pagina Trainer → Live-toelating) én jij het daar zelf toestaat; in paper zodra hij in de test winst maakte (of eerder als oefening, als "Oefenen in paper" aan staat). Staat dit aan, dan gelden minimale modelkans, marktfase en de oude strategie-keuze niet (die worden verborgen).',
+  'st-mlbandit': 'Zelflerend: de bevestigde strategieën van de strategie-zoeker bepalen zelf wanneer er gekocht wordt, elk op haar eigen candle-tijd en met een eigen model, doel, stop en maximale duur (los van je eigen candle-instelling). Willen er meerdere kopen, dan kiest de bot er één. Na elke gesloten trade krijgt die strategie een beloning: de echte winst of het verlies. Strategieën die geld opleverden kiest hij daarna vaker; de andere probeert hij af en toe opnieuw, want het kan geluk geweest zijn of de markt kan veranderd zijn. Recente trades tellen zwaarder. De gekozen strategie bepaalt voor die trade de stop, het winstdoel en de maximale duur (jouw ATR-stop en trailing stop gelden dan niet). Zolang er nog geen bevestigde strategie is, koopt de bot hiermee niets. Een positie van een strategie wordt alleen gesloten op haar eigen stop, doel of maximale duur (of handmatig). Paper en live delen hetzelfde geheugen.',
+  'st-agent': 'De AI-trader van de trainer beslist zelf wanneer hij koopt en wanneer hij verkoopt: geen vaste winstdoelen of regels. Hij kijkt op zijn eigen candle-tijd (die hij zelf kiest) en verkoopt zodra hij van langer vasthouden niets meer verwacht. Alleen de noodstop (instelbaar op de pagina Trainer) en een maximale duur gelden als vangnet. De AI-controleur (Instellingen → AI-controleur) blijft meekijken, en de orderboek-check blijft gelden. Live handelt hij pas als een recept alle eisen voor live haalt (pagina Trainer → Live-toelating) én jij het daar zelf toestaat; in paper zodra hij in de test winst maakte (of eerder als oefening, als "Oefenen in paper" aan staat). Staat dit aan, dan geldt de oude strategie-keuze niet (die wordt verborgen). Staan de AI-trader én de strategieën uit, dan koopt de bot niets nieuws.',
   'st-agentexplore': 'Alleen in paper, nooit live. De verkenner koopt kansen die de AI-trader laat liggen (onder zijn koopdrempel, coins die hij niet koos, marktfases waar de Strategy Agent niet handelt) en kiest daaruit slim: vooral dicht bij de koopdrempel, waar nog weinig trades zijn en waar de echte uitkomsten beter waren dan verwacht. Wat in minstens 30 trades duidelijk slechter uitkwam, slaat hij over. Zo hoort de AI-trader ook hoe het afloopt bij kansen die hij anders afwijst, en leert hij waar zijn verwachting te optimistisch of te voorzichtig is. Met de kleinste inzet (€ 5), hooguit één verkennerspositie tegelijk (naast je gewone trades) en hooguit 8 per dag. Zijn trades zijn leervoorbeelden voor de leerserver, maar tellen niet mee voor de eisen voor live en het weekoverzicht van de paper-test. Je ziet ze op AI-chat als <b>Verkenner</b>.',
   'st-agentvol': 'De leerserver meet per recept hoe het deed bij hoge, normale en lage volatiliteit (hoe onrustig de koers is vergeleken met normaal voor die coin). Aan: verloor het recept in de eindtests bij de huidige volatiliteit (minstens 30 trades, gemiddeld verlies na kosten), dan koopt de AI-trader niet, of gebruikt hij een ander toegestaan recept dat daar niet verloor. Uit: alleen de marktfase (trend) telt.',
   'r-exstop': 'Alleen live. Na elke aankoop zet de bot ook een stop-loss-order bij Bitvavo op de noodstop van die positie. Die werkt ook als je server, internet of de bot uitvalt. Verkoopt de bot zelf, dan haalt hij die order eerst weg (Bitvavo houdt de coins anders vast). Ging de stop bij Bitvavo af terwijl de bot offline was, dan sluit de bot de positie daarna netjes af met de echte uitvoering. Lukt het plaatsen niet, dan bewaakt de bot de noodstop gewoon zelf en krijg je een melding.',
   'st-agentsizing': 'Paper en live. Jouw inzet is het minimum, je <b>maximale inzet</b> (Instellingen → Risico) het plafond; staat die op 0 of gelijk aan je inzet, dan verandert er niets. Daartussen kiest de AI-trader per trade: meer naarmate zijn verwachting verder boven zijn koopdrempel ligt, zijn verwachtingen in de praktijk (laatste 30 trades) uitkwamen en het recept in deze marktfase het best was. Met minder dan 10 trades met een verwachting zet hij hooguit de helft van de ruimte in; na 2 verliezen op rij of als zijn trades verlies maakten alleen jouw inzet. Is het orderboek te dun voor de grotere order, dan jouw inzet. Nooit meer dan er vrij is (saldo, budgetplafond). Let op: met een grotere inzet verlies je bij een slechte trade ook meer, en dat telt mee voor de dagelijkse verlieslimiet en de verliesgrens bij eigen risico. Op AI-chat zie je per aankoop waarom hij dat bedrag koos; op Trainer → Live of grotere inzetten beter uitkomen.',
   'st-agentsmall': 'Alleen live, voor recepten die alle eisen haalden. Aan: de AI-trader begint live met de kleinste inzet (€ 5), tot hij live 20 trades met gemiddeld winst heeft; daarna je eigen inzet. Uit: meteen je eigen inzet. Een recept op eigen risico (Trainer → Live-toelating) gebruikt altijd je eigen inzet, met de verliesgrens die je daar kiest.',
-  'st-agentveto': 'Aan: elke aankoop van de AI-trader gaat eerst langs de AI-controleur (het taalmodel bij AI). Die kan nee zeggen, bijvoorbeeld bij slecht nieuws of een rare grafiek: een extra rem, maar hij kan ook goede trades tegenhouden. Uit: de AI-trader beslist helemaal zelf, sneller en zonder Groq-limieten, en leert ook van de trades die anders tegengehouden waren. Verkopen doet de AI-trader altijd zelf. De noodstop, dagelijkse verlieslimiet en orderboek-check blijven altijd gelden. Bij "Samenwerking AI + model" op de pagina Trainer zie je wie vaker gelijk had.',
+  'st-agentveto': 'Aan: elke aankoop van de AI-trader gaat eerst langs de AI-controleur (het taalmodel bij Instellingen → AI-controleur). Die kan nee zeggen, bijvoorbeeld bij slecht nieuws of een rare grafiek: een extra rem, maar hij kan ook goede trades tegenhouden. Uit: de AI-trader beslist helemaal zelf, sneller en zonder Groq-limieten, en leert ook van de trades die anders tegengehouden waren. Verkopen doet de AI-trader altijd zelf. De noodstop, dagelijkse verlieslimiet en orderboek-check blijven altijd gelden. Bij "Samenwerking AI + model" op de pagina Trainer zie je wie vaker gelijk had.',
   'st-mltrial': 'Alleen voor paper. Aan: de AI-trader (en bij de oude methode de proefstrategieën) handelt in paper ook als hij in de test nog geen winst maakte, zodat hij oefent en van zijn eigen trades leert. Uit: pas als hij in de test winst maakte. Live handelt hij hoe dan ook pas als hij alle eisen voor live haalt en jij het toestaat.',
-  'st-mlregime': 'Het model herkent het soort markt van een coin: stijgend, zijwaarts of dalend (de trend over een langere periode, vergeleken met hoe hard de coin normaal beweegt). De trainer houdt bij hoe de trades die het model zou nemen het in elk soort markt deden op de testperiode. Verloor het model in de huidige soort markt geld (minstens 30 testtrades), dan krijgt de AI een waarschuwing. Met "Overslaan" slaat de bot zo\'n signaal helemaal over.',
-  'st-btc': 'Bijna alle coins bewegen mee met Bitcoin. Met dit filter koopt de bot geen andere coins zolang BTC onder zijn gemiddelde van 50 candles ligt. BTC zelf wordt niet gefilterd.',
   'r-trail': 'De stop schuift mee omhoog met de koers. Bij 2% verkoopt de bot zodra de koers 2% onder het hoogste punt sinds aankoop zakt. Zo laat je winnaars doorlopen en zet je winst vast. Werkt naast de stop-loss en take-profit; zet de take-profit op 0 om winnaars echt te laten lopen. 0 = uit.',
   'r-limit': 'Bitvavo rekent voor een market order de taker-fee (0,25%) en voor een limietorder die in het orderboek blijft staan de maker-fee (0,15%). <b>Alleen winst nemen</b>: kopen gaat direct (geen wachten, geen gemiste instap), alleen winst nemen gebeurt met een limietorder. Bespaart ± 0,1% per ronde. Met <b>Kopen en winst nemen</b> koopt de bot met een limietorder op de biedprijs en neemt hij winst met een limietorder op de laatprijs. Zo bespaar je ongeveer 0,2% per ronde. Nadeel: een limietorder wordt alleen gevuld als de koers naar je toe komt. Loopt de koers bij het kopen weg, dan gaat de aankoop niet door (dat voorkomt ook kopen op de top). Bij verkopen gaat de rest na de wachttijd alsnog met een market order. Stop-loss, ATR-stop, trailing stop en handmatig sluiten zijn altijd market, zodat je er bij een snelle daling altijd uit komt.',
-  'r-maxhold': 'Hoe lang een positie maximaal open mag staan. Is de tijd om, dan verkoopt de bot, ook als er geen verkoopsignaal is en ook als de positie (nog) verlies staat. Zo blijft je geld niet vastzitten in een coin die niets doet, en komt er sneller ruimte voor een nieuwe trade. Te kort kan winnende trades te vroeg afbreken. <b>Gebruikelijk:</b> 30 tot 120 minuten bij korte candles. 0 = uit.',
+  'r-maxhold': 'Hoe lang een positie maximaal open mag staan. Is de tijd om, dan verkoopt de bot, ook als de positie (nog) verlies staat. Zo blijft je geld niet vastzitten in een coin die niets doet, en komt er sneller ruimte voor een nieuwe trade. Te kort kan winnende trades te vroeg afbreken. <b>Gebruikelijk:</b> 30 tot 120 minuten bij korte candles. 0 = uit.',
   'r-limitwait': 'Hoe lang een limietorder mag wachten op een vulling. Korter = minder gemiste kansen bij verkopen, maar vaker market. Tijdens het wachten pauzeert de bot even (ook de bewaking van andere posities), dus houd het kort. <b>Gebruikelijk:</b> 15 tot 30 seconden.',
   'r-maker': 'De maker-fee van Bitvavo bij jouw handelsvolume. Tot € 100.000 per 30 dagen is dat 0,15%. In live rekent de bot met wat Bitvavo werkelijk inhoudt; in paper met dit percentage.',
   'r-reinvest': 'Laat je winst voor je werken. Zoveel procent van je gerealiseerde winst (alle gesloten trades in deze modus) wordt verdeeld over je maximaal aantal open trades en bij de inzet per trade opgeteld. Voorbeeld: € 25 inzet, 3 trades, € 30 winst en 100% → de volgende trades zijn € 35. Verlies je weer, dan krimpt het extra deel mee, maar nooit onder je eigen inzet. Let op: na verlies koop je nog steeds met minimaal je eigen inzet. In live geldt ook je budgetplafond en saldo. 0 = uit.',
@@ -3509,7 +3394,6 @@ const HELP = {
   'r-aievery': 'Hoe vaak de AI per positie opnieuw gevraagd mag worden. Lager = sneller reageren, maar meer AI-calls (let op de limieten van gratis providers zoals Groq). <b>Gebruikelijk:</b> 2 tot 5 minuten.',
   'r-atr': 'Een stop-loss die meebeweegt met de beweeglijkheid van de coin. De ATR is hoeveel een coin gemiddeld per candle beweegt. Bij 2 ligt de stop op instapkoers − 2 × ATR: ruimer bij wilde coins, krapper bij rustige. <b>Vervangt</b> de vaste stop-loss als hij aan staat. <b>Gebruikelijk:</b> 1,5 tot 3. 0 = uit.',
   'paper-start': 'Het nep-saldo waarmee paper trading begint. Kies een bedrag dat lijkt op wat je live zou inzetten, dan zijn de resultaten beter te vergelijken.',
-  'ai-mode': '<b>Eén model</b>: model 1 beslist (de rest is back-up). Snel en zuinig.<br><b>Team van drie</b>: model 1 is de <b>analist</b> (analyseert het signaal), model 2 de <b>criticus</b> (zoekt bewust wat er mis kan gaan) en model 3 de <b>beslisser</b> (weegt beide af en beslist). Heb je minder modellen, dan speelt een model meerdere rollen; faalt een model, dan neemt het volgende de rol over. Valt een signaal al af op een harde eis, dan wordt het team niet gevraagd. Kost ongeveer drie keer zoveel AI-vragen en een paar seconden per signaal. Het gesprek lees je terug op de pagina <b>AI-chat</b>. De winstcheck bij open posities blijft altijd één model.',
   'ai-fail': 'Wat er met een koopsignaal gebeurt als geen enkel AI-model antwoordt (fouten, tegoed op). <b>Afwijzen</b> is het veiligst: geen AI, geen trade. <b>Doorlaten</b> betekent dat alleen je eigen regels beslissen.',
 };
 function initHelp() {
@@ -3537,64 +3421,7 @@ document.addEventListener('click', (e) => {
 });
 initHelp();
 
-// ---------- Voorbeeldinstellingen ----------
-// Van zeer voorzichtig (1) tot zeer riskant (8). Alleen planning, strategie, filters en stops;
-// inzet, max. open trades en daglimiet blijven altijd van de gebruiker.
-const PRESETS = [
-  { name: 'Zeer voorzichtig', level: 1, freq: 'Een paar trades per maand',
-    desc: 'Koopt alleen in een duidelijke, sterke stijgende trend en houdt lang vast. Weinig fees, weinig ruis.',
-    who: 'Voor wie weinig risico wil en geduld heeft.',
-    schedule: { timeframe: '4h', checkIntervalMinutes: 30 },
-    risk: { stopLossPct: 8, takeProfitPct: 0, cooldownMinutes: 720, trailingStopPct: 7, atrStopMult: 0 },
-    strategy: { emaFast: 20, emaSlow: 50, rsiPeriod: 14, rsiMaxEntry: 65, trendEma: 200, adxMin: 25, volumeMult: 0, btcFilter: 1, maxChasePct: 1, useOpenCandle: 0 } },
-  { name: 'Voorzichtig', level: 2, freq: 'Ongeveer 1 trade per week per coin',
-    desc: 'Volgt de grote trend op uurcandles met alle filters aan. Laat winst lopen met een ruime trailing stop.',
-    who: 'Een goede eerste keuze om mee te beginnen.',
-    schedule: { timeframe: '1h', checkIntervalMinutes: 15 },
-    risk: { stopLossPct: 5, takeProfitPct: 0, cooldownMinutes: 240, trailingStopPct: 5, atrStopMult: 0 },
-    strategy: { emaFast: 12, emaSlow: 26, rsiPeriod: 14, rsiMaxEntry: 65, trendEma: 200, adxMin: 25, volumeMult: 1.2, btcFilter: 1, maxChasePct: 1, useOpenCandle: 0 } },
-  { name: 'Rustig', level: 3, freq: 'Een paar trades per week per coin',
-    desc: 'Uurcandles met trend- en BTC-filter. Iets meer signalen dan Voorzichtig.',
-    who: 'Voor een rustig tempo met redelijk wat trades.',
-    schedule: { timeframe: '1h', checkIntervalMinutes: 15 },
-    risk: { stopLossPct: 4, takeProfitPct: 0, cooldownMinutes: 120, trailingStopPct: 4, atrStopMult: 0 },
-    strategy: { emaFast: 12, emaSlow: 26, rsiPeriod: 14, rsiMaxEntry: 70, trendEma: 200, adxMin: 20, volumeMult: 0, btcFilter: 1, maxChasePct: 1, useOpenCandle: 0 } },
-  { name: 'Gemiddeld', level: 4, freq: 'Een paar trades per dag',
-    desc: 'Kwartiercandles met filters. Stop-loss past zich aan de beweeglijkheid van de coin aan (ATR).',
-    who: 'Een balans tussen aantal trades en betrouwbaarheid.',
-    schedule: { timeframe: '15m', checkIntervalMinutes: 5 },
-    risk: { stopLossPct: 2.5, takeProfitPct: 0, cooldownMinutes: 45, trailingStopPct: 2.5, atrStopMult: 2 },
-    strategy: { emaFast: 9, emaSlow: 21, rsiPeriod: 14, rsiMaxEntry: 70, trendEma: 200, adxMin: 20, volumeMult: 1.2, btcFilter: 1, maxChasePct: 1, useOpenCandle: 0 } },
-  { name: 'Actief', level: 5, freq: 'Meerdere trades per dag',
-    desc: 'Vijfminutencandles en snellere lijnen. Vaste take-profit van 2× de stop-loss, minder filters, dus meer ruis en fees.',
-    who: 'Voor wie veel actie wil en kleine winsten accepteert.',
-    schedule: { timeframe: '5m', checkIntervalMinutes: 1 },
-    risk: { stopLossPct: 2, takeProfitPct: 4, cooldownMinutes: 15, trailingStopPct: 2, atrStopMult: 0 },
-    strategy: { emaFast: 5, emaSlow: 13, rsiPeriod: 14, rsiMaxEntry: 75, trendEma: 100, adxMin: 15, volumeMult: 0, btcFilter: 0, maxChasePct: 0.8, useOpenCandle: 0 } },
-  { name: 'Momentum', level: 6, freq: 'Meerdere trades per dag',
-    desc: 'Springt in op plotselinge stijgingen met veel volume, ook als de coin al warm is. Kijkt naar de lopende candle.',
-    who: 'Voor ervaren gebruikers. Je koopt vaker op een top.',
-    schedule: { timeframe: '15m', checkIntervalMinutes: 2 },
-    risk: { stopLossPct: 3, takeProfitPct: 0, cooldownMinutes: 20, trailingStopPct: 2, atrStopMult: 0 },
-    strategy: { emaFast: 5, emaSlow: 13, rsiPeriod: 14, rsiMaxEntry: 85, trendEma: 0, adxMin: 25, volumeMult: 2, btcFilter: 0, maxChasePct: 2, useOpenCandle: 1 } },
-  { name: 'Scalper', level: 7, freq: 'Tientallen trades per dag',
-    desc: 'Minuutcandles, check elke 20 seconden. Snelle trades, met een take-profit ruim boven de stop zodat de fees (± 0,7% per ronde) terugverdiend worden.',
-    who: 'Alleen om te experimenteren, liefst in paper.',
-    schedule: { timeframe: '1m', checkIntervalMinutes: 1 / 3 },
-    risk: { stopLossPct: 1.5, takeProfitPct: 3.5, cooldownMinutes: 5, trailingStopPct: 1.5, atrStopMult: 0 },
-    strategy: { emaFast: 5, emaSlow: 13, rsiPeriod: 7, rsiMaxEntry: 80, trendEma: 50, adxMin: 0, volumeMult: 1.5, btcFilter: 0, maxChasePct: 0.5, useOpenCandle: 0 } },
-  { name: 'Zeer riskant', level: 8, freq: 'Zeer veel trades',
-    desc: 'Alle filters uit, reageert op elke kleine kruising in de lopende minuutcandle, check elke 10 seconden. Heel veel trades en valse signalen.',
-    who: 'Gokken. Grote kans op verlies; niet voor echt geld.',
-    schedule: { timeframe: '1m', checkIntervalMinutes: 1 / 6 },
-    risk: { stopLossPct: 2.5, takeProfitPct: 5, cooldownMinutes: 0, trailingStopPct: 0, atrStopMult: 0 },
-    strategy: { emaFast: 3, emaSlow: 8, rsiPeriod: 7, rsiMaxEntry: 100, trendEma: 0, adxMin: 0, volumeMult: 0, btcFilter: 0, maxChasePct: 0, useOpenCandle: 1 } },
-];
-const TF_LABEL = { '1m': '1 min', '5m': '5 min', '15m': '15 min', '30m': '30 min', '1h': '1 uur', '2h': '2 uur', '4h': '4 uur', '1d': '1 dag' };
 const nl = (n) => String(Math.round(n * 100) / 100).replace('.', ',');
-// Kleur per risiconiveau: groen → geel → rood.
-const levelColor = (l) => (l <= 2 ? 'var(--up)' : l <= 4 ? 'var(--accent)' : l <= 6 ? 'var(--warn)' : 'var(--down)');
-const levelName = (l) => (l <= 2 ? 'Laag risico' : l <= 4 ? 'Gemiddeld risico' : l <= 6 ? 'Hoog risico' : 'Zeer hoog risico');
 // Welk deel van je trades je moet winnen om quitte te spelen, gegeven stop-loss, take-profit en de
 // kosten van een ronde (fee + slippage, kopen en verkopen). null als er geen vaste take-profit is.
 function breakEvenWinrate(stopPct, tpPct, costPct) {
@@ -3608,72 +3435,12 @@ const roundCost = () => {
   return r.limitOrders ? (r.makerFeePct ?? 0.15) + fee + slip : (fee + slip) * 2;
 };
 
-function presetDetails(p) {
-  const st = p.strategy, r = p.risk;
-  const filters = [st.trendEma && `trend-EMA ${st.trendEma}`, st.adxMin && `ADX ${st.adxMin}`, st.volumeMult && `volume ${nl(st.volumeMult)}×`, st.btcFilter && 'BTC-filter'].filter(Boolean);
-  return `<ul class="muted">
-    <li>${TF_LABEL[p.schedule.timeframe]}-candles, check elke ${fmtIv(p.schedule.checkIntervalMinutes)}</li>
-    <li>EMA ${st.emaFast} / ${st.emaSlow}, max RSI ${st.rsiMaxEntry}${st.useOpenCandle ? ', lopende candle' : ''}</li>
-    <li>Stop-loss ${nl(r.stopLossPct)}%${r.atrStopMult ? ` of ATR ${nl(r.atrStopMult)}×` : ''}, ${r.takeProfitPct ? `take-profit ${nl(r.takeProfitPct)}%` : 'geen vaste take-profit'}</li>
-    <li>${r.trailingStopPct ? `Trailing stop ${nl(r.trailingStopPct)}%` : 'Geen trailing stop'}, afkoelperiode ${r.cooldownMinutes >= 60 ? `${nl(r.cooldownMinutes / 60)} uur` : `${r.cooldownMinutes} min`}</li>
-    <li>Filters: ${filters.length ? filters.join(', ') : 'geen'}${st.maxChasePct ? `; max. ${nl(st.maxChasePct)}% stijging na signaal` : ''}</li>
-    ${(() => { const be = breakEvenWinrate(r.stopLossPct, r.takeProfitPct, roundCost()); return be == null ? '' : `<li>Quitte bij ± ${Math.round(be)}% gewonnen trades (na kosten)</li>`; })()}</ul>`;
-}
-// Welk profiel komt overeen met de huidige instellingen (alle waarden gelijk)?
-function currentPreset() {
-  const s = state; if (!s) return null;
-  const eq = (a, b) => Math.abs(Number(a ?? 0) - Number(b ?? 0)) < 1e-6;
-  return PRESETS.find(p => p.schedule.timeframe === s.timeframe && eq(p.schedule.checkIntervalMinutes, s.checkIntervalMinutes)
-    && Object.entries(p.strategy).every(([k, v]) => eq(s.strategy[k], v))
-    && Object.entries(p.risk).every(([k, v]) => eq(s.risk[k], v))) ?? null;
-}
-function renderPresets() {
-  const cur = currentPreset();
-  $('profile-current').innerHTML = cur ? `Nu: <b>${esc(cur.name)}</b>` : 'Nu: eigen instellingen';
-  $('presets').innerHTML = PRESETS.map((p, i) => `<div class="preset${cur === p ? ' on' : ''}">
-    <div class="top"><h4>${p.name}</h4><span class="meter" aria-label="Risico ${p.level} van 8">${PRESETS.map((_, j) => `<i style="${j < p.level ? `background:${levelColor(p.level)}` : ''}"></i>`).join('')}</span></div>
-    <div><span class="tag" style="color:${levelColor(p.level)};background:color-mix(in srgb, ${levelColor(p.level)} 14%, transparent)">${levelName(p.level)}</span>
-      <span class="muted" style="font-size:12px">· ${p.freq}</span></div>
-    <div class="muted" style="margin-top:6px">${p.desc}</div>
-    ${presetDetails(p)}
-    <div class="for muted"><b>${p.who}</b></div>
-    <button class="btn sm${cur === p ? '' : ' primary'}" type="button" data-preset="${i}" style="margin-top:10px" ${cur === p ? 'disabled' : ''}>${cur === p ? 'In gebruik' : 'Toepassen'}</button></div>`).join('');
-}
-$('presets').addEventListener('click', async (e) => {
-  const b = e.target.closest('[data-preset]'); if (!b) return;
-  const p = PRESETS[Number(b.dataset.preset)];
-  const msg = (t, c) => { $('preset-msg').className = `msg ${c ?? ''}`; $('preset-msg').textContent = t; };
-  const done = await ask({
-    title: `Strategie "${p.name}" toepassen`,
-    sub: `${levelName(p.level)}. Planning, strategie, filters, stops en afkoelperiode worden aangepast; je inzet en limieten blijven gelijk.`
-      + (state.mode === 'live' && p.level >= 6 ? ' Let op: je staat in LIVE en dit is een riskante strategie.' : ''),
-    body: presetDetails(p),
-    confirmText: 'Toepassen',
-    danger: state.mode === 'live' && p.level >= 6,
-    password: state.mode === 'live',
-    action: async (password) => {
-      await api('api/settings/schedule', p.schedule);
-      await api('api/settings/risk', { risk: { ...state.risk, ...p.risk }, password });
-      await api('api/settings/strategy', { strategy: p.strategy, password });
-    },
-  });
-  if (!done) return;
-  riskDirty = stratDirty = schedDirty = false;
-  msg('');
-  toast(`<b>"${esc(p.name)}" toegepast.</b> Geldt vanaf de volgende check.`);
-  renderPresets();
-  await load(); renderSettings();
-});
-
 // ---------- Instellingen: strategie ----------
 let stratDirty = false;
 document.querySelectorAll('#strat-form input[type=number]').forEach(i => i.oninput = () => { stratDirty = true; });
 $('strat-form').onsubmit = async (e) => {
   e.preventDefault();
-  const strategy = { emaFast: $('st-fast').value, emaSlow: $('st-slow').value, rsiPeriod: $('st-rsi').value, rsiMaxEntry: $('st-rsimax').value,
-    trendEma: $('st-trend').value, adxMin: $('st-adx').value, volumeMult: $('st-vol').value, btcFilter: $('st-btc').value,
-    maxChasePct: $('st-chase').value, useOpenCandle: $('st-open').value,
-    sellConfirmCandles: $('st-confirm').value, minHoldCandles: $('st-hold').value, aiStrictness: $('st-strict').value, mlMinProb: $('st-mlmin').value, mlSkipBadRegime: $('st-mlregime').value, mlBandit: $('st-mlbandit').value, mlTrialPaper: $('st-mltrial').value, agentMode: $('st-agent').value, agentVeto: $('st-agentveto').value, agentExplore: $('st-agentexplore').value, agentLiveSmallStart: $('st-agentsmall').value, agentSizing: $('st-agentsizing').value, agentVolGuard: $('st-agentvol').value };
+  const strategy = { mlBandit: $('st-mlbandit').value, mlTrialPaper: $('st-mltrial').value, agentMode: $('st-agent').value, agentVeto: $('st-agentveto').value, agentExplore: $('st-agentexplore').value, agentLiveSmallStart: $('st-agentsmall').value, agentSizing: $('st-agentsizing').value, agentVolGuard: $('st-agentvol').value };
   if (state.mode === 'live' && !$('st-pass').value) { $('strat-msg').className = 'msg err'; $('strat-msg').textContent = 'Vul je wachtwoord in'; return; }
   try {
     await api('api/settings/strategy', { strategy, password: $('st-pass').value });
@@ -3874,7 +3641,6 @@ $('ai-add').onclick = () => {
   aiDirty = true; renderAiRows();
 };
 $('ai-fail').onchange = () => { aiDirty = true; };
-$('ai-mode').onchange = () => { aiDirty = true; };
 
 $('ai-form').onsubmit = async (e) => {
   e.preventDefault();
@@ -3885,7 +3651,7 @@ $('ai-form').onsubmit = async (e) => {
   rows.forEach((r, i) => { if (r.newKey?.trim()) newKeys[i + 1] = r.newKey.trim(); });
   try {
     await api('api/settings/ai', {
-      provider: first.provider, model: first.model, baseUrl: first.baseUrl, failMode: $('ai-fail').value, mode: $('ai-mode').value,
+      provider: first.provider, model: first.model, baseUrl: first.baseUrl, failMode: $('ai-fail').value,
       fallbacks: rest.map(r => ({ provider: r.provider, model: r.model, baseUrl: r.baseUrl })),
       keyMap: rows.map(r => r.fromSlot), newKeys,
     });

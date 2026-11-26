@@ -27,25 +27,6 @@ export const config = {
   checkIntervalMinutes: num('CHECK_INTERVAL_MINUTES', 15),
 
   strategy: {
-    emaFast: num('EMA_FAST', 12),
-    emaSlow: num('EMA_SLOW', 26),
-    rsiPeriod: num('RSI_PERIOD', 14),
-    rsiMaxEntry: num('RSI_MAX_ENTRY', 70),
-    // Filters (0 = uit)
-    trendEma: num('TREND_EMA', 0),
-    adxMin: num('ADX_MIN', 0),
-    volumeMult: num('VOLUME_MULT', 0),
-    btcFilter: num('BTC_FILTER', 0),
-    // Niet kopen als de koers sinds het signaal al meer dan zoveel procent is gestegen (0 = uit).
-    maxChasePct: num('MAX_CHASE_PCT', 1),
-    // 1 = ook de candle die nog loopt meenemen: sneller, maar signalen kunnen weer verdwijnen.
-    useOpenCandle: num('USE_OPEN_CANDLE', 0),
-    // Tegen whipsaw: verkopen op het verkoopsignaal pas als EMA fast zoveel candles op rij
-    // onder EMA slow ligt, en pas na zoveel candles in de positie. Stops werken altijd direct.
-    sellConfirmCandles: num('SELL_CONFIRM_CANDLES', 2),
-    minHoldCandles: num('MIN_HOLD_CANDLES', 3),
-    // Hoe streng de AI keurt: 0 = streng, 1 = normaal, 2 = soepel.
-    aiStrictness: num('AI_STRICTNESS', 1),
     // Zelflerend: proefstrategieën (nog niet bevestigd) in paper ook echt laten traden.
     mlTrialPaper: num('ML_TRIAL_PAPER', 1),
     // 1 = de AI-trader van de trainer beslist zelf wanneer kopen en verkopen.
@@ -126,9 +107,6 @@ export function validateConfig() {
   const errors = [];
   if (!['none', 'gemini', 'openai'].includes(config.ai.provider)) {
     errors.push(`Onbekende AI_PROVIDER "${config.ai.provider}" (kies none, gemini of openai).`);
-  }
-  if (config.strategy.emaFast >= config.strategy.emaSlow) {
-    errors.push('EMA_FAST moet kleiner zijn dan EMA_SLOW.');
   }
   if (config.pairs.length === 0) errors.push('PAIRS is leeg.');
   return errors;

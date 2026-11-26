@@ -279,8 +279,8 @@ export function createApp({ users, manager, log = console }) {
       positions: open.positions,
       open: { valueEur: open.valueEur, costEur: open.costEur, pnlEur: open.pnlEur, complete: open.complete },
       trades: closed.slice(0, 100),
-      // Zonder het (grote) AI-gesprek; dat haalt de pagina AI-chat apart op.
-      decisions: s.decisions.slice(0, 100).map(({ team, ...d }) => (team ? { ...d, hasChat: true } : d)),
+      // Oude beslissingen kunnen nog een (groot) gesprek van het vroegere AI-team bevatten: niet meesturen.
+      decisions: s.decisions.slice(0, 100).map(({ team, ...d }) => d),
       stats: {
         totalTrades: closed.length,
         winRate: closed.length ? (wins / closed.length) * 100 : null,
@@ -397,7 +397,6 @@ export function createApp({ users, manager, log = console }) {
     return { ok: true, done, skipped };
   }));
 
-  // Gesprekken van het AI-team, nieuwste eerst.
   // Learning: wat de bot leert. Het beslissingsdagboek van deze gebruiker (goede en slechte beslissingen,
   // gemiste kansen, onterechte afwijzingen) en de modelversies van de leerserver (alleen lezen).
   app.get('/api/learning', wrap(async (req, { bot }) => {
@@ -441,10 +440,7 @@ export function createApp({ users, manager, log = console }) {
     return { ok: true, ...r.data };
   }));
 
-  app.get('/api/aichat', wrap((req, { bot, settings }) => ({
-    mode: settings.ai.mode ?? 'single',
-    chats: bot.store.state.decisions.filter((d) => d.team).slice(0, 60)
-      .map((d) => ({ at: d.at, pair: d.pair, outcome: d.outcome, reason: d.reason, provider: d.provider, strategyReason: d.strategyReason, team: d.team })),
+  app.get('/api/aichat', wrap((req, { bot }) => ({
     // Overleg van de AI-trader en zijn team (Market, Strategy, Risk, Execution Agent) bij kopen, tegenhouden en verkopen.
     agentChats: (bot.store.state.agentChats ?? []).slice(0, 80),
   })));
@@ -660,8 +656,8 @@ export function createApp({ users, manager, log = console }) {
     return { ok: true, config: r.data.config };
   }));
 
-  // Een bevestigde strategie van de zoeker toepassen: stop, winstdoel, maximale duur, candle-tijd
-  // en minimale modelkans van de admin aanpassen, en meteen een model met die instellingen trainen.
+  // Een bevestigde strategie van de zoeker toepassen: stop, winstdoel, maximale duur en candle-tijd
+  // van de admin aanpassen, en meteen een model met die instellingen trainen.
   app.post('/api/admin/trainer/apply', adminOnly, wrap(async (req, { bot, settings }) => {
     const status = (await manager.trainerRequest('/status')).data;
     const s = (status.search?.leaderboard ?? []).find((x) => x.key === req.body?.key);
@@ -669,11 +665,9 @@ export function createApp({ users, manager, log = console }) {
     if (s.status !== 'bevestigd') throw new Error('Alleen bevestigde strategieën kunnen worden toegepast');
     if (s.timeframe !== bot.timeframe) await bot.setSchedule({ timeframe: s.timeframe, checkIntervalMinutes: bot.checkIntervalMinutes });
     await bot.setRisk({ stopLossPct: s.stopPct, takeProfitPct: s.targetPct, maxHoldMinutes: s.holdMinutes });
-    const minProb = s.val?.best?.minProb ? Math.round(s.val.best.minProb * 100) : null;
-    if (minProb) await bot.setStrategy({ mlMinProb: minProb });
     const started = await startTraining(trainerConfig(bot, settings));
-    log.warn(`Strategie toegepast door ${req.user.username}: ${s.key} (min. modelkans ${minProb ?? '-'}%)`);
-    return { ok: true, started, applied: { timeframe: s.timeframe, stopLossPct: s.stopPct, takeProfitPct: s.targetPct, maxHoldMinutes: s.holdMinutes, mlMinProb: minProb } };
+    log.warn(`Strategie toegepast door ${req.user.username}: ${s.key}`);
+    return { ok: true, started, applied: { timeframe: s.timeframe, stopLossPct: s.stopPct, takeProfitPct: s.targetPct, maxHoldMinutes: s.holdMinutes } };
   }));
 
   // Live status voor de pagina Trainer.

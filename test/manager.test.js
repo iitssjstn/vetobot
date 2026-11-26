@@ -37,7 +37,7 @@ function setup() {
     dataDir: dir, liveTrading: false, pairs: ['BTC/EUR'], timeframe: '1h', checkIntervalMinutes: 15,
     paper: { startBalanceEur: 500 },
     risk: { stakeEur: 25, maxOpenTrades: 2, stopLossPct: 0, takeProfitPct: 0, maxDailyLossEur: 0, feePct: 0, cooldownMinutes: 0, slippagePct: 0 },
-    strategy: { emaFast: 3, emaSlow: 8, rsiPeriod: 5, rsiMaxEntry: 100 },
+    strategy: {},
     ai: { provider: 'none', model: '', baseUrl: '', failMode: 'reject', timeoutMs: 1000 },
   };
   const users = new Users(dir);
@@ -88,13 +88,14 @@ test('volgen: koopt en verkoopt mee met eigen inzet, en houdt zich aan eigen lim
   assert.equal(p.bot.following, true);
   assert.deepEqual(p.bot.pairs, a.bot.pairs);
 
-  // Admin koopt op een kruising
-  const seq = [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66, 68]);
-  for (let n = 41; n <= 44 && !a.bot.store.state.positions['BTC/EUR']; n++) {
-    market.ex.prices = seq.slice(0, n);
-    market.shared.cache.clear(); // nieuwe koersen direct zichtbaar (normaal 5 sec cache)
-    await a.bot.tick();
-  }
+  // Admin koopt met de AI-trader (een die altijd wil kopen)
+  const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
+  await a.bot.setStrategy({ agentMode: 1, agentVeto: 0, agentExplore: 0 });
+  a.bot.getAgent = () => ({ ...fx.agent, stage: 'getest', recipeKey: 'R', entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 },
+    exit: { ...fx.agent.exit, init: fx.agent.exit.init + 50 }, regimes: { stijgend: { key: 'R', why: 'best' }, zijwaarts: { key: 'R', why: 'best' }, dalend: { key: 'R', why: 'best' } } });
+  market.ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+  market.shared.cache.clear(); // nieuwe koersen direct zichtbaar (normaal 5 sec cache)
+  await a.bot.tick();
   assert.ok(a.bot.store.state.positions['BTC/EUR'], 'admin heeft gekocht');
   await p.bot.queue;
   const pp = p.bot.store.state.positions['BTC/EUR'];
@@ -162,7 +163,7 @@ test('oude data uit data/ gaat naar de map van de admin, inclusief keys', () => 
   fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({ username: 'justin', salt: 's', hash: 'h' }));
   const users = new Users(dir);
   const config = { dataDir: dir, liveTrading: false, pairs: ['BTC/EUR'], timeframe: '1h', checkIntervalMinutes: 15,
-    paper: { startBalanceEur: 500 }, risk: {}, strategy: { emaFast: 3, emaSlow: 8, rsiPeriod: 5, rsiMaxEntry: 70 }, ai: { provider: 'none' } };
+    paper: { startBalanceEur: 500 }, risk: {}, strategy: {}, ai: { provider: 'none' } };
   const manager = new BotManager({ config, users, log: quiet, shared: fakeMarket().shared, makePrivateExchange: (s) => ({ get apiKey() { return s.get('bitvavoApiKey'); } }) });
   assert.equal(manager.migrateLegacy(users.admin.id), true);
   const ctx = manager.ensure(users.admin);
@@ -286,7 +287,7 @@ test('automatisch overstappen: nieuwe beste strategie van de trainer wordt één
   assert.equal(a.bot.risk.takeProfitPct, 4);
   assert.equal(a.bot.risk.stopLossPct, 2);
   assert.equal(a.bot.risk.maxHoldMinutes, 480);
-  assert.equal(a.settings.strategy.mlMinProb, 62);
+  assert.equal(a.settings.strategy.mlMinProb, undefined, 'geen minimale modelkans meer (hoorde bij de klassieke strategie)');
   // Zelf aangepast; een nieuw model met dezelfde strategie zet het niet terug
   await a.bot.setRisk({ stopLossPct: 3 });
   version = 2;
