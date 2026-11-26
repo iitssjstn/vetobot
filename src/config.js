@@ -39,6 +39,8 @@ export const config = {
     agentSizing: num('AGENT_SIZING', 1),
     // 1 = de Strategy Agent koopt niet met een recept dat in de huidige volatiliteit van de coin aantoonbaar verloor.
     agentVolGuard: num('AGENT_VOL_GUARD', 1),
+    // Eigen bijstelling van de koopdrempel van de AI-trader in %-punt (0 = de drempel uit de training).
+    agentThrAdjust: num('AGENT_THR_ADJUST', 0),
   },
 
   // Harde limieten. De AI kan hier nooit aan komen.
