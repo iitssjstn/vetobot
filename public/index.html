@@ -1581,6 +1581,7 @@ const sumBox = () => document.activeElement?.closest('#dash-summary');
 // ---------- Status ----------
 let lastForcedLoad = 0;
 // Gezondheid van de bot: niet alleen "draait hij", maar "doet hij wat hij moet doen".
+let healthDetailsOpen = null; // null: open bij een probleem, dicht als alles gezond is
 function renderHealth(h) {
   const el = $('dash-health');
   if (!el) return;
@@ -1599,7 +1600,7 @@ function renderHealth(h) {
     <div class="panel-b">
       ${probs.length ? `<ul style="margin:0 0 10px;padding-left:18px;font-size:13.5px">${probs.map((p) => `<li><b>${esc(p.title)}</b>: ${esc(p.detail ?? '')}${p.manual ? ' <span class="badge bad">actie nodig</span>' : ''}</li>`).join('')}</ul>` : ''}
       ${h.uncleanRestart ? `<div class="alert" style="margin:0 0 10px">${icon('alert')}<div>Bij de laatste start bleek dat vetobot de vorige keer niet netjes stopte (laatst actief ${esc(String(h.uncleanRestart.lastAlive ?? 'onbekend').replace('T', ' ').slice(0, 16))}).</div></div>` : ''}
-      <details${h.level === 'healthy' ? '' : ' open'}><summary class="muted" style="font-size:13px">Details</summary>
+      <details${(healthDetailsOpen ?? h.level !== 'healthy') ? ' open' : ''}><summary class="muted" style="font-size:13px">Details</summary>
       <dl class="kv" style="margin-top:8px">
         <dt>Laatste geslaagde check</dt><dd>${rel(h.lastTickOkAt)}</dd>
         <dt>Laatste positiecontrole</dt><dd>${h.openLivePositions || h.lastPositionCheckAt ? rel(h.lastPositionCheckAt) : '<span class="muted">geen open posities</span>'}</dd>
@@ -1612,6 +1613,9 @@ function renderHealth(h) {
         <dt>Laatste herstel</dt><dd>${h.lastRecovery ? `${esc(h.lastRecovery.what)} <span class="muted">(${rel(h.lastRecovery.at)})</span>` : '<span class="muted">nog niet nodig geweest</span>'}</dd>
       </dl></details>
     </div>`;
+  // Open of dicht houden zoals je het zelf zette; anders klapt hij na elke check weer dicht.
+  const d = el.querySelector('details');
+  d?.querySelector('summary')?.addEventListener('click', () => { healthDetailsOpen = !d.open; });
 }
 
 // Waarschuwingen bovenaan de homepage, alleen live: anders lijkt alles goed terwijl de bot niets koopt.
