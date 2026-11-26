@@ -43,6 +43,16 @@ const BUSY = 'busy';
 // AI-trader en strategieën staan allebei uit: dan koopt de bot niets nieuws (bewaken en verkopen gaan door).
 export const NO_BUYER_TEXT = 'Koopt niets: de AI-trader en de strategieën staan uit (bewaken en verkopen gaan door)';
 
+// Bitvavo weigert een order onder het minimum (errorCode 212, "less than the minimum").
+export const belowMinimum = (err) => /errorCode"?\s*:\s*212|less than the minimum|minOrderIn/i.test(String(err?.message ?? err ?? ''));
+
+// Kleinste live inzet waarbij de positie bij een daling tot de noodstop (plus fees en wat speling) nog
+// minstens het Bitvavo-minimum waard is, zodat verkopen en de stop-order bij Bitvavo altijd kunnen.
+export function sellableStake(stopPct) {
+  const stop = Math.min(50, Math.max(0, Number(stopPct) || 10));
+  return Math.ceil((LIVE_MIN_STAKE_EUR * 1.03) / (1 - stop / 100) * 100) / 100;
+}
+
 export class Bot {
   // brokers en stores: { paper, live }. De actieve modus komt uit settings en
   // kan via het dashboard gewisseld worden (zie switchMode).
@@ -2223,6 +2233,16 @@ export class Bot {
       const avg = lt.length ? lt.reduce((x, t) => x + (t.pnlPct ?? 0), 0) / lt.length : 0;
       if (lt.length < LIVE_AGENT_PROVEN || avg <= 0) stake = Math.min(stake, LIVE_MIN_STAKE_EUR);
     }
+    // Live: nooit zo klein kopen dat de positie na een daling tot de noodstop onder het minimum van Bitvavo
+    // (€ 5 per order) zakt. Anders kan hij niet meer verkocht worden en krijgt hij ook geen stop bij Bitvavo.
+    let sellableNote = '';
+    if (this.broker.mode === 'live') {
+      const floor = sellableStake(Number(indicators?.agent?.safetyStopPct) > 0 ? indicators.agent.safetyStopPct : this.risk.stopLossPct);
+      if (stake < floor) {
+        sellableNote = `, inzet verhoogd van ${fmtEur(stake)} naar ${fmtEur(floor)} zodat hij bij de noodstop nog boven het minimum van Bitvavo blijft`;
+        stake = floor;
+      }
+    }
     const opts = this.#orderOpts();
     if (opts.limit) this.#step(`${pair}: limietorder, wacht max. ${opts.waitSec} sec op vulling`);
     const expected = await fetchPrice(this.ex, pair).catch(() => null);
@@ -2275,7 +2295,7 @@ export class Bot {
     this.#saveNow(pair);
     this.#event('info', pair, `Gekocht:${fmtAmount(fill.amount)} @ ${fmtPrice(fill.price)} (${this.broker.mode}${fill.limit ? `, limietorder${fill.partial ? ', deels gevuld' : ''}` : ''})` +
       (stakeInfo.extra > 0 ? `, inzet ${fmtEur(stake)} waarvan ${fmtEur(stakeInfo.extra)} herinvesteerde winst` : '') +
-      (stake < stakeInfo.effective ? `, inzet verlaagd naar ${fmtEur(stake)} door de Risk Agent` : ''));
+      (stake < stakeInfo.effective ? `, inzet verlaagd naar ${fmtEur(stake)} door de Risk Agent` : '') + sellableNote);
     // Volgers laten meedoen (alleen gezet op de bot van de leider).
     this.onTrade?.('open', { pair, reason, indicators });
     this.#notify('trades', {
@@ -2737,7 +2757,26 @@ export class Bot {
           pos.stopFill = combineFills(pos.stopFill, done.fill);
           pos.amount = Math.max(0, pos.amount - done.filled);
         }
-        const sold = await this.broker.sell(pair, pos.amount, opts);
+        let sold;
+        try {
+          sold = await this.broker.sell(pair, pos.amount, opts);
+        } catch (err) {
+          // Bitvavo weigert orders onder het minimum (€ 5): de positie is te weinig waard geworden om te
+          // verkopen. Duidelijk melden (één keer per positie) en blijven bewaken; zodra de waarde weer boven
+          // het minimum komt, lukt het verkopen bij de volgende poging.
+          if (this.broker.mode === 'live' && belowMinimum(err)) {
+            const value = expected ? pos.amount * expected : null;
+            const msg = `Kan ${pair} niet verkopen: de positie is ${value != null ? fmtEur(value) : 'te weinig'} waard, onder het minimum van Bitvavo (€ ${LIVE_MIN_STAKE_EUR}). ` +
+              'De bot blijft hem bewaken en verkoopt zodra de waarde weer boven het minimum komt; je kunt ook in de Bitvavo-app bijkopen en daarna verkopen.';
+            if (!pos.belowMinNotified) {
+              pos.belowMinNotified = new Date().toISOString();
+              this.#saveNow(pair);
+              this.#notify('errors', { title: `${pair} te klein om te verkopen`, message: msg, level: 'error' });
+            }
+            throw new Error(msg);
+          }
+          throw err;
+        }
         // Live maar deels uitgevoerd (bijv. Bitvavo annuleerde de rest door marktbescherming): de positie houdt
         // de rest, zodat die bewaakt blijft en een nieuwe stop-order krijgt. Te weinig over om te verkopen: dicht.
         const left = pos.amount - (Number(sold?.amount) || 0);

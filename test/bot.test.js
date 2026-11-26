@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Bot, NO_BUYER_TEXT } from '../src/bot.js';
+import { Bot, NO_BUYER_TEXT, sellableStake } from '../src/bot.js';
 import { PaperBroker } from '../src/exchange.js';
 import { activeAgent } from '../src/agents.js';
 import { Store } from '../src/store.js';
@@ -948,7 +948,8 @@ test('AI-trader live: kleinste inzet in het begin, en terug uit live als een eis
   await bot.tick();
   const pos = bot.store.state.positions['BTC/EUR'];
   assert.ok(pos, bot.pairStatus['BTC/EUR']?.reason);
-  assert.ok(pos.costEur <= 5.5, `live begint met de kleinste inzet: ${pos.costEur}`);
+  // Kleinste inzet die bij de noodstop nog boven het Bitvavo-minimum blijft (verkopen moet altijd kunnen).
+  assert.ok(pos.costEur <= sellableStake(pos.plan?.stopLossPct) * 1.0025 + 1e-9 && pos.costEur < 20, `live begint met de kleinste inzet: ${pos.costEur}`);
   // Een eis valt weg: akkoord ingetrokken en een melding.
   agent = { ...agent, liveCheck: { allMet: false, checks: [{ ok: false, label: 'Beter dan de markt', now: '-0,1%' }] } };
   await bot.tick();

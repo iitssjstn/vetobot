@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { Bot } from '../src/bot.js';
+import { Bot, sellableStake } from '../src/bot.js';
 import { PaperBroker, LiveBroker, OPERATOR_ID, orderTiming } from '../src/exchange.js';
 import { Store } from '../src/store.js';
 import { Settings, RISK_LIMITS, STRATEGY_LIMITS, LIVE_MIN_STAKE_EUR } from '../src/settings.js';
@@ -566,7 +566,7 @@ test('AI-trader live: kleinste start aan → hooguit € 5; uit → je eigen inz
   };
   const small = await run(1);
   assert.ok(small, 'gekocht');
-  assert.ok(small.costEur <= LIVE_MIN_STAKE_EUR * 1.0025 + 1e-9, `kleinste start: ${small.costEur}`);
+  assert.ok(small.costEur <= sellableStake(small.plan?.stopLossPct) * 1.0025 + 1e-9 && small.costEur >= LIVE_MIN_STAKE_EUR, `kleinste start: ${small.costEur}`);
   const full = await run(0);
   assert.ok(near(full.costEur, 20 * 1.0025), `eigen inzet: ${full.costEur}`);
 });
