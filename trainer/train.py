@@ -11,6 +11,7 @@
 import json
 import math
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -161,7 +162,9 @@ def fetch_candles(pair, timeframe, days, cache_dir=None, now_ms=None, fetch=fetc
     if file and (not cached or grew_back or meta != meta_before or (fetched and (age is None or age >= SAVE_EVERY_S))):
         # Bewaren tot maximaal 400 dagen, zodat de cache niet eindeloos groeit.
         keep_from = now - 400 * 86_400_000
-        tmp = file + '.tmp'
+        # Eigen tijdelijk bestand per proces en thread: twee threads die dezelfde coin tegelijk
+        # opslaan, mogen elkaars bestand niet vervangen (dan faalt de tweede os.replace).
+        tmp = f'{file}.tmp.{os.getpid()}.{threading.get_ident()}'
         with open(tmp, 'w') as f:
             json.dump([c for c in candles if c[0] >= keep_from], f)
         os.replace(tmp, file)

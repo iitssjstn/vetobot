@@ -2668,3 +2668,77 @@ class AuditProbationTrades(unittest.TestCase):
         self.assertEqual(sorted(t['pct'] for t in got), [2.0, 3.0, 4.0])
         self.assertEqual({t['mode'] for t in got}, {'paper', 'live'})
         self.assertEqual(probation.trades_in(probation.real_trades(rows), 'b', since, since + 1), [t for t in got if t['open'] < since + 1])
+
+
+class AuditConcurrentCandleCache(unittest.TestCase):
+    """Twee threads (bijv. de training en de marktbeweging bij trades) schrijven tegelijk dezelfde
+    koersopslag: elk een eigen tijdelijk bestand, anders vervangt de één het bestand van de ander en
+    faalt de tweede os.replace (FileNotFoundError) of komt er een mengsel in de opslag."""
+
+    def test_two_threads_writing_the_same_cache(self):
+        from unittest import mock
+        cache = tempfile.mkdtemp()
+        H = 3_600_000
+        now = 1_000 * H + 10
+
+        def fake(pair, tf, start, end):
+            first = (start // H + 1) * H
+            return [[t, 1, 1, 1, 1, 1] for t in range(first, end, H)]
+        real_replace = os.replace
+        state = {'nested': False}
+        errors = []
+
+        def other_writer():
+            try:
+                train.fetch_candles('A/EUR', '1h', 10, cache_dir=cache, now_ms=now, fetch=fake)
+            except Exception as e:  # pragma: no cover - alleen bij de fout
+                errors.append(e)
+
+        def replace(src, dst):
+            # Precies tussen het schrijven en het vervangen van de eerste thread schrijft een tweede.
+            if dst.endswith('_1h.json') and not state['nested']:
+                state['nested'] = True
+                t = threading.Thread(target=other_writer)
+                t.start()
+                t.join()
+            return real_replace(src, dst)
+        with mock.patch.object(train.os, 'replace', replace):
+            out = train.fetch_candles('A/EUR', '1h', 10, cache_dir=cache, now_ms=now, fetch=fake)
+        self.assertEqual(errors, [])
+        self.assertTrue(out)
+        with open(os.path.join(cache, 'A-EUR_1h.json')) as f:
+            self.assertEqual(len(json.load(f)), len(out))
+        self.assertEqual([n for n in os.listdir(cache) if '.tmp' in n], [])
+
+
+class AuditNonFiniteAgentTrades(unittest.TestCase):
+    """Een trade-uitkomst die geen getal is (NaN/Infinity, wat Python's json wel inleest) mag de
+    live-tellingen niet vergiftigen: anders staat er NaN/Infinity in agents.json en in /agent.json,
+    en dat kan de bot (JSON.parse) niet lezen."""
+
+    def setUp(self):
+        from unittest import mock
+        os.environ.setdefault('DATA_DIR', tempfile.mkdtemp())
+        import server
+        self.s = server
+        self.dir = tempfile.mkdtemp()
+        self.patches = [mock.patch.object(server, 'DATA', self.dir),
+                        mock.patch.object(server, 'think', lambda t, kind='info': None),
+                        mock.patch.object(server, 'log', lambda m: None)]
+        for p in self.patches:
+            p.start()
+        server.write_json('agents.json', {'version': server.AGENTS_VERSION, 'recipes': {}, 'published': None, 'live': {}, 'round': 0})
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+
+    def test_nan_and_infinity_pct_are_skipped(self):
+        s = self.s
+        body = json.loads('[{"timeframe": "15m", "recipe": "r", "pct": NaN}, {"timeframe": "15m", "recipe": "r", "pct": Infinity},'
+                          ' {"timeframe": "15m", "recipe": "r", "pct": 1e999}, {"timeframe": "15m", "recipe": "r", "pct": 0.5}]')
+        self.assertEqual(s.add_agent_trades(body), 1)
+        live = s.load_agents()['live']['r']
+        self.assertEqual((live['n'], live['sum']), (1, 0.5))
+        self.assertTrue(all(math.isfinite(float(t['pct'])) for t in s.read_json('agent_trades.json', [])))
+        json.dumps(s.load_agents(), allow_nan=False)
