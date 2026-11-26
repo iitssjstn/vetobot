@@ -402,6 +402,34 @@ export class Bot {
       `Beste kans: ${best.pair} met ${f(best.q)} na kosten (ik koop vanaf ${f(best.thr)}).`, null, 'info');
   }
 
+  // Eens per uur één regel in het activiteitenlog (en de containerlog): wat de AI-trader beoordeelde en
+  // waarom hij (niet) kocht. Zo is een stille periode altijd terug te lezen, ook na een herstart.
+  agentHourlyLog(now = Date.now()) {
+    if (!this.strategy.agentMode || this.following) return null;
+    this.agentHourAt ??= now;
+    if (now - this.agentHourAt < 3600000) return null;
+    const since = this.agentHourAt;
+    this.agentHourAt = now;
+    const rows = (this.agentWhy ?? []).filter((r) => r.at >= since && r.at <= now);
+    const mins = Math.round((now - since) / 60000);
+    if (!rows.length) {
+      const text = `AI-trader afgelopen ${mins} min: geen enkele candle beoordeeld`;
+      this.#event('warn', null, text);
+      return text;
+    }
+    const LABEL = { 'wil kopen': 'wilde kopen', drempel: 'onder de koopdrempel', coin: 'coin niet gekozen', toelating: 'mocht niet (toelating)',
+      volatiliteit: 'volatiliteit', risico: 'Risk Agent', verliesreeks: 'pauze na verliesreeks', 'dure uitvoering': 'orders te duur' };
+    const counts = {};
+    for (const r of rows) counts[r.kind] = (counts[r.kind] ?? 0) + 1;
+    const f = (v) => `${v >= 0 ? '+' : ''}${Number(v).toFixed(2).replace('.', ',')}%`;
+    const best = rows.filter((r) => Number.isFinite(r.q)).reduce((a, r) => (a == null || r.q > a.q ? r : a), null);
+    const text = `AI-trader afgelopen ${mins} min: ${rows.length} candle${rows.length === 1 ? '' : 's'} beoordeeld, ` +
+      Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${n}× ${LABEL[k] ?? k}`).join(', ') +
+      (best ? ` (hoogste verwachting ${f(best.q)}${Number.isFinite(best.thr) ? `, drempel ${f(best.thr)}` : ''})` : '');
+    this.#event('info', null, text);
+    return text;
+  }
+
   // Na elke check waarin de strategieën gekeken hebben: één samenvatting (waarom wel/geen koop).
   #armSummary() {
     const notes = this.armNotes ?? [];
@@ -927,6 +955,7 @@ export class Bot {
         await this.#settleShadows();
         this.#armSummary();
         this.#agentSummary();
+        this.agentHourlyLog();
         this.#agentLiveWatch();
         this.lastTickAt = new Date().toISOString();
         if (!errors) this.lastError = null;
