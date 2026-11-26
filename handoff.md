@@ -10,6 +10,7 @@ Laatste opdrachten (25–26 november 2026):
 - Bulk live zetten van recepten + homepage-waarschuwing als niets live staat (PR #10, gemerged). Bij een gezakte eis blijft de toestemming **ingetrokken** (keuze eigenaar: "Intrekken (zoals nu)").
 - "Live Trading Reliability & Failure Alerts Audit": gezondheidsbewaking tegen stille uitval + bugcontrole van de hele repo (PR #11, gemerged).
 - AI-trader deed een dag niets: oorzaak gevonden en gefixt (PR #12–#14, gemerged).
+- Opschonen (PR #16–#18, gemerged): klassieke strategie + AI-team verwijderd (keuze eigenaar; strategieën/bandit, strategie volgen en verkenner bewust behouden), dashboard in 4 groepen met tabs, CI-build-race opgelost.
 
 De eigenaar handelt live (op eigen risico, met eigen inzet). Eerste echte trade via Bitvavo is gelukt (+€ 0,17).
 
@@ -23,10 +24,10 @@ De eigenaar handelt live (op eigen risico, met eigen inzet). Eerste echte trade 
 
 ## Staat van de code
 
-- `main` = `fb61398` "Merge pull request #14 from iitssjstn/claude/agent-coin-recipe" (bevat PR #4 t/m #14).
-- CI draait `npm test` en **alle** Python-tests; images worden alleen gebouwd bij een push naar `main`.
-- De eigenaar heeft beide servers bijgewerkt tot en met PR #14 (26 november). Na elke update van de bot zet hij de recepten opnieuw live (Trainer → Live, bulkknop).
-- Tests op `main`: `npm test` 319/319; `cd trainer && python -m unittest discover -p "test*.py"` 144 OK.
+- `main` = `ceb89cb` "Merge pull request #18 from iitssjstn/claude/ci-concurrency" (bevat PR #4 t/m #18).
+- CI draait `npm test` en **alle** Python-tests; images worden alleen gebouwd bij een push naar `main`. Sinds PR #18 stopt een nieuwere build een oudere (`concurrency`), anders kon een oude build `latest` overschrijven.
+- De eigenaar heeft de thuisserver bijgewerkt tot en met PR #17 (26 november) en ziet de nieuwe indeling; VPS t/m PR #11. Na elke update van de bot zet hij de recepten opnieuw live (Trainer → Live, bulkknop).
+- Tests op `main`: `npm test` 300/300 (minder door het weghalen van de klassieke strategie); `cd trainer && python -m unittest discover -p "test*.py"` 144 OK.
 - Eigenaar werkt via Termius (mobiel) op de thuisserver (`/opt/media-stack`). Claude Code draait daar niet (CPU zonder AVX: "Illegal instruction").
 
 ## Active files
@@ -58,6 +59,13 @@ De eigenaar handelt live (op eigen risico, met eigen inzet). Eerste echte trade 
 4. Gezondheidsbewaking (PR #11): zes oorzaken van stille uitval opgelost (hangende ronde legde ook de positiebewaking stil, fouten alleen in de console, geen crash-afhandeling, Discord-fouten onzichtbaar, `/healthz` altijd ok). Daarna bugcontrole van de hele repo met 4 agents: 14 bugs gefixt, o.a. deels uitgevoerde stop/verkoop kwijt, hele positie dicht bij half gevulde verkoop, state pas aan het eind opgeslagen, dubbele verkoop na verbindingsfout bij limietorders, vals alarm "niet bewaakt", leerserver-race in koersopslag en NaN in trades.
 5. AI-trader kocht een dag niets (PR #14): met de fase onbekend of weinig bewijs koos de Strategy Agent het hoofdrecept; handelde dat de coin niet, dan stopte het ("coin niet gekozen" 52×). Andere live gezette recepten werden alleen geprobeerd als het gekozen recept zelf niet live mocht. Nu: ander toegestaan recept dat de coin handelt. Daarna dekt hij alle 12 coins (~170 candles/uur); dat hij in rustige markt niets koopt is de drempel (+0,50%, hoogste live verwachting ±0,3%), geen fout (kenmerken bot = leerserver, geen micro-features in het AI-trader-model).
 
+6. Opschonen (PR #16–#17):
+   - Weg: `src/strategy.js` (`evaluate`), klassiek koopsignaal (EMA/RSI/BTC-filter/maxChase/lopende candle), `#modelProbability`/`mlMinProb`/`mlSkipBadRegime`, EMA-verkoop `#signalExit`, AI-team (`askTeamChain`, `TEAM_ROLES`, `ai.mode`), 15 strategie-instellingen, kant-en-klare-strategieën-paneel, tab "AI-team" in AI-chat. Oude `settings.json` laadt (velden vallen weg).
+   - Marktbeeld nu uit `marketIndicators()` (EMA 12/26, RSI 14, ATR/ADX 14). AI-controleur gebruikt vaste grenzen "normaal" (staat bij de eigenaar uit).
+   - AI-trader én strategieën uit = niets kopen, rode melding op de homepage.
+   - Dashboard: menu Overzicht / Handel / AI-trader & leren / Systeem. Trainer-tabs: AI-trader, Wordt hij beter?, Leerserver, Strategieën. Instellingen-tabs: Handel & risico, AI-trader & AI, Coins, Meldingen, Trainer-koppeling, API-keys & account. Deep links openen de juiste tab; pagina en tab worden onthouden.
+7. Live-instellingen eigenaar: drempel AI-trader zelf iets verlaagd om te testen; Limietorders op "Alleen winst nemen (kopen direct)", omdat limiet-kopen na een dip vaak niet gevuld werden.
+
 ## Failed attempts
 
 - Limietorders "niet gevuld" was eigenlijk ccxt die zonder operatorId elke order weigerde (opgelost).
@@ -65,6 +73,7 @@ De eigenaar handelt live (op eigen risico, met eigen inzet). Eerste echte trade 
 - Rebasen van een branch met merge-commits speelt conflicten opnieuw af: niet rebasen als `main` al in de branch zit.
 - Dashboard-screenshots: niet via `file://`; serveer `public/` met een kleine HTTP-server en vang `/api/**` af.
 - Force-push (ook na `--amend` op een eigen branch) wordt door de auto-mode geblokkeerd: een commit met per ongeluk `[skip ci]` laten staan en "Create a merge commit" adviseren.
+- Twee merges kort na elkaar: de oudere build was later klaar en overschreef `latest` (opgelost met PR #18; zo nodig de nieuwste run opnieuw starten).
 - Containerlogs zijn weg na een update (container opnieuw aangemaakt); daarom de uurlijkse AI-trader-regel. Diagnose stille AI-trader: Trainer → "Wordt hij beter?" → "Waarom koopt de AI-trader (niet)?" (alleen in geheugen, begint na herstart opnieuw).
 
 ## Specific next steps
