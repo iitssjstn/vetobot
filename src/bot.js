@@ -1576,6 +1576,21 @@ export class Bot {
   }
 
   // Strategy Agent: welke AI-trader past bij de marktfase van deze coin.
+  // Koopdrempel van een recept, met jouw eigen bijstelling (Instellingen → AI-trader & AI). Nooit onder 0%.
+  agentThreshold(agent) {
+    const base = Number(agent?.threshold) || 0;
+    const adj = Number(this.strategy.agentThrAdjust) || 0;
+    return Math.max(0, base + adj);
+  }
+
+  // Uitleg bij een bijgestelde drempel, bijv. " (recept +0,50%, door jou −0,20)".
+  #thrNote(agent) {
+    const adj = Number(this.strategy.agentThrAdjust) || 0;
+    if (!adj) return '';
+    const nl = (v) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(2).replace('.', ',')}`;
+    return ` (recept ${nl(Number(agent?.threshold) || 0)}%, door jou ${nl(adj)})`;
+  }
+
   async #agentSignal(pair, main) {
     const regime = await this.#marketRegime(pair);
     const choice = chooseForRegime(main, regime);
@@ -1606,8 +1621,8 @@ export class Bot {
         this.pauseChatAt[pair] = Date.now();
         const x = await this.#agentFeatures(pair, main.timeframe).catch(() => null);
         const q = x ? predictRaw(main.entry, x.f) : null;
-        if (q != null && q > main.threshold) {
-          talk.splice(1, 0, Bot.say('aitrader', 'AI-trader', `Ik zou kopen: ik verwacht ${pc(q)} na kosten (drempel ${pc(main.threshold)}).`));
+        if (q != null && q > this.agentThreshold(main)) {
+          talk.splice(1, 0, Bot.say('aitrader', 'AI-trader', `Ik zou kopen: ik verwacht ${pc(q)} na kosten (drempel ${pc(this.agentThreshold(main))}).`));
           this.#agentChat(pair, 'buy', 'blocked', talk);
           await this.#journalAgent(pair, main, regime, x, q, q, 'pauze', reason);
         }
@@ -1647,7 +1662,7 @@ export class Bot {
     return this.#journalDecision(pair, {
       kind: 'agent', outcome: 'rejected', stage, reason, timeframe: agent.timeframe, features: x?.f ?? null, regime: regime ?? null, volRegime: x?.volRegime ?? null,
       indicators: { agent: { recipe: agent.recipeKey ?? null, version: agent.meta?.trainedAt ?? null, timeframe: agent.timeframe,
-        expectedPct: Number.isFinite(qModel) ? +qModel.toFixed(3) : null, adjustedPct: Number.isFinite(q) ? +q.toFixed(3) : null, threshold: agent.threshold, marketRegime: regime ?? null } },
+        expectedPct: Number.isFinite(qModel) ? +qModel.toFixed(3) : null, adjustedPct: Number.isFinite(q) ? +q.toFixed(3) : null, threshold: this.agentThreshold(agent), marketRegime: regime ?? null } },
     });
   }
 
@@ -1686,7 +1701,7 @@ export class Bot {
     if (open.length >= EXPLORE.maxOpen || open.filter((p) => p.pair === pair).length >= EXPLORE.maxPerMarket) return null;
     if (open.some((p) => p.pair === pair && p.timeframe === tf && p.entryTs === x.ts)) return null;
     const nl = (v, d = 2) => `${v >= 0 ? '+' : ''}${v.toFixed(d).replace('.', ',')}`;
-    const sc = exploreScore({ q, thr: agent.threshold, pair, regime, corr: this.learnCorr });
+    const sc = exploreScore({ q, thr: this.agentThreshold(agent), pair, regime, corr: this.learnCorr });
     if (sc.skip || (this.exploreRand ?? Math.random)() >= sc.p) {
       (this.exploreSkips ??= {})[sc.skip ? 'bewezen slecht' : 'weinig te leren'] = ((this.exploreSkips ?? {})[sc.skip ? 'bewezen slecht' : 'weinig te leren'] ?? 0) + 1;
       return null;
@@ -1695,7 +1710,7 @@ export class Bot {
     const learnTxt = sc.parts ? ` Leerwaarde ${pc(sc.p)}: ${sc.parts.near > 0.5 ? 'dicht bij de koopdrempel' : 'verder van de drempel'}, ` +
       `${sc.parts.cell ? `${sc.parts.cell} eerdere trades in deze coin en fase` : 'nog nooit in deze coin en fase'}` +
       `${sc.parts.optimism > 0 ? ', en echte uitkomsten hier waren beter dan verwacht' : ''}.` : '';
-    const because = { drempel: `de AI-trader verwacht ${nl(q)}%, onder zijn drempel van ${nl(agent.threshold)}%`, coin: 'de AI-trader handelt deze coin normaal niet',
+    const because = { drempel: `de AI-trader verwacht ${nl(q)}%, onder zijn drempel van ${nl(this.agentThreshold(agent))}%`, coin: 'de AI-trader handelt deze coin normaal niet',
       pauze: 'de Strategy Agent handelt in deze marktfase niet', toelating: 'de AI-trader mag hier nu zelf niet kopen', risico: 'de Risk Agent hield de AI-trader tegen' }[why] ?? why;
     const price = await fetchPrice(this.ex, pair).catch(() => null);
     if (!(price > 0)) return null;
@@ -1713,7 +1728,7 @@ export class Bot {
     const jid = await this.#journalDecision(pair, { kind: 'explore', outcome: 'accepted', stage: 'approved', reason: `Verkenner: ${because}`, price,
       timeframe: tf, features: x.f, regime: regime ?? null, volRegime: x.volRegime ?? null,
       indicators: { agent: { explore: true, exploreWhy: why, recipe: agent.recipeKey ?? null, version: agent.meta?.trainedAt ?? null, timeframe: tf,
-        expectedPct: +(x.qModel ?? q).toFixed(3), adjustedPct: +q.toFixed(3), threshold: agent.threshold, marketRegime: regime ?? null } } });
+        expectedPct: +(x.qModel ?? q).toFixed(3), adjustedPct: +q.toFixed(3), threshold: this.agentThreshold(agent), marketRegime: regime ?? null } } });
     if (jid != null) open.at(-1).journalId = jid;
     talk.push(Bot.say('explore', 'Verkenner', `Ik volg ${pair} virtueel om te leren: ${because}${x.adjTxt ?? ''}.${learnTxt} Geen saldo of handelsplek nodig; kosten tellen mee.`, 'approve'));
     this.#agentChat(pair, 'explore', 'virtual', talk);
@@ -1836,13 +1851,13 @@ export class Bot {
     const explore = this.#exploring(agent);
     if (opts.explore) {
       // Strategy-pauze, maar het recept wilde wel kopen: een echte (afgewezen) kans.
-      if (opts.explore === 'pauze' && q > agent.threshold) {
+      if (opts.explore === 'pauze' && q > this.agentThreshold(agent)) {
         await this.#journalAgent(pair, agent, regime, x, qModel, q, 'pauze', `Strategy Agent: in een ${REGIME_LABEL[regime] ?? regime} handel ik niet, daar deed geen recept het beter dan de markt`);
       }
       return (await this.#exploreBuy(pair, agent, regime, x, q, talk, opts.explore))
         ?? { buy: false, reason: `Strategy Agent: in een ${REGIME_LABEL[regime] ?? regime} handel ik niet (de verkenner liet deze kans ook liggen)` };
     }
-    if (!opts.explore) this.#whyNot(Array.isArray(agent.coins) && agent.coins.length && !agent.coins.includes(pair) ? 'coin' : q <= agent.threshold ? 'drempel' : null, q, agent.threshold);
+    if (!opts.explore) this.#whyNot(Array.isArray(agent.coins) && agent.coins.length && !agent.coins.includes(pair) ? 'coin' : q <= this.agentThreshold(agent) ? 'drempel' : null, q, this.agentThreshold(agent));
     if (Array.isArray(agent.coins) && agent.coins.length && !agent.coins.includes(pair)) {
       const e = explore ? await this.#exploreBuy(pair, agent, regime, x, q, talk, 'coin') : null;
       if (e) return e;
@@ -1850,23 +1865,23 @@ export class Bot {
       this.agentReason[pair] = reason;
       return { buy: false, reason };
     }
-    if (q <= agent.threshold) {
+    if (q <= this.agentThreshold(agent)) {
       const e = explore ? await this.#exploreBuy(pair, agent, regime, x, q, talk, 'drempel') : null;
       if (e) return e;
-      const reason = `AI-trader (${tf}): verwacht ${nl(q)}% na kosten${adjTxt}, ik koop pas boven ${nl(agent.threshold)}%`;
+      const reason = `AI-trader (${tf}): verwacht ${nl(q)}% na kosten${adjTxt}, ik koop pas boven ${nl(this.agentThreshold(agent))}%${this.#thrNote(agent)}`;
       this.agentReason[pair] = reason;
-      (this.agentNotes ??= []).push({ pair, q, thr: agent.threshold, tf });
+      (this.agentNotes ??= []).push({ pair, q, thr: this.agentThreshold(agent), tf });
       return { buy: false, reason };
     }
     const why = Bot.explainReg(agent.entry, x.f);
     const whyTxt = why.length ? ` Vooral door: ${why.slice(0, 3).map((w) => `${w.label} ${w.text} (${w.effect > 0 ? '+' : ''}${w.effect.toFixed(2).replace('.', ',')})`).join(', ')}.` : '';
-    talk.push(Bot.say('aitrader', 'AI-trader', `Ik wil ${pair} kopen: ik verwacht ${nl(q)}% na kosten${x.adjTxt} (ik koop vanaf ${nl(agent.threshold)}%, ${tf}-candles).${whyTxt}`));
+    talk.push(Bot.say('aitrader', 'AI-trader', `Ik wil ${pair} kopen: ik verwacht ${nl(q)}% na kosten${x.adjTxt} (ik koop vanaf ${nl(this.agentThreshold(agent))}%${this.#thrNote(agent)}, ${tf}-candles).${whyTxt}`));
     if (!this.agentAllowed(agent)) {
       const blocked = agent.stage === 'geblokkeerd';
       const why = blocked ? 'mijn recept is te riskant (te diepe terugval in de test), daar handel ik niet mee'
         : this.mode === 'live' ? this.#liveBlockedWhy(agent)
           : 'oefenen in paper staat uit';
-      this.#whyNot('toelating', q, agent.threshold);
+      this.#whyNot('toelating', q, this.agentThreshold(agent));
       const reason = `AI-trader (${tf}): ik zie een kans (${nl(q)}% verwacht), maar ${why}`;
       this.agentReason[pair] = reason;
       this.think(`Ik zie een kans bij ${pair}: ik verwacht ${nl(q)}% na kosten.${whyTxt} Maar ${why}.`, pair, 'info');
@@ -1896,7 +1911,7 @@ export class Bot {
         if (alt.timeframe === tf) delete this.agentTs[key];
         return this.#agentBuy(pair, alt, regime, { ...choice, why: 'volatiliteit' }, talk, { ...opts, volTried: tried });
       }
-      this.#whyNot('volatiliteit', q, agent.threshold);
+      this.#whyNot('volatiliteit', q, this.agentThreshold(agent));
       const reason = `Strategy Agent: in ${VOL_LABEL[vol]} verloor dit recept (${lossTxt})`;
       this.agentReason[pair] = reason;
       this.think(`Ik zie een kans bij ${pair} (${nl(q)}% verwacht), maar in ${VOL_LABEL[vol]} verloor dit recept in de eindtest (${lossTxt}). Ik koop niet.`, pair, 'warn');
@@ -1910,7 +1925,7 @@ export class Bot {
     // Risk Agent: is deze trade verantwoord, en met welke inzet?
     const risk = assessRisk({ pair, trades: this.store.state.trades, choice, execLog: this.store.state.execLog ?? [], mode: this.mode });
     if (risk.block) {
-      this.#whyNot(risk.kind ?? 'risico', q, agent.threshold);
+      this.#whyNot(risk.kind ?? 'risico', q, this.agentThreshold(agent));
       const reason = `Risk Agent: ${risk.block}`;
       this.agentReason[pair] = reason;
       this.think(`Ik zie een kans bij ${pair} (${nl(q)}% verwacht), maar de Risk Agent houdt me tegen: ${risk.block}.`, pair, 'warn');
@@ -1922,27 +1937,27 @@ export class Bot {
       return { buy: false, reason };
     }
     this.agentReason[pair] = null;
-    this.#whyNot('wil kopen', q, agent.threshold);
+    this.#whyNot('wil kopen', q, this.agentThreshold(agent));
     talk.push(Bot.say('risk', 'Risk Agent', `Akkoord. ${risk.notes.length ? `${risk.notes.join('; ')}. ` : 'Volle inzet. '}` +
       `${lossStreak(this.store.state.trades)} verlies(zen) op rij van de AI-trader; geen pauze nodig.`, 'approve'));
     // Hoeveel zet hij in? Tussen jouw inzet en je maximale inzet, naar vertrouwen.
     const er = this.entryRisk();
     const size = Number(this.strategy.agentSizing ?? 1) === 1 && er.maxStakeEur > er.stakeEur && (risk.stakeFactor ?? 1) >= 1
-      ? sizeStake({ base: er.stakeEur, max: er.maxStakeEur, q, threshold: agent.threshold, choiceWhy: choice?.why, trades: this.store.state.trades })
+      ? sizeStake({ base: er.stakeEur, max: er.maxStakeEur, q, threshold: this.agentThreshold(agent), choiceWhy: choice?.why, trades: this.store.state.trades })
       : null;
     if (size) {
       talk.push(Bot.say('risk', 'Inzet', `Ik zet ${fmtEur(size.stake)} in (jouw inzet ${fmtEur(er.stakeEur)}, maximaal ${fmtEur(er.maxStakeEur)}): ${size.notes.join('; ')}.`));
     }
     this.lastFeatures[pair] = { ts: x.ts, timeframe: tf, features: x.f, prob: null, at: Date.now() };
     const phase = regime ? ` Markt: ${REGIME_LABEL[regime]}${choice?.why === 'best' ? ', en dit recept doet het daar het best' : ''}.` : '';
-    this.think(`Ik koop ${pair}: ik verwacht ${nl(q)}% na kosten${adjTxt} (ik koop vanaf ${nl(agent.threshold)}%).${whyTxt}${phase}` +
+    this.think(`Ik koop ${pair}: ik verwacht ${nl(q)}% na kosten${adjTxt} (ik koop vanaf ${nl(this.agentThreshold(agent))}%).${whyTxt}${phase}` +
       `${risk.notes.length ? ` Risk Agent: ${risk.notes.join('; ')}.` : ''} Wanneer ik verkoop beslis ik zelf, elke ${tf}-candle opnieuw.`, pair, 'doing');
     return {
       buy: true, why, regime: regime ?? regimeOf(x.f), talk,
-      reason: `AI-trader (${tf}): verwacht ${nl(q)}% na kosten (drempel ${nl(agent.threshold)}%)`,
+      reason: `AI-trader (${tf}): verwacht ${nl(q)}% na kosten (drempel ${nl(this.agentThreshold(agent))}%)`,
       plan: { timeframe: tf, recipe: agent.recipeKey ?? null, expectedPct: +(x.qModel ?? q).toFixed(3), adjustedPct: +q.toFixed(3), version: agent.meta?.trainedAt ?? null, safetyStopPct: agent.safetyStopPct,
         maxHoldMinutes: agent.maxHoldCandles * tfMs / 60000, entryClose: x.close, marketRegime: regime, stakeFactor: risk.stakeFactor,
-        threshold: agent.threshold, volRegime: x.volRegime ?? null,
+        threshold: this.agentThreshold(agent), volRegime: x.volRegime ?? null,
         ...(size && size.stake > er.stakeEur ? { sizeEur: size.stake, sizeFactor: size.factor } : {}) },
     };
   }

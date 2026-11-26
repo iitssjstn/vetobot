@@ -47,6 +47,8 @@ export const STRATEGY_LIMITS = {
   agentLiveSmallStart: [0, 1],
   agentSizing: [0, 1],
   agentVolGuard: [0, 1],
+  // Eigen bijstelling van de koopdrempel van de AI-trader (%-punt; negatief = eerder kopen). Nooit onder 0%.
+  agentThrAdjust: [-1, 1],
 };
 export const AI_FAIL_MODES = ['reject', 'approve'];
 // Instellingen die aan staan als ze nergens zijn opgegeven.
@@ -79,6 +81,7 @@ const RISK_LABELS = {
   agentLiveSmallStart: 'Live beginnen met de kleinste inzet',
   agentSizing: 'AI-trader kiest zelf de inzet',
   agentVolGuard: 'Strategy Agent let op volatiliteit',
+  agentThrAdjust: 'Koopdrempel bijstellen',
   exchangeStop: 'Stop-loss ook bij Bitvavo zetten (live)',
   aiExitMinPct: 'AI winst nemen vanaf',
   aiExitEveryMin: 'AI winstcheck elke',

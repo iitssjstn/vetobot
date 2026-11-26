@@ -512,3 +512,21 @@ test('Strategy Agent: gekozen recept handelt deze coin niet → ander toegestaan
   assert.equal(bot2.store.state.positions['BTC/EUR'], undefined);
   assert.match(bot2.pairStatus['BTC/EUR'].reason, /handelt deze coin niet/);
 });
+
+test('AI-trader: eigen bijstelling van de koopdrempel (eerder kopen, nooit onder 0%)', async () => {
+  // Eerst de verwachting van dit recept uitlezen (drempel onbereikbaar hoog).
+  const probe = await agentRun(greedy({ threshold: 1e9 }));
+  const m = /verwacht ([+-]?\d+,\d+)% na kosten/.exec(probe.pairStatus['BTC/EUR'].reason);
+  assert.ok(m, probe.pairStatus['BTC/EUR'].reason);
+  const q = Number(m[1].replace(',', '.'));
+  // Drempel net boven de verwachting: zonder bijstelling niet kopen, met −1 wel (met uitleg in de chat).
+  const thr = q + 0.5;
+  const no = await agentRun(greedy({ threshold: thr }));
+  assert.equal(no.store.state.positions['BTC/EUR'], undefined);
+  const yes = await agentRun(greedy({ threshold: thr }), { agentThrAdjust: -1 });
+  assert.ok(yes.store.state.positions['BTC/EUR'], yes.pairStatus['BTC/EUR']?.reason);
+  assert.ok(yes.store.state.agentChats.some((c) => c.talk.some((t) => /door jou −1,00/.test(t.text))));
+  // Nooit onder 0%.
+  assert.equal(yes.agentThreshold({ threshold: 0.3 }), 0);
+  assert.equal(no.agentThreshold({ threshold: 0.5 }), 0.5);
+});
