@@ -1665,6 +1665,19 @@ export class Bot {
         this.agentChoice[pair] = { ...this.agentChoice[pair], recipe: alt.recipeKey, why: 'live' };
       }
     }
+    // Handelt het gekozen recept deze coin niet, maar een ander toegestaan recept wel (bijv. een recept dat je
+    // live op eigen risico zette), dan dat recept. Anders bleven die recepten ongebruikt op hun eigen coins.
+    const trades = (p) => !Array.isArray(p?.coins) || !p.coins.length || p.coins.includes(pair);
+    if (!trades(agent)) {
+      const others = agentParts(main).filter((p) => p && p !== agent && p.recipeKey !== agent.recipeKey && trades(p) && this.agentAllowed(p));
+      const alt = others.find((p) => p.coins?.includes(pair)) ?? others[0];
+      if (alt) {
+        talk.push(Bot.say('strategy', 'Strategy Agent', `Recept ${agent.recipeKey ?? '–'} handelt ${pair} niet; ik gebruik recept ${alt.recipeKey ?? '–'}, dat deze coin wel handelt` +
+          `${this.mode === 'live' && this.settings.agentLive.risky?.[alt.recipeKey] ? ' (live op eigen risico)' : ''}.`));
+        agent = alt;
+        this.agentChoice[pair] = { ...this.agentChoice[pair], recipe: alt.recipeKey ?? null, why: 'coin' };
+      }
+    }
     return this.#agentBuy(pair, agent, regime, choice, talk);
   }
 
