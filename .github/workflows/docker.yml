@@ -5,6 +5,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Twee merges kort na elkaar: de oudere build stoppen, anders kan die als laatste klaar zijn
+# en 'latest' overschrijven met de oude versie.
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   packages: write
