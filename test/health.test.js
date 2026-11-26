@@ -375,3 +375,17 @@ test('planner: loopt hij niet meer, dan start de bewaking hem opnieuw (veilig: g
     manager.stopAll();
   }
 });
+
+test('bot: check die in de wachtrij hangt (achter een hangende handmatige verkoop) → "handelsronde hangt", niet "geen checks meer"', async () => {
+  const { bot, c } = setupBot();
+  openPos(bot);
+  bot.brokers.paper.sell = () => new Promise(() => {}); // verkoop komt nooit terug
+  bot.closeManual('BTC/EUR').catch(() => {});
+  bot.tick().catch(() => {});
+  await new Promise((r) => setImmediate(r));
+  c.add(10 * 60000);
+  const r = bot.healthStatus();
+  const keys = r.problems.map((p) => p.key);
+  assert.ok(!keys.includes('scheduler'), `geen planner-herstart: ${keys}`);
+  assert.ok(keys.includes('loop-hang'), `hangende ronde gemeld: ${keys}`);
+});

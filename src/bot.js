@@ -96,7 +96,7 @@ export class Bot {
       pair: p.pair, live, stop: stops[p.pair] ?? null, openedAt: Date.parse(p.openedAt) || 0 }));
     return this.health.assess({
       mode: this.mode, intervalMs: this.checkIntervalMinutes * 60000, watchSeconds: this.risk.watchSeconds,
-      running: this.running, scheduled, halted: this.store.state.halted, openPositions,
+      running: this.running || Boolean(this.tickQueued), scheduled, halted: this.store.state.halted, openPositions,
       buyBlock: safety?.buyBlock ?? null, uncleanRestart: this.uncleanRestart ?? null,
     });
   }
@@ -434,6 +434,15 @@ export class Bot {
         return a ? { ...r, stage: a.stage ?? 'bevestigd', timeframe: a.timeframe, targetPct: a.targetPct, stopPct: a.stopPct, holdMinutes: a.holdMinutes } : r;
       }),
     };
+  }
+
+  // Opslaan direct na een order; een fout hierbij mag de afhandeling van de order niet afbreken.
+  #saveNow(pair) {
+    try {
+      this.store.save();
+    } catch (err) {
+      this.#event('error', pair, `Opslaan na de order mislukt: ${err.message}`);
+    }
   }
 
   // Zorgt dat een check, een handmatige verkoop en een modus-wissel nooit tegelijk lopen.
@@ -865,6 +874,9 @@ export class Bot {
   tick() {
     if (this.tickPromise) return this.tickPromise;
     this.tickQueued = true;
+    // Al bij het in de wachtrij zetten: wacht de check op iets dat hangt (bijv. een handmatige verkoop),
+    // dan ziet de bewaking een hangende handelsronde en niet "geen checks meer" (geen planner-herstart).
+    this.health.tickStarted();
     this.tickPromise = this.#tick().finally(() => { this.tickPromise = null; this.tickQueued = false; });
     return this.tickPromise;
   }
@@ -873,7 +885,6 @@ export class Bot {
     // Eerst wachten op wat er al loopt (bijv. een handmatige verkoop), daarna pas beginnen.
     await this.#exclusive(async () => {});
     this.running = true;
-    this.health.tickStarted();
     const started = Date.now();
     let errors = 0;
     let firstError = null;
@@ -2323,6 +2334,8 @@ export class Bot {
     delete this.lastFeatures[pair];
     // Live: meteen een stop-order bij Bitvavo zelf op de noodstop (mislukt dat, dan blijft de positie gewoon bewaakt).
     await this.#placeExchangeStop(pair, this.store.state.positions[pair]);
+    // Meteen opslaan: na een crash later in de check mag een echte positie niet verloren gaan.
+    this.#saveNow(pair);
     this.#event('info', pair, `Gekocht:${fmtAmount(fill.amount)} @ ${fmtPrice(fill.price)} (${this.broker.mode}${fill.limit ? `, limietorder${fill.partial ? ', deels gevuld' : ''}` : ''})` +
       (stakeInfo.extra > 0 ? `, inzet ${fmtEur(stake)} waarvan ${fmtEur(stakeInfo.extra)} herinvesteerde winst` : '') +
       (stake < stakeInfo.effective ? `, inzet verlaagd naar ${fmtEur(stake)} door de Risk Agent` : ''));
@@ -2812,10 +2825,24 @@ export class Bot {
         const opts = this.#orderOpts(reason);
         if (opts.limit) this.#step(`${pair}: limietorder verkopen, wacht max. ${opts.waitSec} sec`);
         expected = await fetchPrice(this.ex, pair).catch(() => null);
-        // Deels uitgevoerde stop: alleen de rest nog verkopen.
-        const rest = done?.fill ? Math.max(0, pos.amount - done.filled) : pos.amount;
-        const sold = await this.broker.sell(pair, rest, opts);
-        fill = done?.fill ? combineFills(done.fill, sold) : sold;
+        // Deels uitgevoerde stop: die coins zijn echt verkocht. Meteen vastleggen (zoals #onStopState), zodat
+        // het niet verloren gaat als de verkoop hieronder mislukt; dan alleen de rest nog verkopen.
+        if (done?.fill) {
+          pos.stopFill = combineFills(pos.stopFill, done.fill);
+          pos.amount = Math.max(0, pos.amount - done.filled);
+        }
+        const sold = await this.broker.sell(pair, pos.amount, opts);
+        // Live maar deels uitgevoerd (bijv. Bitvavo annuleerde de rest door marktbescherming): de positie houdt
+        // de rest, zodat die bewaakt blijft en een nieuwe stop-order krijgt. Te weinig over om te verkopen: dicht.
+        const left = pos.amount - (Number(sold?.amount) || 0);
+        const minCost = Number(this.ex.markets?.[pair]?.limits?.cost?.min) > 0 ? Number(this.ex.markets[pair].limits.cost.min) : 5;
+        if (this.broker.mode === 'live' && left > pos.amount * (1 - SAFETY.filledShare) && left * (sold?.price || expected || 0) >= minCost) {
+          pos.stopFill = combineFills(pos.stopFill, sold);
+          pos.amount = left;
+          this.#saveNow(pair);
+          throw new Error(`Maar deels verkocht bij Bitvavo (${fmtAmount(sold?.amount ?? 0)}); de rest (${fmtAmount(left)}) blijft open en bewaakt`);
+        }
+        fill = sold;
       }
     }
     if (this.tickStats) this.tickStats.closed++;
@@ -2859,6 +2886,8 @@ export class Bot {
     });
     const how = fill.limitFallback ? (fill.limit ? ', limietorder deels gevuld, rest market' : ', limietorder niet gevuld, market') : fill.limit ? ', limietorder' : '';
     this.#event(pnlEur >= 0 ? 'info' : 'warn', pair, `Verkocht @ ${fmtPrice(fill.price)}, resultaat ${fmtSigned(pnlEur)} (${reason}${how})`);
+    // Meteen opslaan: na een crash mag een verkochte positie niet terugkomen (dan zou hij nog eens verkopen).
+    this.#saveNow(pair);
     this.#journalTrade({ decisionId: pos.journalId ?? null, mode: this.broker.mode, pair, openedAt: pos.openedAt, closedAt: Date.now(),
       entryPrice: pos.entryPrice, exitPrice: fill.price, costEur: pos.costEur, feesEur: (pos.entryFeeEur ?? 0) + (fill.feeEur ?? 0),
       entrySlipPct: pos.entrySlipPct ?? null, exitSlipPct: sellSlip ?? null, pnlEur, pnlPct: (pnlEur / pos.costEur) * 100, mfePct, maePct,

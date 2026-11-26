@@ -312,3 +312,79 @@ test('LiveBroker.findStop: neemt alleen een stop-verkoop met dezelfde hoeveelhei
   const o = await ex.createOrder('BTC/EUR', 'stopLoss', 'sell', 0.1, undefined, { triggerPrice: 90 });
   assert.deepEqual(await b.findStop('BTC/EUR', 0.1, 90), { orderId: o.id, stopPrice: 90, amount: 0.1 });
 });
+
+// ---------- Review live: randgevallen bij verkopen ----------
+
+test('Review: stop deels uitgevoerd vlak voor een eigen verkoop en die verkoop mislukt → verkochte deel blijft vastgelegd, later alleen de rest verkopen', async () => {
+  const { bot, ex } = setupLive();
+  await crossTicks(bot, ex, () => bot.store.state.positions['BTC/EUR']);
+  const pos = bot.store.state.positions['BTC/EUR'];
+  const amount = pos.amount;
+  const id = pos.exchangeStop.orderId;
+  // De stop-order is deels uitgevoerd maar staat nog open (het annuleren haalt de rest weg).
+  const o = ex.orders[id];
+  const filled = Math.floor(o.amount * 0.4 * 1e8) / 1e8;
+  const px = o.triggerPrice * 0.99;
+  Object.assign(o, { filled, cost: filled * px, fee: { currency: 'EUR', cost: filled * px * 0.0025 } });
+  ex.holdings.BTC -= filled;
+  ex.holdings.EUR += filled * px;
+  const orig = ex.createMarketOrder;
+  ex.createMarketOrder = async () => { throw new ccxt.RequestTimeout('bitvavo POST order request timed out'); };
+  await assert.rejects(bot.closeManual('BTC/EUR'), /timed out/);
+  const p = bot.store.state.positions['BTC/EUR'];
+  assert.ok(p, 'positie blijft open');
+  assert.ok(Math.abs(p.amount - (amount - filled)) < 1e-9, `alleen de rest staat nog open: ${p.amount}`);
+  assert.ok(Math.abs((p.stopFill?.amount ?? 0) - filled) < 1e-9, 'het door de stop verkochte deel is vastgelegd');
+  ex.createMarketOrder = orig;
+  await bot.closeManual('BTC/EUR');
+  const sells = marketCalls(ex, 'sell');
+  assert.equal(sells.length, 1);
+  assert.ok(Math.abs(sells[0].amount - (amount - filled)) < 1e-8, `alleen de rest verkocht: ${sells[0].amount}`);
+  const t = bot.store.state.trades[0];
+  assert.ok(Math.abs(t.amount - amount) < 1e-9, 'trade over de hele positie');
+  const restEur = sells[0].amount * ex.prices.at(-1) * 0.9975;
+  assert.ok(Math.abs(t.pnlEur - (filled * px * 0.9975 + restEur - pos.costEur)) < 1e-6, `winst over beide delen: ${t.pnlEur}`);
+});
+
+test('Review: market-verkoop maar deels uitgevoerd bij Bitvavo → positie houdt de rest (bewaakt, nieuwe stop), niet stil verdwenen', async () => {
+  const { bot, ex } = setupLive();
+  await crossTicks(bot, ex, () => bot.store.state.positions['BTC/EUR']);
+  const pos = bot.store.state.positions['BTC/EUR'];
+  const amount = pos.amount;
+  const orig = ex.createMarketOrder;
+  let half = 0;
+  ex.createMarketOrder = async (pair, side, amt) => {
+    half = Math.floor(amt * 0.5 * 1e8) / 1e8;
+    return orig.call(ex, pair, side, half); // Bitvavo vult maar de helft (marktbescherming)
+  };
+  await assert.rejects(bot.closeManual('BTC/EUR'), /deels/i);
+  const p = bot.store.state.positions['BTC/EUR'];
+  assert.ok(p, 'de rest blijft als positie bewaakt');
+  assert.ok(Math.abs(p.amount - (amount - half)) < 1e-9, `rest: ${p.amount}`);
+  assert.ok(Math.abs((p.stopFill?.amount ?? 0) - half) < 1e-9);
+  assert.equal(bot.store.state.trades.length, 0, 'nog geen (halve) trade geboekt');
+  ex.createMarketOrder = orig;
+  await bot.tick();
+  assert.ok(p.exchangeStop?.orderId, 'nieuwe stop-order voor de rest');
+  assert.ok(Math.abs(ex.orders[p.exchangeStop.orderId].amount - (amount - half)) < 1e-8);
+  await bot.closeManual('BTC/EUR');
+  assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
+  assert.ok(Math.abs(bot.store.state.trades[0].amount - amount) < 1e-9);
+  assert.ok(ex.holdings.BTC < 1e-8, 'alles verkocht');
+});
+
+test('Review: live aankoop en verkoop staan direct op schijf (niet pas aan het eind van de check)', async () => {
+  const { bot, ex } = setupLive();
+  const disk = () => JSON.parse(fs.readFileSync(bot.store.file, 'utf8')).positions ?? {};
+  let atOpen = null;
+  let atClose = null;
+  bot.onTrade = (type) => { if (type === 'open') atOpen = disk()['BTC/EUR'] ?? null; else atClose = disk(); };
+  await crossTicks(bot, ex, () => bot.store.state.positions['BTC/EUR']);
+  assert.ok(atOpen, 'positie al opgeslagen vóór de rest van de check');
+  assert.ok(atOpen.exchangeStop?.orderId, 'met de stop-order');
+  // Verkoop door de eigen stop-loss van de bot.
+  ex.prices = [...ex.prices.slice(0, -1), ex.prices.at(-1) * 0.9];
+  await bot.watchPositions();
+  assert.ok(atClose, 'verkocht');
+  assert.equal(atClose['BTC/EUR'], undefined, 'gesloten positie al van schijf');
+});
