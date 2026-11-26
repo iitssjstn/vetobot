@@ -53,7 +53,7 @@ test('manager: gezondheidscontrole start de planner niet opnieuw voor een bot di
   const config = {
     dataDir: dir, liveTrading: false, pairs: ['BTC/EUR'], timeframe: '1h', checkIntervalMinutes: 15, paper: { startBalanceEur: 500 },
     risk: { stakeEur: 25, maxOpenTrades: 2, stopLossPct: 0, takeProfitPct: 0, maxDailyLossEur: 0, feePct: 0, cooldownMinutes: 0, slippagePct: 0 },
-    strategy: { emaFast: 3, emaSlow: 8, rsiPeriod: 5, rsiMaxEntry: 100 }, ai: { provider: 'none', model: '', baseUrl: '', failMode: 'reject', timeoutMs: 1000 },
+    strategy: {}, ai: { provider: 'none', model: '', baseUrl: '', failMode: 'reject', timeoutMs: 1000 },
   };
   const manager = new BotManager({ config, users, log: quiet, shared: new SharedMarket({}), makePrivateExchange: () => ({}) });
   const ctx = manager.ensure(user);

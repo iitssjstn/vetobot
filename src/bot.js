@@ -1,7 +1,6 @@
-import { evaluate } from './strategy.js';
-import { ema } from './indicators.js';
+import { marketIndicators } from './indicators.js';
 import { computeFeatures, predict, predictRaw, contributions, explain, positionFeatures, FEATURE_INFO, formatFeature, CANDLES_NEEDED, regimeOf, REGIME_LABEL } from './mlmodel.js';
-import { askVetoChain, askTeamChain, askExitChain, testChain, listModels, writeSummaryChain } from './ai.js';
+import { askVetoChain, askExitChain, testChain, listModels, writeSummaryChain } from './ai.js';
 import { TIMEFRAME_MINUTES, fmtInterval, LIVE_MIN_STAKE_EUR } from './settings.js';
 import { cleanSuggestions, currentValues, applySuggestions } from './suggest.js';
 import { fetchClosedCandles, fetchPrice, hasTradingKeys, isOrderRefusal, isNetworkError } from './exchange.js';
@@ -41,6 +40,8 @@ const VOL_LABEL = { hoog: 'hoge volatiliteit', normaal: 'normale volatiliteit', 
 const LIVE_AGENT_PROVEN = 20;
 // #open en #close geven dit terug als er voor die coin al een order loopt (of er al een positie staat).
 const BUSY = 'busy';
+// AI-trader en strategieën staan allebei uit: dan koopt de bot niets nieuws (bewaken en verkopen gaan door).
+export const NO_BUYER_TEXT = 'Koopt niets: de AI-trader en de strategieën staan uit (bewaken en verkopen gaan door)';
 
 export class Bot {
   // brokers en stores: { paper, live }. De actieve modus komt uit settings en
@@ -135,24 +136,6 @@ export class Bot {
     }
     this.health.notifyFailed(this.notifier.lastFailure?.error ?? 'Discord niet bereikbaar');
     return false;
-  }
-
-  // BTC-filter: één keer per check de trend van BTC/EUR bepalen (koers boven EMA 50).
-  async #updateBtcTrend() {
-    if (!this.strategy.btcFilter) {
-      this.btcTrend = null;
-      return;
-    }
-    try {
-      this.#step('BTC-trend bepalen');
-      const candles = await fetchClosedCandles(this.ex, 'BTC/EUR', this.timeframe, 120);
-      const closes = candles.map((c) => c[4]);
-      const e = ema(closes, 50).at(-1);
-      this.btcTrend = e == null ? null : { up: closes.at(-1) > e, close: closes.at(-1), ema50: e, at: new Date().toISOString() };
-    } catch (err) {
-      this.btcTrend = null;
-      this.#event('warn', null, `BTC-trend ophalen mislukt, BTC-filter deze check overgeslagen: ${err.message}`);
-    }
   }
 
   #summary(errors) {
@@ -250,14 +233,8 @@ export class Bot {
     });
   }
 
-  // Welke kruising per coin al beoordeeld is. Staat in het state-bestand van de
-  // huidige modus, zodat een herstart geen dubbele aankoop op dezelfde kruising geeft.
-  // Laatste candle per coin bij de vorige check (alleen in het geheugen).
-  get lastCandleSeen() {
-    this._lastCandleSeen ??= {};
-    return this._lastCandleSeen;
-  }
-
+  // Op welke candle per coin het laatste koopsignaal al beoordeeld is. Staat in het state-bestand
+  // van de huidige modus, zodat een herstart geen dubbele aankoop op hetzelfde signaal geeft.
   get seenSignals() {
     this.store.state.seenSignals ??= {};
     return this.store.state.seenSignals;
@@ -705,8 +682,8 @@ export class Bot {
     let candles = [];
     let indicators = null;
     try {
-      candles = await fetchClosedCandles(this.ex, pair, timeframe, Math.max(200, this.strategy.emaSlow * 4));
-      indicators = evaluate(candles, this.strategy).indicators;
+      candles = await fetchClosedCandles(this.ex, pair, timeframe, 200);
+      indicators = marketIndicators(candles);
     } catch {
       // Geen marktdata: test dan met voorbeeldwaarden, het gaat om de verbinding.
     }
@@ -728,7 +705,8 @@ export class Bot {
       this.store.state.seenSignals = {};
       this.store.save();
       const s = this.strategy;
-      this.#event('info', null, `Strategie: EMA ${s.emaFast}/${s.emaSlow}, RSI ${s.rsiPeriod}, max RSI ${s.rsiMaxEntry}`);
+      this.#event('info', null, `Strategie: AI-trader ${s.agentMode ? 'aan' : 'uit'}, strategieën ${s.mlBandit ? 'aan' : 'uit'}` +
+        (!s.agentMode && !s.mlBandit ? ': de bot koopt niets nieuws (bewaken en verkopen gaan door)' : ''));
     });
   }
 
@@ -923,7 +901,6 @@ export class Bot {
       // Directe bijsturing bijwerken met de nieuwste afgesloten trades (en gelabelde afgewezen kansen).
       this.learnCorr = onlineCorrection(this.#learningTrades(), LEARN, this.#labeledRejections());
       this.#agentNotice();
-      await this.#updateBtcTrend();
       // Gevolgde coins plus coins waarin nog een positie open staat, zodat een positie
       // altijd bewaakt blijft, ook als de coin uit de lijst is gehaald.
       // Met de AI-trader aan: ook de coins die hij zelf gekozen heeft (hij zoekt uit waar hij het best handelt).
@@ -1089,7 +1066,7 @@ export class Bot {
     if (pairs.length < 2) return;
     this.#step(`Koersen en candles van ${pairs.length} coins ophalen`);
     const strategy = this.strategy;
-    const need = Math.min(1400, Math.max(CANDLES_NEEDED, strategy.emaSlow * 4, (strategy.trendEma || 0) * 2 + 20));
+    const need = CANDLES_NEEDED;
     const timeframe = this.timeframe;
     if (typeof this.ex.fetchTickers === 'function') await this.ex.fetchTickers(pairs).catch(() => {});
     const queue = [...pairs];
@@ -1144,67 +1121,37 @@ export class Bot {
     }
 
     this.#step(`${pair}: candles ophalen`);
-    // Genoeg candles voor de langste indicator (trend-EMA), met een maximum van wat Bitvavo in één keer geeft.
-    const need = Math.max(CANDLES_NEEDED, strategy.emaSlow * 4, (strategy.trendEma || 0) * 2 + 20);
-    const useOpen = Boolean(strategy.useOpenCandle);
-    const candles = await fetchClosedCandles(this.ex, pair, timeframe, Math.min(1400, need), { includeOpen: useOpen });
+    const candles = await fetchClosedCandles(this.ex, pair, timeframe, CANDLES_NEEDED);
     const lastCandleTs = candles.at(-1)?.[0];
-    // Alleen verse kruisingen: kijk terug over de candles die sinds de vorige check van deze coin
-    // zijn bijgekomen (minimaal de laatste). Zo mist hij niets tussen twee checks, maar koopt hij
-    // niet op een kruising van uren geleden, bijvoorbeeld na een herstart.
-    const prevTs = this.lastCandleSeen[pair];
-    // Met de lopende candle telt de vorige (inmiddels gesloten) candle ook nog mee.
-    const fresh = prevTs ? candles.filter((c) => (useOpen ? c[0] >= prevTs : c[0] > prevTs)).length : 1;
-    const lookback = Math.min(50, Math.max(1, fresh));
-    this.lastCandleSeen[pair] = lastCandleTs;
-    let result = evaluate(candles, strategy, lookback);
-    if (result.signal === 'buy' && strategy.btcFilter && pair !== 'BTC/EUR' && this.btcTrend && !this.btcTrend.up) {
-      result = { ...result, signal: 'none', reason: 'Kruising, maar BTC zit in een dalende trend (BTC-filter)', filtered: true };
-    }
-    // Niet achter de koers aan: is hij sinds de signaalcandle al te ver gestegen, dan overslaan.
-    if (result.signal === 'buy' && strategy.maxChasePct > 0 && result.crossClose) {
-      const now = await fetchPrice(this.ex, pair).catch(() => null);
-      const moved = now ? ((now - result.crossClose) / result.crossClose) * 100 : null;
-      if (moved != null && result.indicators) result.indicators.movedSinceSignalPct = moved;
-      if (moved != null && moved > strategy.maxChasePct) {
-        result = { ...result, signal: 'none', filtered: true,
-          reason: `Kruising, maar de koers is sinds het signaal al ${moved.toFixed(2)}% gestegen (max ${strategy.maxChasePct}%)` };
-      }
-    }
-    // Zelflerend: de bevestigde strategieën van de trainer (op elke candle-tijd, met elk een eigen
-    // model) bepalen zelf wanneer er gekocht wordt; de bandit kiest welke.
+    // Alleen een beschrijving van de markt (Markt nu, AI-controleur, dagboek); kopen beslissen de
+    // AI-trader of de zelflerende strategieën.
+    const marketInd = marketIndicators(candles);
+    let result = { signal: 'none', reason: marketInd ? NO_BUYER_TEXT : 'Te weinig data', indicators: marketInd };
     const agent = strategy.agentMode && !this.following ? this.getAgent?.() : null;
     const allArms = !agent && strategy.mlBandit && !position && !this.following ? this.activeArms() : [];
     if (agent && !position) {
       const a = await this.#agentSignal(pair, agent);
       result = a.buy
-        ? { ...result, signal: 'buy', filtered: false, armSignal: true, crossClose: null, reason: a.reason, agentTalk: a.talk,
+        ? { ...result, signal: 'buy', armSignal: true, reason: a.reason, agentTalk: a.talk,
           indicators: { ...result.indicators, mlProb: null, mlWhy: a.why, agent: a.plan, mlRegime: a.regime } }
         : { ...result, signal: 'none', armSignal: true, reason: a.reason };
     } else if (agent && position) {
       // Zit de verkenner op deze coin, dan kan de AI-trader hier niet kopen (één positie per coin).
       this.busyAt ??= {};
       if (position.explore && Date.now() - (this.busyAt[pair] ?? 0) > 15 * 60000) { this.busyAt[pair] = Date.now(); this.#whyNot('coin bezet door verkenner'); }
-      result = { ...result, signal: 'none', armSignal: true, reason: position.agent ? (this.agentHold?.[pair] ?? 'AI-trader houdt vast') : result.reason };
+      result = { ...result, signal: 'none', armSignal: true, reason: position.agent ? (this.agentHold?.[pair] ?? 'AI-trader houdt vast') : 'Positie open: bewaakt door stop-loss, take-profit en trailing stop' };
     } else if (allArms.length) {
       const a = await this.#armSignal(pair, allArms);
       result = a.buy
-        ? { ...result, signal: 'buy', filtered: false, armSignal: true, crossClose: null, reason: a.reason,
+        ? { ...result, signal: 'buy', armSignal: true, reason: a.reason,
           indicators: { ...result.indicators, mlProb: a.prob, mlWhy: a.why, mlArm: a.plan, mlRegime: a.regime } }
         : { ...result, signal: 'none', armSignal: true, reason: a.reason };
-    }
-    // Eigen voorspelmodel: winstkans uitrekenen bij een koopsignaal, en eventueel filteren.
-    if (result.signal === 'buy' && !result.armSignal) {
-      const ml = await this.#modelProbability(pair, useOpen ? candles.slice(0, -1) : candles, timeframe);
-      if (ml && result.indicators) { result.indicators.mlProb = ml.prob; result.indicators.mlRegime = ml.regime; result.indicators.mlWhy = ml.why; }
-      if (ml) this.think(`Kruising gezien. Mijn winstkans: ${ml.prob.toFixed(0)}%.` + (ml.why?.length ? ` Vooral door: ${Bot.whyText(ml.why)}.` : ''), pair, 'doing');
-      if (ml && strategy.mlMinProb > 0 && ml.prob < strategy.mlMinProb) {
-        result = { ...result, signal: 'none', filtered: true,
-          reason: `Kruising, maar het eigen model geeft maar ${ml.prob.toFixed(0)}% winstkans (minimaal ${strategy.mlMinProb}%)` };
-      } else if (ml?.regimeBad && strategy.mlSkipBadRegime) {
-        result = { ...result, signal: 'none', filtered: true,
-          reason: `Kruising, maar in een ${REGIME_LABEL[ml.regime]} maakte het eigen model op de test verlies (gem. ${ml.regimeStats.avgReturnPct.toFixed(2)}% per trade)` };
-      }
+    } else if (position) {
+      result = { ...result, reason: 'Positie open: bewaakt door stop-loss, take-profit en trailing stop' };
+    } else if (strategy.agentMode && !this.following) {
+      result = { ...result, reason: 'AI-trader staat aan, maar er is nog geen AI-trader van de leerserver: niets kopen' };
+    } else if (strategy.mlBandit && !this.following) {
+      result = { ...result, reason: 'Strategieën staan aan, maar er is nog geen actieve strategie van de leerserver: niets kopen' };
     }
     const ind = result.indicators;
     this.pairStatus[pair] = {
@@ -1215,7 +1162,7 @@ export class Bot {
       trend: ind ? (ind.emaFast > ind.emaSlow ? 'up' : 'down') : null,
       change24: ind?.change24 ?? null,
       signal: result.signal,
-      reason: result.reason,
+      reason: this.following ? 'Volgt de leider' : result.reason,
       candleAt: lastCandleTs ? new Date(lastCandleTs).toISOString() : null,
       inPosition: Boolean(position),
       positionChangePct,
@@ -1232,16 +1179,9 @@ export class Bot {
       return;
     }
 
-    if (position) {
-      const sell = this.#signalExit(position, candles, strategy, timeframe);
-      if (sell.sell) {
-        await this.#close(pair, sell.reason);
-        this.pairStatus[pair].inPosition = false;
-      } else if (sell.reason) {
-        this.pairStatus[pair].reason = sell.reason;
-      }
-      return;
-    }
+    // Een open positie verkoopt via stop-loss, take-profit, trailing stop, maximale duur, de
+    // AI-winstcheck of de AI-trader (hierboven); hier valt niets meer te beslissen.
+    if (position) return;
 
     if (result.signal !== 'buy') return;
 
@@ -1257,8 +1197,8 @@ export class Bot {
       return;
     }
 
-    // Dezelfde kruising niet twee keer beoordelen.
-    const signalKey = result.crossAt ?? lastCandleTs;
+    // Hetzelfde signaal (dezelfde candle) niet twee keer beoordelen.
+    const signalKey = lastCandleTs;
     if (this.seenSignals[pair] === signalKey) return;
     this.seenSignals[pair] = signalKey;
     if (this.tickStats) this.tickStats.buySignals++;
@@ -1269,7 +1209,7 @@ export class Bot {
       { pair, openPnlEur: this.openPositionsValue().pnlEur, explore: exploring });
     if (liveBlock) this.pairStatus[pair] = { ...this.pairStatus[pair], reason: `Koopsignaal, maar: ${liveBlock}` };
     // Volatiliteitsregime uit de candles die er al zijn (voor het leerdagboek).
-    const volRegime = result.indicators?.agent?.volRegime ?? volRegimeOf(useOpen ? candles.slice(0, -1) : candles);
+    const volRegime = result.indicators?.agent?.volRegime ?? volRegimeOf(candles);
     if (blocked) {
       if (this.tickStats) this.tickStats.blocked++;
       this.store.addDecision({ pair, signal: 'buy', outcome: 'blocked', reason: blocked, indicators: result.indicators });
@@ -1330,19 +1270,17 @@ export class Bot {
     // AI-trader zonder AI-controleur: de AI-trader beslist dan helemaal zelf.
     // De verkenner vraagt de AI-controleur niets: hij koopt juist om te leren.
     const skipVeto = Boolean(g) && (exploring || Number(this.strategy.agentVeto ?? 1) === 0);
-    const team = this.settings.ai.mode === 'team' && this.settings.ai.provider !== 'none';
-    if (!skipVeto) this.#step(team ? `${pair}: AI-team overlegt (analist, criticus, beslisser)` : `${pair}: AI om oordeel vragen`);
+    if (!skipVeto) this.#step(`${pair}: AI om oordeel vragen`);
     if (this.tickStats && this.settings.ai.provider !== 'none' && !skipVeto) this.tickStats.aiCalls++;
     const ask = skipVeto
       ? async () => ({ decision: 'approve', reason: 'De AI-trader beslist zelf (AI-controleur staat uit voor de AI-trader)', provider: 'AI-trader' })
-      : team ? askTeamChain : askVetoChain;
+      : askVetoChain;
     const veto = await ask(this.aiChain(), this.settings.ai.failMode ?? this.config.ai.failMode, {
       pair,
       timeframe,
       indicators: result.indicators,
       recentCandles: candles.slice(-24),
       extra: {
-        btcTrend: this.btcTrend,
         // Hoe de laatste trades van de bot in deze coin afliepen.
         recentTrades: this.store.state.trades.filter((t) => t.pair === pair).slice(0, 5)
           .map((t) => ({ pnlPct: +t.pnlPct.toFixed(2), exit: t.exitReason, closedAt: t.closedAt })),
@@ -1352,12 +1290,11 @@ export class Bot {
         filters: this.#aiFilters(),
         aiHistory: this.#aiHistory(pair),
         setupStats: this.#setupStats(),
-        ml: result.indicators?.mlProb != null ? { prob: result.indicators.mlProb, regime: result.indicators.mlRegime, why: result.indicators.mlWhy,
-          meta: result.indicators.mlArm
-            ? { ...(this.getModel?.()?.meta ?? {}), targetPct: result.indicators.mlArm.takeProfitPct, stopPct: result.indicators.mlArm.stopLossPct, metrics: (this.activeArms().find((a) => a.key === result.indicators.mlArm.key)?.model?.meta?.metrics) ?? null }
-            : this.getModel?.()?.meta,
-          arm: result.indicators.mlArm ?? null } : null,
-        signalReason: result.armSignal ? result.reason : null,
+        // Winstkans van de gekozen zelflerende strategie (alleen bij strategieën, niet bij de AI-trader).
+        ml: result.indicators?.mlProb != null && result.indicators.mlArm ? { prob: result.indicators.mlProb, regime: result.indicators.mlRegime, why: result.indicators.mlWhy,
+          meta: { ...(this.getModel?.()?.meta ?? {}), targetPct: result.indicators.mlArm.takeProfitPct, stopPct: result.indicators.mlArm.stopLossPct, metrics: (this.activeArms().find((a) => a.key === result.indicators.mlArm.key)?.model?.meta?.metrics) ?? null },
+          arm: result.indicators.mlArm } : null,
+        signalReason: result.reason,
         agentSignal: Boolean(result.indicators?.agent),
         book: result.indicators?.book ?? null,
         // Hoe de AI en het model het samen deden (van de trainer): wie had gelijk?
@@ -1385,10 +1322,7 @@ export class Bot {
       aiError: Boolean(veto.error),
       strategyReason: result.reason,
       indicators: result.indicators,
-      // Het gesprek van het AI-team, voor de pagina AI-chat.
-      ...(veto.transcript ? { team: veto.transcript } : {}),
     });
-    this.#trimTranscripts();
     // Voor het leerdagboek: wat de AI zei (niets als de AI-trader zelf besliste), en de kenmerken van nu
     // (#open ruimt die op).
     const jAi = skipVeto || veto.provider === 'none' ? null : { provider: veto.provider ?? null, decision: veto.decision === 'approve' ? 'approve' : 'reject', reason: veto.reason ?? null, error: Boolean(veto.error) };
@@ -1427,8 +1361,7 @@ export class Bot {
       const ctl = exploring ? []
         : skipVeto
         ? [Bot.say('controleur', 'AI-controleur', 'Staat uit voor de AI-trader: de AI-trader beslist zelf.')]
-        : veto.transcript?.length ? veto.transcript
-          : [{ role: 'controleur', label: 'AI-controleur', model: veto.provider ?? 'AI', ms: 0, text: veto.reason, decision: veto.decision === 'approve' ? 'approve' : 'reject' }];
+        : [{ role: 'controleur', label: 'AI-controleur', model: veto.provider ?? 'AI', ms: 0, text: veto.reason, decision: veto.decision === 'approve' ? 'approve' : 'reject' }];
       chat = this.#agentChat(pair, exploring ? 'explore' : 'buy', veto.decision === 'approve' ? 'approved' : 'vetoed', [...result.agentTalk, ...ctl]);
     }
     if (veto.decision === 'approve') {
@@ -2146,44 +2079,6 @@ export class Bot {
     };
   }
 
-  // Winstkans in % volgens het eigen model, of null als er geen (passend) model is.
-  // De kenmerken worden altijd onthouden (ook zonder model): als de bot daarna koopt, gaan ze
-  // bij het sluiten met de uitkomst naar de trainer, zodat die van echte trades leert.
-  async #modelProbability(pair, candles, timeframe) {
-    let btc = null;
-    if (pair !== 'BTC/EUR') {
-      btc = await fetchClosedCandles(this.ex, 'BTC/EUR', timeframe, CANDLES_NEEDED).catch(() => null);
-    }
-    const f = computeFeatures(candles, { btc: pair === 'BTC/EUR' ? candles : btc, micro: this.getMicro?.(pair) });
-    if (!f) return null;
-    const model = this.getModel?.();
-    // Een model getraind op andere candles (bijv. 1h) zegt niets over 5m-candles.
-    const usable = model && (!model.meta?.timeframe || model.meta.timeframe === timeframe);
-    const prob = usable ? predict(model, f) * 100 : null;
-    this.lastFeatures[pair] = { ts: candles.at(-1)[0], timeframe, features: f, prob, at: Date.now() };
-    if (!usable) return null;
-    // Soort markt, en hoe het model het in dat soort markt deed op de testperiode.
-    const regime = regimeOf(f);
-    const rs = model.meta?.metrics?.regimes?.[regime] ?? null;
-    // Waarom: welke kenmerken de kans het meest omhoog of omlaag duwden (voor de AI en het dashboard).
-    let why = [];
-    try {
-      why = explain(model, f).map((w) => ({ key: w.key, label: w.label, text: w.text, effect: +w.effect.toFixed(1) }));
-    } catch {
-      why = [];
-    }
-    return { prob, meta: model.meta, regime, regimeStats: rs, why, regimeBad: Boolean(rs && rs.nSelected >= 30 && rs.avgReturnPct != null && rs.avgReturnPct <= 0) };
-  }
-
-  // Gesprekken zijn groot; bewaar ze alleen bij de laatste 60 beslissingen (state blijft klein).
-  #trimTranscripts() {
-    let n = 0;
-    for (const d of this.store.state.decisions) {
-      if (!d.team) continue;
-      if (++n > 60) delete d.team;
-    }
-  }
-
   // ---------- Gegevens voor de AI ----------
   // Kosten van een volledige ronde in %, met limietorders en (in paper) slippage.
   #roundCostPct() {
@@ -2201,23 +2096,9 @@ export class Bot {
     };
   }
 
-  // Grenzen voor de harde filters. Basis volgens de AI-strengheid; wat je zelf bij Strategie
-  // hebt ingesteld (max RSI, min ADX, volumefilter, BTC-filter) gaat daar voor.
+  // Grenzen voor de harde filters van de AI-controleur (vast op 'normaal').
   #aiFilters() {
-    const s = this.strategy;
-    const level = Math.round(Number(s.aiStrictness ?? 1));
-    const base = [
-      { label: 'streng', adxMin: 20, volMin: 0.8, rsiMax: 72, atrMax: 3, greensMax: 4, costRMax: 0.35, evMinR: 0.3, chopHard: true },
-      { label: 'normaal', adxMin: 18, volMin: 0.6, rsiMax: 75, atrMax: 3.5, greensMax: 5, costRMax: 0.5, evMinR: 0.15, chopHard: true },
-      { label: 'soepel', adxMin: 15, volMin: 0.5, rsiMax: 80, atrMax: 4.5, greensMax: 6, costRMax: 0.7, evMinR: 0, chopHard: false },
-    ][Math.min(2, Math.max(0, level))];
-    const f = { ...base };
-    if (s.rsiMaxEntry > 0 && s.rsiMaxEntry < 100) f.rsiMax = s.rsiMaxEntry;
-    if (s.adxMin > 0) f.adxMin = s.adxMin;
-    if (s.volumeMult > 0) f.volMin = s.volumeMult;
-    // Bitcoin als harde eis als je het BTC-filter aan hebt, of bij streng.
-    f.btcHard = Boolean(s.btcFilter) || level === 0;
-    return f;
+    return { label: 'normaal', adxMin: 18, volMin: 0.6, rsiMax: 75, atrMax: 3.5, greensMax: 5, costRMax: 0.5, evMinR: 0.15, chopHard: true, btcHard: false };
   }
 
   // Eerdere AI-beslissingen in deze coin met hoe het afliep, voor de feedback-lus.
@@ -2395,37 +2276,6 @@ export class Bot {
     });
   }
 
-  // Verkopen op het verkoopsignaal, met bescherming tegen whipsaw: op korte candles kruisen
-  // de EMA's door ruis steeds heen en weer, waardoor de bot koopt en een paar minuten later met
-  // verlies (vooral fees) weer verkoopt. Daarom pas verkopen als EMA fast zoveel candles op rij
-  // onder EMA slow ligt én de positie minimaal zoveel candles open staat.
-  // Stop-loss, trailing stop, take-profit en de AI-winstcheck staan hier los van en werken altijd.
-  #signalExit(position, candles, strategy, timeframe) {
-    // Positie van een zelflerend gekozen strategie: alleen haar eigen stop, doel en duur (zoals
-    // de trainer haar getest heeft), geen verkoop op de EMA-kruising.
-    if (position.plan) return { sell: false };
-    const closes = candles.map((c) => c[4]);
-    const fast = ema(closes, strategy.emaFast);
-    const slow = ema(closes, strategy.emaSlow);
-    const confirm = Math.max(1, Math.round(strategy.sellConfirmCandles || 1));
-    const n = closes.length;
-    if (n < confirm + 1) return { sell: false };
-    let below = 0;
-    for (let i = n - 1; i >= 0 && fast[i] != null && slow[i] != null && fast[i] < slow[i]; i--) below++;
-    if (below === 0) return { sell: false };
-    if (below < confirm) {
-      return { sell: false, reason: `Trend draait omlaag (${below} van ${confirm} candles), wacht op bevestiging` };
-    }
-    const tfMs = (TIMEFRAME_MINUTES[timeframe] ?? 60) * 60000;
-    const heldMs = Date.now() - Date.parse(position.openedAt ?? 0);
-    const minHold = Math.max(0, strategy.minHoldCandles || 0);
-    if (heldMs < minHold * tfMs) {
-      const left = Math.ceil((minHold * tfMs - heldMs) / 60000);
-      return { sell: false, reason: `Verkoopsignaal, maar de positie staat pas ${Math.floor(heldMs / 60000)} min open (minimaal ${minHold} candles, nog ${left} min). Stops blijven actief.` };
-    }
-    return { sell: true, reason: `Trend omlaag: EMA fast ${below} candle${below === 1 ? '' : 's'} onder EMA slow` };
-  }
-
   // Stop-loss, ATR-stop, trailing stop en take-profit op de actuele koers. Geeft de reden
   // terug als de positie gesloten moet worden, anders null. Werkt het hoogste punt bij.
   #exitReason(position, price, risk) {
@@ -2470,7 +2320,7 @@ export class Bot {
   async #aiExit(pair, position, price, risk) {
     if (this.following || !(risk.aiExitMinPct > 0)) return null;
     // Posities van de AI-trader: hij beslist zelf wanneer hij verkoopt (de noodstop en de maximale
-    // duur zijn het vangnet). De AI-winstcheck hoort bij de klassieke strategie.
+    // duur zijn het vangnet). De AI-winstcheck is voor de overige posities (zelflerende strategieën, oudere posities).
     if (position.agent) return null;
     const changePct = ((price - position.entryPrice) / position.entryPrice) * 100;
     if (!Number.isFinite(changePct) || changePct < risk.aiExitMinPct) return null;
@@ -2482,7 +2332,7 @@ export class Bot {
     this.#step(`${pair}: AI vragen of de winst genomen moet worden`);
     const timeframe = this.timeframe;
     const candles = await fetchClosedCandles(this.ex, pair, timeframe, 60, { includeOpen: true }).catch(() => []);
-    const ind = candles.length ? evaluate(candles, this.strategy, 1).indicators : null;
+    const ind = candles.length ? marketIndicators(candles) : null;
     if (this.tickStats) this.tickStats.aiCalls++;
     const r = await askExitChain(chain, { pair, timeframe, position, price, indicators: ind, recentCandles: candles.slice(-12), feePct: risk.feePct, risk: this.#aiRisk() });
     if (r.error) {

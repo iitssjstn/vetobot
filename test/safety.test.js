@@ -16,7 +16,7 @@ orderTiming.pollMs = 0;
 
 const H = 3600000;
 const quiet = { info() {}, warn() {}, error() {} };
-const crossPrices = (n) => [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66, 68]).slice(0, n);
+const agentPrices = () => [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
 
 // Nep-Bitvavo: koersen en candles zoals in bot.test.js, plus orders, stop-orders en een saldo dat
 // meebeweegt met wat er gekocht en verkocht wordt.
@@ -26,7 +26,7 @@ function fakeBitvavo() {
   let n = 0;
   const ex = {
     apiKey: 'k', secret: 's', has: {}, precisionMode: 4, calls, orders,
-    prices: crossPrices(41),
+    prices: agentPrices(),
     holdings: { EUR: 1000 },
     extraBalance: {},
     markets: { 'BTC/EUR': { symbol: 'BTC/EUR', base: 'BTC', quote: 'EUR', spot: true, active: true, precision: { amount: 1e-8, price: 1e-5 }, limits: { amount: { min: 0.0001 } } } },
@@ -91,18 +91,22 @@ function setupLive({ mode = 'live', risk = {}, strategy = {} } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vetobot-safety-'));
   const ex = fakeBitvavo();
   const baseRisk = { stakeEur: 25, maxOpenTrades: 2, stopLossPct: 5, takeProfitPct: 50, maxDailyLossEur: 100, feePct: 0.25, cooldownMinutes: 0, aiExitMinPct: 0, ...risk };
-  const config = { timeframe: '1h', strategy: { emaFast: 3, emaSlow: 8, rsiPeriod: 5, rsiMaxEntry: 100, maxChasePct: 0, ...strategy }, risk: baseRisk, ai: { provider: 'none', failMode: 'reject' } };
+  const config = { timeframe: '1h', strategy: { agentMode: 1, agentVeto: 0, agentExplore: 0, agentLiveSmallStart: 0, ...strategy }, risk: baseRisk, ai: { provider: 'none', failMode: 'reject' } };
   const settings = new Settings(dir, { liveTrading: mode === 'live', pairs: ['BTC/EUR'], timeframe: '1h', checkIntervalMinutes: 15, risk: baseRisk, strategy: config.strategy, ai: { provider: 'none', model: '', baseUrl: '' } });
   const stores = { paper: new Store(dir, 'paper', 500), live: new Store(dir, 'live', 500) };
   const bot = new Bot({ config, exchange: ex, settings, stores, log: quiet, brokers: { paper: new PaperBroker(ex, 0.25), live: new LiveBroker(ex) } });
+  // Standaard koopt een AI-trader die altijd wil kopen (live toegestaan, noodstop 5% zoals de stop-loss).
+  bot.getAgent = () => greedy({ stage: 'bewezen', liveCheck: { allMet: true, checks: [] }, safetyStopPct: 5 });
+  settings.setAgentLive('R', true);
   const sent = [];
   bot.notifier = { send: async (event, payload) => { sent.push({ event, ...payload }); return true; }, heartbeat: async () => null };
   return { bot, ex, sent, dir };
 }
 
+// Koopt via de echte koopweg met de AI-trader (één check, eventueel nog één met een nieuwe candle).
 async function openPosition(bot, ex) {
-  for (let n = 41; n <= 44 && !bot.store.state.positions['BTC/EUR']; n++) {
-    ex.prices = crossPrices(n);
+  for (let n = 0; n < 2 && !bot.store.state.positions['BTC/EUR']; n++) {
+    if (n) ex.prices = [...ex.prices, ex.prices.at(-1)];
     await bot.tick();
   }
   const pos = bot.store.state.positions['BTC/EUR'];
@@ -171,8 +175,7 @@ test('exchange-stop: vóór elke eigen verkoop eerst annuleren (en controleren),
   const b = setupLive();
   await openPosition(b.bot, b.ex);
   b.ex.calls.length = 0;
-  b.ex.prices = [...b.ex.prices.slice(0, -1), b.ex.prices.at(-1) * 0.97];
-  await b.bot.setRisk({ stopLossPct: 2 });
+  b.ex.prices = [...b.ex.prices.slice(0, -1), b.ex.prices.at(-1) * 0.94];
   assert.equal(await b.bot.watchPositions(), 1);
   assert.deepEqual(b.ex.calls.map((c) => c.op), ['cancel', 'create']);
   assert.match(b.bot.store.state.trades[0].exitReason, /^Stop-loss \(/);
@@ -282,8 +285,9 @@ test('exchange-stop: in paper niets bij Bitvavo; instelling uit of geen stop-los
   assert.throws(() => off.bot.settings.setRisk({ exchangeStop: 2 }), /Stop-loss ook bij Bitvavo zetten \(live\) moet tussen 0 en 1/);
 
   const none = setupLive({ risk: { stopLossPct: 0 } });
+  none.bot.getAgent = () => greedy({ stage: 'bewezen', liveCheck: { allMet: true, checks: [] }, safetyStopPct: 0 });
   await openPosition(none.bot, none.ex);
-  assert.equal(stopCalls(none.ex).length, 0, 'zonder stop-loss ook geen stop bij Bitvavo');
+  assert.equal(stopCalls(none.ex).length, 0, 'zonder noodstop ook geen stop bij Bitvavo');
 });
 
 test('saldocontrole: mist, extra en stop-mist melden, niets automatisch verhandelen; uitgevoerde stop met lege coin → afsluiten', async () => {

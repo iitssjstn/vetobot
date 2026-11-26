@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Bot } from '../src/bot.js';
+import { Bot, NO_BUYER_TEXT } from '../src/bot.js';
 import { PaperBroker } from '../src/exchange.js';
 import { activeAgent } from '../src/agents.js';
 import { Store } from '../src/store.js';
 import { Settings } from '../src/settings.js';
+import { marketIndicators } from '../src/indicators.js';
 
 const H = 3600000;
 const quiet = { info() {}, warn() {}, error() {} };
@@ -38,11 +39,11 @@ function setup(exOpts) {
   const ex = fakeExchange(down.concat([62, 64, 66, 68]), exOpts);
   const config = {
     timeframe: '1h',
-    strategy: { emaFast: 3, emaSlow: 8, rsiPeriod: 5, rsiMaxEntry: 100 },
+    strategy: {},
     risk: { stakeEur: 25, maxOpenTrades: 2, stopLossPct: 50, takeProfitPct: 50, maxDailyLossEur: 100, feePct: 0.25 },
     ai: { provider: 'none', failMode: 'reject' },
   };
-  const settings = new Settings(dir, { liveTrading: false, pairs: ['BTC/EUR'], timeframe: '1h', checkIntervalMinutes: 15, risk: { stakeEur: 25, maxOpenTrades: 2, stopLossPct: 50, takeProfitPct: 50, maxDailyLossEur: 100, feePct: 0.25 }, strategy: { emaFast: 3, emaSlow: 8, rsiPeriod: 5, rsiMaxEntry: 100 }, ai: { provider: 'none', model: '', baseUrl: '' } });
+  const settings = new Settings(dir, { liveTrading: false, pairs: ['BTC/EUR'], timeframe: '1h', checkIntervalMinutes: 15, risk: { stakeEur: 25, maxOpenTrades: 2, stopLossPct: 50, takeProfitPct: 50, maxDailyLossEur: 100, feePct: 0.25 }, strategy: {}, ai: { provider: 'none', model: '', baseUrl: '' } });
   const stores = { paper: new Store(dir, 'paper', 500), live: new Store(dir, 'live', 500) };
   const live = { mode: 'live', buy: async () => { throw new Error('geen echte orders in tests'); } };
   const bot = new Bot({
@@ -60,12 +61,36 @@ function liveBook(ex) {
   };
 }
 
-async function openPaperPosition(bot, ex) {
-  for (let n = 41; n <= 44 && !bot.store.state.positions['BTC/EUR']; n++) {
-    ex.prices = [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66, 68]).slice(0, n);
-    await bot.tick();
-  }
-  assert.ok(bot.store.state.positions['BTC/EUR'], 'paper-positie geopend');
+// Een bestaande positie zonder eigen plan, zoals de vroegere klassieke strategie die kocht (oude
+// state). Verkopen gaat via stop-loss, take-profit, trailing stop, ATR-stop, tijdslimiet en AI-winstcheck.
+async function openPaperPosition(bot, ex, pair = 'BTC/EUR') {
+  ex.prices = [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66, 68]);
+  const fill = await bot.broker.buy(pair, bot.stakeInfo().effective);
+  const candles = await ex.fetchOHLCV(pair, '1h', undefined, 100);
+  bot.store.state.balanceEur -= fill.costEur;
+  bot.store.state.positions[pair] = { pair, openedAt: new Date().toISOString(), entryPrice: fill.price, amount: fill.amount, costEur: fill.costEur,
+    entryFeeEur: fill.feeEur, reason: 'EMA fast kruist boven EMA slow (op de laatste candle)', highest: fill.price, lowest: fill.price,
+    atrAtEntry: marketIndicators(candles)?.atr ?? null };
+  bot.store.save();
+  assert.ok(bot.store.state.positions[pair], 'paper-positie geopend');
+}
+
+const agentFx = () => JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
+// Een AI-trader die altijd wil kopen (en nooit zelf wil verkopen).
+const greedyAgent = (extra = {}) => {
+  const fx = agentFx();
+  return { ...fx.agent, stage: 'getest', recipeKey: 'R', entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 },
+    exit: { ...fx.agent.exit, init: fx.agent.exit.init + 50 }, ...extra };
+};
+const agentPrices = () => [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+
+// Koopt via de echte koopweg (signaal, risicoregels, orderboek, AI-controleur, order) met een AI-trader
+// die altijd wil kopen. veto: 1 = de AI-controleur wordt gevraagd.
+async function agentBuy(bot, ex, { veto = 0, agent = greedyAgent(), prices = agentPrices() } = {}) {
+  await bot.setStrategy({ agentMode: 1, agentVeto: veto, agentExplore: 0 });
+  bot.getAgent = () => agent;
+  ex.prices = prices;
+  await bot.tick();
 }
 
 test('wisselen naar live wordt geweigerd zolang er posities open staan', async () => {
@@ -176,9 +201,11 @@ test('stop-loss 0 = uit: een grote daling sluit de positie niet', async () => {
 
 test('strategie aanpassen en paper opnieuw beginnen', async () => {
   const { bot, ex } = setup({});
-  await assert.rejects(bot.setStrategy({ emaFast: 20, emaSlow: 10, rsiPeriod: 14, rsiMaxEntry: 70 }), /kleiner/);
-  await bot.setStrategy({ emaFast: 5, emaSlow: 9, rsiPeriod: 7, rsiMaxEntry: 100 });
-  assert.equal(bot.strategy.emaFast, 5);
+  await assert.rejects(bot.setStrategy({ agentMode: 2 }), /AI-trader moet tussen/);
+  // Velden van de vroegere klassieke strategie worden genegeerd, niet bewaard.
+  await bot.setStrategy({ agentMode: 1, emaFast: 5, emaSlow: 9 });
+  assert.equal(bot.strategy.agentMode, 1);
+  assert.equal(bot.settings.strategy.emaFast, undefined);
   await openPaperPosition(bot, ex);
   await bot.resetPaper(1000);
   assert.equal(bot.store.state.balanceEur, 1000);
@@ -195,7 +222,9 @@ test('de bot stuurt meldingen bij kopen, stop-loss en een heartbeat na elke chec
     heartbeat: async (ok) => { beats.push(ok); return { ok }; },
   };
   await bot.setRisk({ stakeEur: 25, maxOpenTrades: 1, stopLossPct: 5, takeProfitPct: 0, maxDailyLossEur: 0, feePct: 0 });
-  await openPaperPosition(bot, ex);
+  await agentBuy(bot, ex);
+  assert.ok(bot.store.state.positions['BTC/EUR'], 'gekocht door de AI-trader');
+  // Koers zakt 90%: de noodstop van de AI-trader verkoopt.
   ex.fetchTicker = async () => ({ last: 10 });
   await bot.tick();
   await new Promise((r) => setImmediate(r));
@@ -209,8 +238,34 @@ test('na elke check staat er een samenvatting in het log', async () => {
   ex.prices = [...Array(40)].map((_, i) => 100 - i); // alleen daling: geen signaal
   await bot.tick();
   assert.match(bot.activity[0].message, /1 coin bekeken, geen koopsignaal, AI niet nodig/);
-  await openPaperPosition(bot, ex);
+  await agentBuy(bot, ex);
   assert.ok(bot.activity.some((a) => /1 koopsignaal/.test(a.message) && /1 gekocht/.test(a.message)));
+});
+
+test('AI-trader en strategieën uit: niets nieuws kopen (reden zichtbaar), bestaande positie wordt wel bewaakt en verkocht', async () => {
+  const { bot, ex } = setup({});
+  await bot.setRisk({ stopLossPct: 5, takeProfitPct: 0, cooldownMinutes: 0 });
+  await bot.setStrategy({ agentMode: 0, mlBandit: 0 });
+  // Ook een koers die vroeger een EMA-kruising gaf: geen aankoop meer.
+  ex.prices = [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66, 68]);
+  for (let n = 0; n < 3; n++) { ex.prices = [...ex.prices, ex.prices.at(-1) + 2]; await bot.tick(); }
+  assert.deepEqual(bot.store.state.positions, {});
+  assert.equal(bot.store.state.decisions.length, 0);
+  assert.equal(bot.pairStatus['BTC/EUR'].reason, NO_BUYER_TEXT);
+  assert.match(bot.activity.find((a) => /Strategie:/.test(a.message))?.message ?? '', /koopt niets nieuws/);
+  // Een oude positie (van de vroegere klassieke strategie) wordt gewoon bewaakt en verkocht.
+  await openPaperPosition(bot, ex);
+  assert.match(bot.store.state.positions['BTC/EUR'].reason, /EMA fast kruist/);
+  await bot.tick();
+  assert.match(bot.pairStatus['BTC/EUR'].reason, /Positie open: bewaakt/);
+  ex.fetchTicker = async () => ({ last: bot.store.state.positions['BTC/EUR'].entryPrice * 0.9 });
+  await bot.tick();
+  assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
+  assert.match(bot.store.state.trades[0].exitReason, /^Stop-loss/);
+  // Strategieën aan, maar nog niets van de leerserver: ook dat staat erbij.
+  await bot.setStrategy({ mlBandit: 1 });
+  await bot.tick();
+  assert.match(bot.pairStatus['BTC/EUR'].reason, /nog geen actieve strategie/);
 });
 
 test('dagoverzicht: cijfers van 24 uur, verstuurd ook als de AI faalt', async () => {
@@ -349,18 +404,20 @@ test('paper-slippage maakt kopen duurder en verkopen goedkoper', async () => {
   assert.ok(Math.abs(sell.price - 99.5) < 1e-9);
 });
 
-test('een herstart koopt niet opnieuw op dezelfde kruising', async () => {
+test('een herstart koopt niet opnieuw op hetzelfde signaal', async () => {
   const { bot, ex, dir, settings, stores } = setup({});
   await bot.setRisk({ ...bot.settings.risk, cooldownMinutes: 0 });
-  await openPaperPosition(bot, ex);
+  await agentBuy(bot, ex);
+  assert.ok(bot.store.state.positions['BTC/EUR']);
   await bot.closeManual('BTC/EUR');
   // Nieuwe bot op dezelfde opslag, alsof de container herstart
   const reloaded = { paper: new Store(dir, 'paper', 500), live: new Store(dir, 'live', 500) };
-  assert.ok(reloaded.paper.state.seenSignals['BTC/EUR'], 'kruising staat in het state-bestand');
+  assert.ok(reloaded.paper.state.seenSignals['BTC/EUR'], 'signaal staat in het state-bestand');
   const bot2 = new Bot({
     config: bot.config, exchange: ex, settings, stores: reloaded, log: quiet,
     brokers: { paper: new PaperBroker(ex, 0.25), live: bot.brokers.live },
   });
+  bot2.getAgent = bot.getAgent;
   await bot2.tick();
   assert.deepEqual(bot2.store.state.positions, {}, 'geen dubbele aankoop');
   void stores;
@@ -431,37 +488,17 @@ test('ATR-stop vervangt de vaste stop-loss', async () => {
   assert.match(bot.store.state.trades[0].exitReason, /ATR-stop/);
 });
 
-test('BTC-filter blokkeert altcoins als BTC daalt', async () => {
-  // De nep-exchange geeft voor elk pair dezelfde koersen, dus ook BTC daalt lang en veert kort op.
-  const run = async (btcFilter) => {
-    const { bot, ex } = setup({});
-    await bot.setStrategy({ ...bot.settings.strategy, btcFilter });
-    bot.settings.data.pairs = ['ETH/EUR'];
-    ex.prices = [...Array(120)].map((_, i) => 300 - i);
-    await bot.tick();
-    for (const extra of [180, 182, 184, 186]) { ex.prices = ex.prices.concat([extra]); await bot.tick(); }
-    return bot;
-  };
-  const without = await run(0);
-  assert.ok(without.store.state.positions['ETH/EUR'], 'zonder filter wordt er gekocht');
-  const withF = await run(1);
-  assert.equal(withF.btcTrend.up, false);
-  assert.deepEqual(withF.store.state.positions, {}, 'met filter niet');
-  assert.match(withF.pairStatus['ETH/EUR'].reason, /BTC-filter/);
-});
-
 test('alle posities bezet: signalen stil overslaan, geen AI en geen regel bij AI-signalen', async () => {
   const { bot, ex } = setup({});
   await bot.setRisk({ stakeEur: 25, maxOpenTrades: 1, cooldownMinutes: 0, stopLossPct: 0, takeProfitPct: 0 });
-  // Net gekocht en minimaal 500 candles vasthouden: blijft staan, zodat alle posities bezet blijven.
-  await bot.setStrategy({ minHoldCandles: 500 });
   bot.store.state.positions = { 'X/EUR': { pair: 'X/EUR', entryPrice: 1, amount: 1, costEur: 25, openedAt: new Date().toISOString() } };
   let aiAsked = 0;
   bot.settings.setAi({ provider: 'openai', model: 'm', baseUrl: 'http://127.0.0.1:9', failMode: 'reject' });
   bot.secrets = { get: () => { aiAsked++; return 'k'; } };
-  const seq = [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66, 68]);
-  // De kruising valt op de 43e candle; daarna is hij niet meer vers.
-  for (let n = 41; n <= 43; n++) { ex.prices = seq.slice(0, n); await bot.tick(); }
+  ex.fetchTicker = async (p) => ({ last: p === 'X/EUR' ? 1 : ex.prices.at(-1) });
+  // De AI-trader wil kopen, met de AI-controleur aan.
+  await agentBuy(bot, ex, { veto: 1 });
+  assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
   assert.equal(bot.store.state.decisions.length, 0, 'geen beslissingen');
   assert.equal(aiAsked, 0, 'AI niet gevraagd');
   assert.match(bot.pairStatus['BTC/EUR'].reason, /alle 1 posities zijn bezet/);
@@ -476,68 +513,6 @@ test('posities in coins die niet (meer) in de lijst staan worden ook bewaakt', a
   await bot.tick();
   assert.equal(bot.store.state.positions['OUD/EUR'], undefined);
   assert.match(bot.store.state.trades.find((x) => x.pair === 'OUD/EUR').exitReason, /Stop-loss/);
-});
-
-test('alleen verse kruisingen: na een herstart niet kopen op een oude kruising', async () => {
-  const { bot, ex } = setup({});
-  await bot.setRisk({ cooldownMinutes: 0 });
-  const seq = [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66, 68]);
-  // Kruising op candle 43, de bot "start" pas bij candle 44.
-  ex.prices = seq;
-  await bot.tick();
-  assert.equal(Object.keys(bot.store.state.positions).length, 0);
-  assert.doesNotMatch(bot.pairStatus['BTC/EUR'].reason, /kruist boven/);
-});
-
-test('kruisingen tussen twee checks worden niet gemist', async () => {
-  const { bot, ex } = setup({});
-  await bot.setRisk({ cooldownMinutes: 0 });
-  const seq = [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66, 68]);
-  ex.prices = seq.slice(0, 41);
-  await bot.tick();
-  // Drie candles later pas weer een check: de kruising van twee candles terug telt nog.
-  ex.prices = seq;
-  await bot.tick();
-  assert.ok(bot.store.state.positions['BTC/EUR'], 'gekocht');
-});
-
-test('niet achter de koers aan: overslaan als de koers sinds het signaal te ver is gestegen', async () => {
-  const { bot, ex } = setup({});
-  await bot.setRisk({ cooldownMinutes: 0 });
-  await bot.setStrategy({ maxChasePct: 1 });
-  const seq = [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66]);
-  ex.prices = seq.slice(0, 42);
-  await bot.tick();
-  ex.prices = seq;
-  ex.fetchTicker = async () => ({ last: 66 * 1.03 });
-  await bot.tick();
-  assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
-  assert.match(bot.pairStatus['BTC/EUR'].reason, /al 3\.00% gestegen \(max 1%\)/);
-  // Binnen de marge wel kopen
-  ex.fetchTicker = async () => ({ last: 66 * 1.005 });
-  bot.lastCandleSeen['BTC/EUR'] = null;
-  ex.prices = seq;
-  await bot.tick();
-  assert.ok(bot.store.state.positions['BTC/EUR']);
-});
-
-test('lopende candle meenemen geeft het signaal een candle eerder', async () => {
-  const run = async (useOpenCandle) => {
-    const { bot, ex } = setup({});
-    await bot.setRisk({ cooldownMinutes: 0 });
-    await bot.setStrategy({ useOpenCandle });
-    // De laatste candle loopt nog (tijdstempel van nu).
-    const seq = [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66]);
-    ex.fetchOHLCV = async (_p, _tf, _s, limit) => {
-      const end = Math.floor(Date.now() / H) * H;
-      return seq.map((c, i) => [end - (seq.length - 1 - i) * H, c, c, c, c, 1]).slice(-limit);
-    };
-    ex.fetchTicker = async () => ({ last: 66 });
-    await bot.tick();
-    return Boolean(bot.store.state.positions['BTC/EUR']);
-  };
-  assert.equal(await run(0), false, 'zonder lopende candle nog geen kruising');
-  assert.equal(await run(1), true, 'met lopende candle al wel');
 });
 
 // ---------- Snelle bewaking en AI-winstcheck ----------
@@ -672,47 +647,11 @@ test('winst herinvesteren: de grotere inzet wordt ook echt gebruikt bij kopen', 
   const { bot, ex } = setup({});
   await bot.setRisk({ stakeEur: 25, maxOpenTrades: 2, reinvestPct: 100, cooldownMinutes: 0 });
   bot.store.addTrade({ pair: 'ETH/EUR', pnlEur: 10, closedAt: new Date().toISOString() });
-  await openPaperPosition(bot, ex);
-  assert.equal(bot.store.state.positions['BTC/EUR'].costEur, 30);
+  await agentBuy(bot, ex);
+  // € 25 + € 5 herinvesteerde winst = € 30; de Risk Agent halveert die (nog weinig bewijs) → € 15, niet € 12,50.
+  assert.equal(bot.stakeInfo().effective, 30);
+  assert.equal(bot.store.state.positions['BTC/EUR'].costEur, 15);
   assert.ok(bot.activity.some((a) => /waarvan € 5,00 herinvesteerde winst/.test(a.message)));
-});
-
-test('whipsaw-bescherming: pas verkopen na bevestiging en minimale tijd in de positie', async () => {
-  const { bot, ex } = setup({});
-  await bot.setRisk({ cooldownMinutes: 0, stopLossPct: 50, takeProfitPct: 0, aiExitMinPct: 0 });
-  await bot.setStrategy({ sellConfirmCandles: 2, minHoldCandles: 3 });
-  await openPaperPosition(bot, ex);
-  const pos = bot.store.state.positions['BTC/EUR'];
-  const up = ex.prices.slice();
-  // Eén candle omlaag: EMA fast zakt onder EMA slow, maar nog niet bevestigd
-  ex.prices = up.concat([60]);
-  await bot.tick();
-  assert.ok(bot.store.state.positions['BTC/EUR'], 'na 1 candle nog niet verkopen');
-  assert.match(bot.pairStatus['BTC/EUR'].reason, /wacht op bevestiging/);
-  // Tweede candle omlaag: bevestigd, maar de positie staat pas net open
-  ex.prices = up.concat([60, 58]);
-  await bot.tick();
-  assert.ok(bot.store.state.positions['BTC/EUR'], 'te kort in de positie');
-  assert.match(bot.pairStatus['BTC/EUR'].reason, /minimaal 3 candles/);
-  // Na 3 uur (3 candles van 1 uur): nu wel verkopen
-  pos.openedAt = new Date(Date.now() - 3 * H - 1000).toISOString();
-  ex.prices = up.concat([60, 58, 57]);
-  await bot.tick();
-  assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
-  assert.match(bot.store.state.trades[0].exitReason, /Trend omlaag: EMA fast \d+ candles onder EMA slow/);
-});
-
-test('whipsaw-bescherming: herstelt de trend binnen de bevestiging, dan geen verkoop', async () => {
-  const { bot, ex } = setup({});
-  await bot.setRisk({ cooldownMinutes: 0, stopLossPct: 50, takeProfitPct: 0, aiExitMinPct: 0 });
-  await bot.setStrategy({ sellConfirmCandles: 2, minHoldCandles: 0 });
-  await openPaperPosition(bot, ex);
-  const up = ex.prices.slice();
-  ex.prices = up.concat([60]);
-  await bot.tick();
-  ex.prices = up.concat([60, 75]);
-  await bot.tick();
-  assert.ok(bot.store.state.positions['BTC/EUR'], 'dip hersteld: positie blijft');
 });
 
 test('limietorders: niet gevulde koop wordt overgeslagen, stop-loss verkoopt altijd market', async () => {
@@ -720,7 +659,7 @@ test('limietorders: niet gevulde koop wordt overgeslagen, stop-loss verkoopt alt
   await bot.setRisk({ cooldownMinutes: 0, limitOrders: 1, limitWaitSec: 5, stopLossPct: 5, takeProfitPct: 0, aiExitMinPct: 0 });
   const calls = [];
   bot.brokers.paper.buy = async (pair, stake, opts) => { calls.push(['buy', opts]); return null; };
-  for (let n = 41; n <= 44; n++) { ex.prices = [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66, 68]).slice(0, n); await bot.tick(); }
+  await agentBuy(bot, ex);
   assert.equal(Object.keys(bot.store.state.positions).length, 0);
   assert.deepEqual(calls[0], ['buy', { limit: true, waitSec: 5 }]);
   assert.ok(bot.activity.some((a) => /Limietorder niet gevuld binnen 5 sec/.test(a.message)));
@@ -734,29 +673,28 @@ test('limietorders: niet gevulde koop wordt overgeslagen, stop-loss verkoopt alt
   assert.match(bot.store.state.trades[0].exitReason, /^Stop-loss/);
 });
 
-test('AI krijgt stop, kosten, strengheid en eigen strategiegrenzen mee', async () => {
+test('AI-controleur krijgt stop, kosten en de vaste grenzen mee', async () => {
   const { bot, ex } = setup({});
   await bot.setRisk({ cooldownMinutes: 0, stopLossPct: 3, feePct: 0.25, slippagePct: 0.1, limitOrders: 0 });
-  await bot.setStrategy({ rsiMaxEntry: 80, aiStrictness: 2, adxMin: 0, volumeMult: 0, btcFilter: 0, maxChasePct: 0 });
   withAi(bot);
   aiAnswer = 'reject';
   lastAiPrompt = '';
-  const seq = [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66, 68]);
-  for (let n = 41; n <= 44; n++) { ex.prices = seq.slice(0, n); await bot.tick(); }
+  await agentBuy(bot, ex, { veto: 1 });
   assert.ok(lastAiPrompt, 'AI gevraagd');
-  assert.match(lastAiPrompt, /strengheid: soepel/);
-  assert.match(lastAiPrompt, /RSI [\d.]+ \(max\. 80:/, 'max RSI volgt de strategie');
-  assert.match(lastAiPrompt, /ADX [\d.onbekend]+ \(min\. 15:/, 'ADX volgt de strengheid');
-  assert.match(lastAiPrompt, /1R \(verlies tot stop\): 3\.00%/);
-  assert.match(lastAiPrompt, /Kosten per ronde: 0\.70% = 0\.23R/);
-  assert.match(lastAiPrompt, /Minimale verwachte winst: positief/);
-  // Met limietorders rekent hij met de maker-fee (nieuwe bot, want dit signaal is al beoordeeld)
+  assert.equal(bot.store.state.positions['BTC/EUR'], undefined, 'afgewezen');
+  assert.match(lastAiPrompt, /strengheid: normaal/);
+  assert.match(lastAiPrompt, /RSI [\d.]+ \(max\. 75:/);
+  assert.match(lastAiPrompt, /ADX [\d.onbekend]+ \(min\. 18:/);
+  // De AI-trader verkoopt zelf; alleen zijn noodstop (10%) telt als stop.
+  assert.match(lastAiPrompt, /1R \(verlies tot stop\): 10\.00%/);
+  assert.match(lastAiPrompt, /Kosten per ronde: 0\.70% = 0\.07R/);
+  assert.match(lastAiPrompt, /Minimale verwachte winst: \+0,15R/);
+  // Met limietorders rekent hij met de maker-fee.
   const b2 = setup({});
   await b2.bot.setRisk({ cooldownMinutes: 0, stopLossPct: 3, feePct: 0.25, slippagePct: 0.1, limitOrders: 1, makerFeePct: 0.15 });
-  await b2.bot.setStrategy({ maxChasePct: 0, rsiMaxEntry: 100 });
   withAi(b2.bot);
   lastAiPrompt = '';
-  for (let n = 41; n <= 44; n++) { b2.ex.prices = seq.slice(0, n); await b2.bot.tick(); }
+  await agentBuy(b2.bot, b2.ex, { veto: 1 });
   assert.match(lastAiPrompt, /Kosten per ronde: 0\.50%/);
 });
 
@@ -782,8 +720,12 @@ test('limietorders stand 2: kopen direct (market), winst nemen met limiet', asyn
   const origBuy = b.buy.bind(b), origSell = b.sell.bind(b);
   b.buy = async (pair, stake, opts) => { buys.push(opts); return origBuy(pair, stake, {}); };
   b.sell = async (pair, amount, opts) => { sells.push(opts); return origSell(pair, amount, {}); };
-  await openPaperPosition(bot, ex);
+  await agentBuy(bot, ex);
+  assert.ok(bot.store.state.positions['BTC/EUR']);
   assert.deepEqual(buys[0], {});
+  // Winst nemen (take-profit van een positie zonder eigen plan) met een limietorder.
+  delete bot.store.state.positions['BTC/EUR'];
+  await openPaperPosition(bot, ex);
   const pos = bot.store.state.positions['BTC/EUR'];
   ex.fetchTicker = async () => ({ last: pos.entryPrice * 1.03 });
   await bot.watchPositions();
@@ -804,99 +746,11 @@ test('check haalt candles van alle coins vooraf op, maximaal 8 tegelijk', async 
   assert.ok(maxActive > 1 && maxActive <= 8, `tegelijk: ${maxActive}`);
 });
 
-test('eigen model: winstkans bij het signaal, minimale kans filtert, AI krijgt de kans mee', async () => {
-  const fixture = JSON.parse(fs.readFileSync(new URL('./fixtures/ml-parity.json', import.meta.url), 'utf8'));
-  const run = async (minProb, initShift) => {
-    const { bot, ex } = setup({});
-    await bot.setRisk({ cooldownMinutes: 0 });
-    await bot.setStrategy({ mlMinProb: minProb, maxChasePct: 0 });
-    // init verschuiven = kans hoog of laag forceren
-    const model = { ...fixture.model, init: fixture.model.init + initShift, meta: { timeframe: '1h', days: 60, targetPct: 3, stopPct: 2, metrics: { base: { winRate: 40 } } } };
-    bot.getModel = () => model;
-    bot.getTeamwork = () => ({ total: 40, modelThreshold: 60, approved: { n: 20, winRate: 30, avgReturnPct: -0.2 }, rejected: { n: 20, winRate: 50, avgReturnPct: 0.3 },
-      modelYesAiNo: { n: 10, winRate: 60, avgReturnPct: 0.5 }, modelNoAiYes: { n: 0 }, bothYes: { n: 5, winRate: 60, avgReturnPct: 0.4 } });
-    bot.fb = [];
-    bot.onFeedback = (t) => bot.fb.push(t);
-    withAi(bot);
-    aiAnswer = 'approve';
-    lastAiPrompt = '';
-    const seq = [...Array(100)].map((_, i) => 100 + Math.sin(i) * 0.5).concat([...Array(160)].map((_, i) => 100 - i * 0.2), [68, 70, 72, 74]);
-    bot.reasons = [];
-    for (let n = 261; n <= seq.length; n++) { ex.prices = seq.slice(0, n); await bot.tick(); bot.reasons.push(bot.pairStatus['BTC/EUR']?.reason); }
-    return bot;
-  };
-  const high = await run(50, 10);
-  assert.ok(high.store.state.decisions[0]?.indicators?.mlProb > 99, 'kans in de beslissing');
-  assert.match(lastAiPrompt, /Winstkans volgens het model: 100%/);
-  assert.match(lastAiPrompt, /zomaar kopen won op de testperiode 40%/);
-  // Feedback: de kenmerken van het signaal gaan mee in de positie, en bij het sluiten met de uitkomst naar de trainer
-  const pos = high.store.state.positions['BTC/EUR'];
-  assert.ok(pos?.ml, 'kenmerken bewaard in de positie');
-  assert.ok(Number.isFinite(pos.ml.features.htfTrendPct));
-  assert.ok(Number.isFinite(pos.ml.features.btcRet12), 'BTC-kenmerken (BTC/EUR zelf)');
-  let fb = null;
-  high.onFeedback = (t) => { fb = t; };
-  await high.closeManual('BTC/EUR');
-  assert.equal(fb.pair, 'BTC/EUR');
-  assert.equal(fb.timeframe, '1h');
-  assert.ok(fb.prob > 99);
-  assert.ok(Number.isFinite(fb.returnPct));
-  assert.equal(fb.exitReason, 'Handmatig gesloten');
-  assert.equal(fb.ts, pos.ml.ts);
-  const low = await run(50, -10);
-  assert.equal(low.store.state.decisions.length, 0, 'onder de minimale kans: AI niet gevraagd');
-  assert.ok(low.reasons.some((r) => /eigen model geeft maar 0% winstkans \(minimaal 50%\)/.test(r ?? '')), low.reasons.join(' | '));
-  // Model voor een andere candle-tijd wordt niet gebruikt
-  const { bot } = setup({});
-  bot.getModel = () => ({ ...fixture.model, meta: { timeframe: '5m' } });
-  assert.equal(bot.store.state.decisions.length, 0);
-});
-
-test('eigen model: marktfase waarin het model verliest → AI gewaarschuwd, of overslaan', async () => {
-  const fixture = JSON.parse(fs.readFileSync(new URL('./fixtures/ml-parity.json', import.meta.url), 'utf8'));
-  const bad = { n: 500, nSelected: 120, avgReturnPct: -0.4, baseAvgReturnPct: -0.5 };
-  const run = async (skip) => {
-    const { bot, ex } = setup({});
-    await bot.setRisk({ cooldownMinutes: 0 });
-    await bot.setStrategy({ mlMinProb: 0, maxChasePct: 0, mlSkipBadRegime: skip });
-    const model = { ...fixture.model, meta: { timeframe: '1h', days: 60, targetPct: 3, stopPct: 2, metrics: { regimes: { stijgend: bad, zijwaarts: bad, dalend: bad } } } };
-    bot.getModel = () => model;
-    bot.getTeamwork = () => ({ total: 40, modelThreshold: 60, approved: { n: 20, winRate: 30, avgReturnPct: -0.2 }, rejected: { n: 20, winRate: 50, avgReturnPct: 0.3 },
-      modelYesAiNo: { n: 10, winRate: 60, avgReturnPct: 0.5 }, modelNoAiYes: { n: 0 }, bothYes: { n: 5, winRate: 60, avgReturnPct: 0.4 } });
-    bot.fb = [];
-    bot.onFeedback = (t) => bot.fb.push(t);
-    withAi(bot);
-    aiAnswer = 'approve';
-    lastAiPrompt = '';
-    const seq = [...Array(100)].map((_, i) => 100 + Math.sin(i) * 0.5).concat([...Array(160)].map((_, i) => 100 - i * 0.2), [68, 70, 72, 74]);
-    bot.reasons = [];
-    for (let n = 261; n <= seq.length; n++) { ex.prices = seq.slice(0, n); await bot.tick(); bot.reasons.push(bot.pairStatus['BTC/EUR']?.reason); }
-    return bot;
-  };
-  const warn = await run(0);
-  assert.match(lastAiPrompt, /Soort markt nu: \w+ markt\. In dit soort markt maakten de trades die het model zou nemen op de test gemiddeld -0.40% per trade \(120 trades\)\. Het model scoort in dit soort markt dus slecht/);
-  assert.ok(warn.store.state.decisions[0]?.indicators?.mlRegime);
-  // Samenwerking: het model legt uit waarom, de AI krijgt het scorebord, en het oordeel gaat terug naar de trainer
-  assert.match(lastAiPrompt, /Waarom het model dit zegt/);
-  assert.match(lastAiPrompt, /procentpunt/);
-  assert.match(lastAiPrompt, /wie had gelijk\? \(laatste 40 signalen\)/);
-  assert.match(lastAiPrompt, /Je wijst te vaak goede trades af/);
-  assert.match(lastAiPrompt, /Als het model ja zei en jij nee, had het model vaak gelijk/);
-  assert.ok(warn.store.state.decisions[0].indicators.mlWhy.length > 0);
-  const sig = warn.fb.find((t) => t.kind === 'signal');
-  assert.equal(sig.aiDecision, 'approve');
-  assert.equal(sig.pair, 'BTC/EUR');
-  assert.ok(sig.prob > 0);
-  const skip = await run(1);
-  assert.equal(skip.store.state.decisions.length, 0);
-  assert.ok(skip.reasons.some((r) => /maakte het eigen model op de test verlies \(gem\. -0\.40% per trade\)/.test(r ?? '')), skip.reasons.join(' | '));
-});
-
 test('zelflerend kiezen: strategieën op elke candle-tijd bepalen zelf de aankoop; beloning na het sluiten', async () => {
   const fixture = JSON.parse(fs.readFileSync(new URL('./fixtures/ml-parity.json', import.meta.url), 'utf8'));
   const { bot, ex } = setup({});
   await bot.setRisk({ cooldownMinutes: 0, stopLossPct: 9, takeProfitPct: 9 });
-  await bot.setStrategy({ mlMinProb: 0, maxChasePct: 0, mlBandit: 1 });
+  await bot.setStrategy({ mlBandit: 1 });
   const arm = (key, init, target, stop) => ({ key, timeframe: key.split('|')[0], targetPct: target, stopPct: stop, holdMinutes: 240, minProb: 0.5,
     model: { ...fixture.model, init: fixture.model.init + init, meta: { timeframe: key.split('|')[0], targetPct: target, stopPct: stop } } });
   // '15m' ziet altijd een kans (~100%), '1h' nooit (~0%); de bot zelf staat op 1h
@@ -904,7 +758,7 @@ test('zelflerend kiezen: strategieën op elke candle-tijd bepalen zelf de aankoo
   withAi(bot);
   aiAnswer = 'approve';
   lastAiPrompt = '';
-  // Zijwaartse koers, geen EMA-kruising: toch kopen, want een strategie ziet een kans
+  // Zijwaartse koers: toch kopen, want een strategie ziet een kans
   const seq = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
   ex.prices = seq;
   await bot.tick();
@@ -947,7 +801,7 @@ test('orderboek-check: te groot verschil bied/laat → niet kopen; info gaat naa
   const run = async (spread) => {
     const { bot, ex } = setup({});
     await bot.setRisk({ cooldownMinutes: 0, maxSpreadPct: 0.5, maxBookCostPct: 0.3 });
-    await bot.setStrategy({ mlMinProb: 0, maxChasePct: 0, mlBandit: 1 });
+    await bot.setStrategy({ mlBandit: 1 });
     bot.getArms = () => [{ key: '15m|2|1|240', timeframe: '15m', targetPct: 2, stopPct: 1, holdMinutes: 240, minProb: 0.5,
       model: { ...fixture.model, init: fixture.model.init + 10, meta: { timeframe: '15m' } } }];
     ex.fetchOrderBook = async () => {
@@ -978,7 +832,7 @@ test('zelflerend zonder bevestigde strategie: verkenning alleen schaduw, proef t
   const run = async (arms, trial = 1) => {
     const { bot, ex } = setup({});
     await bot.setRisk({ cooldownMinutes: 0 });
-    await bot.setStrategy({ mlMinProb: 0, maxChasePct: 0, mlBandit: 1, mlTrialPaper: trial });
+    await bot.setStrategy({ mlBandit: 1, mlTrialPaper: trial });
     bot.getArms = () => arms;
     bot.fb = [];
     bot.onFeedback = (t) => bot.fb.push(t);
@@ -1018,7 +872,7 @@ test('AI-trader: koopt en verkoopt zelf, uitkomst naar de trainer; live pas na b
   const run = async (agent, mode = 'paper') => {
     const { bot, ex } = setup({});
     await bot.setRisk({ cooldownMinutes: 0 });
-    await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 1 });
+    await bot.setStrategy({ agentMode: 1, agentVeto: 1 });
     if (mode === 'live') bot.settings.data.mode = 'live';
     bot.getAgent = () => agent;
     bot.fb = [];
@@ -1030,7 +884,7 @@ test('AI-trader: koopt en verkoopt zelf, uitkomst naar de trainer; live pas na b
     await bot.tick();
     return { bot, ex };
   };
-  // Koopt zonder EMA-kruising, alleen omdat hij winst verwacht
+  // Koopt alleen omdat hij winst verwacht
   const { bot, ex } = await run(mkAgent('getest', false));
   const pos = bot.store.state.positions['BTC/EUR'];
   assert.ok(pos, bot.pairStatus['BTC/EUR']?.reason);
@@ -1080,7 +934,7 @@ test('AI-trader live: kleinste inzet in het begin, en terug uit live als een eis
   const sent = [];
   bot.notifier = { send: async (event, payload) => { sent.push({ event, ...payload }); return true; }, heartbeat: async () => null };
   await bot.setRisk({ cooldownMinutes: 0, stakeEur: 20 });
-  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0 });
+  await bot.setStrategy({ agentMode: 1, agentVeto: 0 });
   bot.settings.data.mode = 'live';
   bot.liveBalance = { eurFree: 1000 };
   ex.apiKey = 'k'; ex.secret = 's'; liveBook(ex);
@@ -1110,7 +964,7 @@ test('AI-trader live op eigen risico: eigen inzet, eigen verliesgrens, stopt van
   const sent = [];
   bot.notifier = { send: async (event, payload) => { sent.push({ event, ...payload }); return true; }, heartbeat: async () => null };
   await bot.setRisk({ cooldownMinutes: 0, stakeEur: 20 });
-  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0 });
+  await bot.setStrategy({ agentMode: 1, agentVeto: 0 });
   bot.settings.data.mode = 'live';
   bot.liveBalance = { eurFree: 1000 };
   ex.apiKey = 'k'; ex.secret = 's'; liveBook(ex);
@@ -1147,7 +1001,7 @@ test('live: vrij saldo wordt binnen een ronde bijgehouden na kopen en verkopen',
   const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
   const { bot, ex } = setup({});
   await bot.setRisk({ cooldownMinutes: 0, stakeEur: 20 });
-  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0, agentLiveSmallStart: 0 });
+  await bot.setStrategy({ agentMode: 1, agentVeto: 0, agentLiveSmallStart: 0 });
   bot.settings.data.mode = 'live';
   bot.liveBalance = { eurFree: 100 };
   bot.refreshLiveBalance = async () => {};
@@ -1171,7 +1025,7 @@ test('AI-trader live: recept voor deze fase mag niet live, ander recept op eigen
   const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
   const { bot, ex } = setup({});
   await bot.setRisk({ cooldownMinutes: 0, stakeEur: 20 });
-  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0 });
+  await bot.setStrategy({ agentMode: 1, agentVeto: 0 });
   bot.settings.data.mode = 'live';
   bot.liveBalance = { eurFree: 1000 };
   ex.apiKey = 'k'; ex.secret = 's'; liveBook(ex);
@@ -1196,7 +1050,7 @@ test('AI-trader live: extra recept op eigen risico wordt gebruikt', async () => 
   const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
   const { bot, ex } = setup({});
   await bot.setRisk({ cooldownMinutes: 0, stakeEur: 20 });
-  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0 });
+  await bot.setStrategy({ agentMode: 1, agentVeto: 0 });
   bot.settings.data.mode = 'live';
   bot.liveBalance = { eurFree: 1000 };
   ex.apiKey = 'k'; ex.secret = 's'; liveBook(ex);
@@ -1218,7 +1072,7 @@ test('AI-trader kiest zelf een grotere inzet, live, nooit meer dan er vrij is', 
   const run = async (eurFree, sizing = 1) => {
     const { bot, ex } = setup({});
     await bot.setRisk({ cooldownMinutes: 0, stakeEur: 10, maxStakeEur: 30 });
-    await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0, agentSizing: sizing });
+    await bot.setStrategy({ agentMode: 1, agentVeto: 0, agentSizing: sizing });
     bot.settings.data.mode = 'live';
     bot.liveBalance = { eurFree };
     bot.refreshLiveBalance = async () => {};
@@ -1253,7 +1107,7 @@ test('goedgekeurd maar kopen mislukt: reden bewaard en in het dagoverzicht', asy
   const sent = [];
   bot.notifier = { send: async (event, payload) => { sent.push({ event, ...payload }); return true; }, heartbeat: async () => null };
   await bot.setRisk({ cooldownMinutes: 0, stakeEur: 10 });
-  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0 });
+  await bot.setStrategy({ agentMode: 1, agentVeto: 0 });
   bot.settings.data.mode = 'live';
   bot.liveBalance = { eurFree: 100 };
   bot.refreshLiveBalance = async () => {};
@@ -1280,7 +1134,7 @@ test('AI-trader live: kleinste start uit te zetten', async () => {
   const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
   const { bot, ex } = setup({});
   await bot.setRisk({ cooldownMinutes: 0, stakeEur: 20 });
-  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0, agentLiveSmallStart: 0 });
+  await bot.setStrategy({ agentMode: 1, agentVeto: 0, agentLiveSmallStart: 0 });
   bot.settings.data.mode = 'live';
   bot.liveBalance = { eurFree: 1000 };
   ex.apiKey = 'k'; ex.secret = 's'; liveBook(ex);
@@ -1301,7 +1155,7 @@ test('AI-trader: handelt alleen de coins die hij zelf gekozen heeft, ook buiten 
   const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
   const { bot, ex } = setup({});
   await bot.setRisk({ cooldownMinutes: 0 });
-  await bot.setStrategy({ maxChasePct: 0, agentMode: 1 });
+  await bot.setStrategy({ agentMode: 1 });
   const agent = { ...fx.agent, stage: 'getest', recipeKey: '15m|1|4|200|5', coins: ['ETH/EUR'], entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 } };
   bot.getAgent = () => agent;
   withAi(bot);
@@ -1318,7 +1172,7 @@ test('AI-trader zonder AI-controleur: geen AI-vraag, de AI-trader beslist zelf',
   const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
   const { bot, ex } = setup({});
   await bot.setRisk({ cooldownMinutes: 0 });
-  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0 });
+  await bot.setStrategy({ agentMode: 1, agentVeto: 0 });
   bot.getAgent = () => ({ ...fx.agent, stage: 'getest', entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 } });
   withAi(bot);
   aiAnswer = 'reject';
@@ -1336,7 +1190,7 @@ test('AI-trader-team: Strategy Agent per marktfase, Risk Agent inzet, Execution 
   const run = async (agent) => {
     const { bot, ex } = setup({});
     await bot.setRisk({ cooldownMinutes: 0 });
-    await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0 });
+    await bot.setStrategy({ agentMode: 1, agentVeto: 0 });
     bot.getAgent = () => agent;
     ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
     await bot.tick();
@@ -1376,7 +1230,7 @@ test('AI-trader-team: Strategy Agent per marktfase, Risk Agent inzet, Execution 
   const mk = async () => {
     const x = setup({});
     await x.bot.setRisk({ cooldownMinutes: 0 });
-    await x.bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0 });
+    await x.bot.setStrategy({ agentMode: 1, agentVeto: 0 });
     x.bot.getAgent = () => base;
     x.ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
     return x;
@@ -1423,9 +1277,9 @@ test('dagoverzicht met de AI-trader: geen ongeteste voorstellen, AI-trader in de
     bot.notifier = { send: async () => true, heartbeat: async () => null };
     bot.settings.setAi({ provider: 'openai', model: 'samenvatter', baseUrl: `http://127.0.0.1:${srv.address().port}/v1`, failMode: 'reject' });
     bot.secrets = { get: (n) => (n === 'aiApiKey' ? 'k' : '') };
-    // Zonder AI-trader: voorstel mag, maar het model staat erbij.
+    // Zonder AI-trader: voorstel mag (alleen bestaande instellingen; emaFast bestaat niet meer), en het model staat erbij.
     let sum = await bot.dailySummary();
-    assert.equal(sum.suggestions.length, 2);
+    assert.deepEqual(sum.suggestions.map((x) => x.key), ['stopLossPct']);
     assert.match(sum.model, /samenvatter/);
     assert.match(system, /Een voorstel is NIET getest/);
     // Met de AI-trader: geen voorstellen, wel zijn gegevens.
@@ -1450,7 +1304,7 @@ test('Verkenner: leert virtueel zonder saldo of handelsplek, nooit live', async 
   const agent = { ...fx.agent, stage: 'getest', recipeKey: 'R', coins: ['ETH/EUR'], threshold: 1e6 };
   const { bot, ex } = setup({});
   await bot.setRisk({ cooldownMinutes: 0, stakeEur: 20, maxOpenTrades: 1 });
-  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 1, agentExplore: 1 });
+  await bot.setStrategy({ agentMode: 1, agentVeto: 1, agentExplore: 1 });
   bot.getAgent = () => agent;
   bot.exploreRand = () => 0; // altijd verkennen als er iets te leren valt (voorspelbaar in de test)
   withAi(bot);
@@ -1496,7 +1350,7 @@ test('Verkenner: leert virtueel zonder saldo of handelsplek, nooit live', async 
   // Live: nooit.
   const b2 = setup({});
   await b2.bot.setRisk({ cooldownMinutes: 0 });
-  await b2.bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0, agentExplore: 1 });
+  await b2.bot.setStrategy({ agentMode: 1, agentVeto: 0, agentExplore: 1 });
   b2.bot.settings.data.mode = 'live';
   b2.bot.getAgent = () => agent;
   b2.bot.exploreRand = () => 0;
@@ -1511,7 +1365,7 @@ test('Verkenner: begrensd, herstartbaar en blokkeert geen gewone aankoop op deze
   const agent = { ...fx.agent, stage: 'getest', recipeKey: 'R', coins: ['BTC/EUR'], threshold: 1e6 };
   const { bot, ex, dir } = setup({});
   await bot.setRisk({ cooldownMinutes: 0 });
-  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0, agentExplore: 1 });
+  await bot.setStrategy({ agentMode: 1, agentVeto: 0, agentExplore: 1 });
   bot.getAgent = () => agent;
   bot.exploreRand = () => 0;
   ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
@@ -1553,7 +1407,7 @@ test('Directe bijsturing in de bot: slechte ervaringen verlagen de verwachting m
   const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
   const { bot, ex } = setup({});
   await bot.setRisk({ cooldownMinutes: 0 });
-  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0, agentExplore: 0 });
+  await bot.setStrategy({ agentMode: 1, agentVeto: 0, agentExplore: 0 });
   const agent = { ...fx.agent, stage: 'getest', recipeKey: 'R', threshold: 0.2 };
   bot.getAgent = () => agent;
   ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
@@ -1570,7 +1424,7 @@ test('AI-trader: geduld uit het recept (minimaal vasthouden en verkoopmarge)', a
   const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
   const { bot, ex } = setup({});
   await bot.setRisk({ cooldownMinutes: 0 });
-  await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0, agentExplore: 0 });
+  await bot.setStrategy({ agentMode: 1, agentVeto: 0, agentExplore: 0 });
   const base = { ...fx.agent, stage: 'getest', recipeKey: 'R', threshold: 0.2, entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 } };
   bot.getAgent = () => base;
   ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
@@ -1595,32 +1449,24 @@ test('AI-trader: geduld uit het recept (minimaal vasthouden en verkoopmarge)', a
 });
 
 // ---------- Leerdagboek en tradingveiligheid ----------
-const agentFx = () => JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
-// Een AI-trader die altijd wil kopen (en nooit zelf wil verkopen).
-const greedyAgent = (extra = {}) => {
-  const fx = agentFx();
-  return { ...fx.agent, stage: 'getest', recipeKey: 'R', entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 },
-    exit: { ...fx.agent.exit, init: fx.agent.exit.init + 50 }, ...extra };
-};
 const journalRows = (bot, sql = 'SELECT * FROM decisions ORDER BY id') => bot.journal.db.prepare(sql).all();
-const crossPrices = (n) => [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66, 68]).slice(0, n);
 
 test('leerdagboek: gekocht → beslissing gekoppeld aan de positie, bij sluiten trade met fees, slippage en MFE/MAE', async () => {
   const { bot, ex, dir } = setup({});
   await bot.setRisk({ cooldownMinutes: 0, aiExitMinPct: 0, stopLossPct: 50, takeProfitPct: 50 });
-  await openPaperPosition(bot, ex);
+  await agentBuy(bot, ex);
   assert.ok(fs.existsSync(path.join(dir, 'learning.db')), 'learning.db in de map van de gebruiker');
   const pos = bot.store.state.positions['BTC/EUR'];
   const [d] = journalRows(bot);
   assert.equal(pos.journalId, d.id);
   assert.equal(d.outcome, 'accepted');
   assert.equal(d.stage, 'approved');
-  assert.equal(d.kind, 'rules');
+  assert.equal(d.kind, 'agent');
   assert.equal(d.mode, 'paper');
-  assert.equal(d.ai, null, 'zonder AI geen AI-oordeel');
+  assert.equal(d.ai, null, 'zonder AI-controleur geen AI-oordeel');
   assert.match(d.trade_ref, /^paper:BTC\/EUR:/);
-  assert.equal(JSON.parse(d.indicators).trend, 'up');
-  assert.equal(JSON.parse(d.rule).type, 'ema-rsi');
+  assert.ok(['up', 'down'].includes(JSON.parse(d.indicators).trend), 'marktbeeld bij de beslissing');
+  assert.equal(JSON.parse(d.rule).type, 'ai-trader');
   // Koers zakt en stijgt: laagste en hoogste punt worden bijgehouden.
   const entry = pos.entryPrice;
   ex.fetchTicker = async () => ({ last: entry * 0.97 });
@@ -1652,7 +1498,7 @@ test('leerdagboek: afgewezen door risicoregels en door de AI, niet gevuld en mis
   // Daglimiet bereikt → risicoregels
   const a = setup({});
   a.bot.store.addTrade({ pair: 'ETH/EUR', closedAt: new Date().toISOString(), pnlEur: -150, pnlPct: -10 });
-  for (let n = 41; n <= 44; n++) { a.ex.prices = crossPrices(n); await a.bot.tick(); }
+  await agentBuy(a.bot, a.ex);
   const ra = journalRows(a.bot);
   assert.equal(ra.length, 1);
   assert.equal(ra[0].stage, 'risicoregels');
@@ -1663,7 +1509,7 @@ test('leerdagboek: afgewezen door risicoregels en door de AI, niet gevuld en mis
   await b.bot.setRisk({ cooldownMinutes: 0 });
   withAi(b.bot);
   aiAnswer = 'reject';
-  for (let n = 41; n <= 44; n++) { b.ex.prices = crossPrices(n); await b.bot.tick(); }
+  await agentBuy(b.bot, b.ex, { veto: 1 });
   const rb = journalRows(b.bot);
   assert.equal(rb.length, 1);
   assert.equal(rb[0].stage, 'ai-veto');
@@ -1675,12 +1521,12 @@ test('leerdagboek: afgewezen door risicoregels en door de AI, niet gevuld en mis
   const c = setup({});
   await c.bot.setRisk({ cooldownMinutes: 0, limitOrders: 1, limitWaitSec: 5 });
   c.bot.brokers.paper.buy = async () => null;
-  for (let n = 41; n <= 44; n++) { c.ex.prices = crossPrices(n); await c.bot.tick(); }
+  await agentBuy(c.bot, c.ex);
   assert.deepEqual(journalRows(c.bot).map((r) => [r.stage, r.outcome]), [['not-filled', 'rejected']]);
   // Kopen gooit → error
   const e = setup({});
   e.bot.brokers.paper.buy = async () => { throw new Error('saldo te laag'); };
-  for (let n = 41; n <= 44; n++) { e.ex.prices = crossPrices(n); await e.bot.tick(); }
+  await agentBuy(e.bot, e.ex);
   const re = journalRows(e.bot);
   assert.equal(re[0].stage, 'error');
   assert.match(re[0].reason, /saldo te laag/);
@@ -1690,7 +1536,7 @@ test('leerdagboek: afwijzingen van de AI-trader (toelating, Risk Agent), maar ni
   const run = async (agent, prep = () => {}) => {
     const { bot, ex } = setup({});
     await bot.setRisk({ cooldownMinutes: 0 });
-    await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0, agentExplore: 0, mlTrialPaper: 0 });
+    await bot.setStrategy({ agentMode: 1, agentVeto: 0, agentExplore: 0, mlTrialPaper: 0 });
     bot.getAgent = () => agent;
     prep(bot);
     ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
@@ -1719,7 +1565,7 @@ test('leerdagboek: afwijzingen van de AI-trader (toelating, Risk Agent), maar ni
   // De verkenner (paper, virtueel) als kind 'explore'; bij afloop een trade.
   const ex2 = setup({});
   await ex2.bot.setRisk({ cooldownMinutes: 0 });
-  await ex2.bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0, agentExplore: 1 });
+  await ex2.bot.setStrategy({ agentMode: 1, agentVeto: 0, agentExplore: 1 });
   ex2.bot.getAgent = () => greedyAgent({ threshold: 1e6 });
   ex2.bot.exploreRand = () => 0;
   ex2.ex.prices = [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
@@ -1736,7 +1582,7 @@ test('leerdagboek: afwijzingen van de AI-trader (toelating, Risk Agent), maar ni
 
 test('leerdagboek: de bot rekent labels uit met 5m-candles na de horizon', async () => {
   const { bot, ex } = setup({});
-  await openPaperPosition(bot, ex);
+  await agentBuy(bot, ex);
   const [d] = journalRows(bot);
   const t0 = Date.now() - 2 * 3600000;
   bot.journal.db.prepare('UPDATE decisions SET at = ?, price = 100 WHERE id = ?').run(t0, d.id);
@@ -1766,7 +1612,7 @@ test('live: zonder orderboek koopt de bot niet; paper wel (zoals voorheen)', asy
   const run = async (mode, book) => {
     const { bot, ex } = setup({});
     await bot.setRisk({ cooldownMinutes: 0, stakeEur: 20 });
-    await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 0, agentLiveSmallStart: 0 });
+    await bot.setStrategy({ agentMode: 1, agentVeto: 0, agentLiveSmallStart: 0 });
     bot.getAgent = () => greedyAgent({ stage: 'bewezen', liveCheck: { allMet: true, checks: [] } });
     bot.settings.setAgentLive('R', true);
     if (mode === 'live') {
@@ -1799,7 +1645,7 @@ test('geen dubbele orders: loopt er al een order voor de coin, dan niet kopen en
   let buys = 0;
   const buy = bot.brokers.paper.buy.bind(bot.brokers.paper);
   bot.brokers.paper.buy = async (...a) => { buys++; return buy(...a); };
-  for (let n = 41; n <= 44; n++) { ex.prices = crossPrices(n); await bot.tick(); }
+  await agentBuy(bot, ex);
   assert.equal(buys, 0);
   assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
   assert.equal(journalRows(bot)[0].stage, 'error');
@@ -1828,7 +1674,7 @@ test('harde limieten: de AI-trader en de AI kunnen maxOpenTrades, maxStakeEur, d
   const run = async (risk, prep = () => {}, ticks = 2) => {
     const { bot, ex } = setup({});
     await bot.setRisk({ cooldownMinutes: 0, ...risk });
-    await bot.setStrategy({ maxChasePct: 0, agentMode: 1, agentVeto: 1, agentExplore: 0 });
+    await bot.setStrategy({ agentMode: 1, agentVeto: 1, agentExplore: 0 });
     bot.settings.data.pairs = ['BTC/EUR', 'ETH/EUR', 'SOL/EUR', 'ADA/EUR'];
     bot.getAgent = () => greedyAgent();
     withAi(bot);

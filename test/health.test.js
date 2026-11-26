@@ -218,7 +218,7 @@ function setupBot({ mode = 'paper' } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vetobot-health-'));
   const ex = fakeEx();
   const risk = { stakeEur: 25, maxOpenTrades: 3, stopLossPct: 5, takeProfitPct: 50, maxDailyLossEur: 100, feePct: 0.25, cooldownMinutes: 0, aiExitMinPct: 0, watchSeconds: 10 };
-  const strategy = { emaFast: 3, emaSlow: 8, rsiPeriod: 5, rsiMaxEntry: 100, maxChasePct: 0 };
+  const strategy = {};
   const settings = new Settings(dir, { liveTrading: mode === 'live', pairs: ['BTC/EUR'], timeframe: '1h', checkIntervalMinutes: 1, risk, strategy, ai: { provider: 'none', model: '', baseUrl: '' } });
   const stores = { paper: new Store(dir, 'paper', 500), live: new Store(dir, 'live', 500) };
   const bot = new Bot({ config: { timeframe: '1h', strategy, risk, ai: { provider: 'none', failMode: 'reject' } }, exchange: ex, settings, stores, log: quiet,
@@ -351,7 +351,7 @@ test('planner: loopt hij niet meer, dan start de bewaking hem opnieuw (veilig: g
   const config = {
     dataDir: dir, liveTrading: false, pairs: ['BTC/EUR'], timeframe: '1h', checkIntervalMinutes: 15, paper: { startBalanceEur: 500 },
     risk: { stakeEur: 25, maxOpenTrades: 2, stopLossPct: 0, takeProfitPct: 0, maxDailyLossEur: 0, feePct: 0, cooldownMinutes: 0, slippagePct: 0 },
-    strategy: { emaFast: 3, emaSlow: 8, rsiPeriod: 5, rsiMaxEntry: 100 }, ai: { provider: 'none', model: '', baseUrl: '', failMode: 'reject', timeoutMs: 1000 },
+    strategy: {}, ai: { provider: 'none', model: '', baseUrl: '', failMode: 'reject', timeoutMs: 1000 },
   };
   const manager = new BotManager({ config, users, log: quiet, shared: new SharedMarket(ex), makePrivateExchange: () => ({}) });
   try {

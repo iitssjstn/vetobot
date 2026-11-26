@@ -17,7 +17,16 @@ orderTiming.pollMs = 0;
 
 const H = 3600000;
 const quiet = { info() {}, warn() {}, error() {} };
-const crossPrices = (n) => [...Array(40)].map((_, i) => 100 - i).concat([62, 64, 66, 68]).slice(0, n);
+const agentPrices = () => [...Array(300)].map((_, i) => 100 + Math.sin(i / 3) * 0.3);
+const agentFx = () => JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
+// Een AI-trader die altijd wil kopen en zelf nooit verkoopt, live toegestaan (recept R), met een
+// noodstop van 5% (de stop-loss van zijn positie).
+function greedyAgent() {
+  const fx = agentFx();
+  return { ...fx.agent, stage: 'bewezen', recipeKey: 'R', liveCheck: { allMet: true, checks: [] }, safetyStopPct: 5,
+    entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 }, exit: { ...fx.agent.exit, init: fx.agent.exit.init + 50 },
+    regimes: { stijgend: { key: 'R', why: 'best' }, zijwaarts: { key: 'R', why: 'best' }, dalend: { key: 'R', why: 'best' } } };
+}
 const market = (base) => ({ symbol: `${base}/EUR`, base, quote: 'EUR', spot: true, active: true, precision: { amount: 1e-8, price: 1e-5 }, limits: { amount: { min: 0.0001 } } });
 
 // Nep-Bitvavo met een saldo dat meebeweegt, die (zoals Bitvavo) coins reserveert voor open
@@ -28,7 +37,7 @@ function fakeBitvavo() {
   let n = 0;
   const ex = {
     apiKey: 'k', secret: 's', has: {}, precisionMode: 4, calls, orders,
-    prices: crossPrices(41),
+    prices: agentPrices(),
     holdings: { EUR: 1000 },
     markets: { 'BTC/EUR': market('BTC'), 'ETH/EUR': market('ETH') },
     failStop: null,
@@ -110,20 +119,22 @@ function setupLive({ mode = 'live', risk = {}, pairs = ['BTC/EUR'] } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vetobot-live-safety-'));
   const ex = fakeBitvavo();
   const baseRisk = { stakeEur: 25, maxOpenTrades: 3, stopLossPct: 5, takeProfitPct: 50, maxDailyLossEur: 100, feePct: 0.25, cooldownMinutes: 0, aiExitMinPct: 0, ...risk };
-  const strategy = { emaFast: 3, emaSlow: 8, rsiPeriod: 5, rsiMaxEntry: 100, maxChasePct: 0 };
+  const strategy = { agentMode: 1, agentVeto: 0, agentExplore: 0, agentLiveSmallStart: 0 };
   const config = { timeframe: '1h', strategy, risk: baseRisk, ai: { provider: 'none', failMode: 'reject' } };
   const settings = new Settings(dir, { liveTrading: mode === 'live', pairs, timeframe: '1h', checkIntervalMinutes: 15, risk: baseRisk, strategy, ai: { provider: 'none', model: '', baseUrl: '' } });
   const stores = { paper: new Store(dir, 'paper', 500), live: new Store(dir, 'live', 500) };
   const bot = new Bot({ config, exchange: ex, settings, stores, log: quiet, brokers: { paper: new PaperBroker(ex, 0.25), live: new LiveBroker(ex) } });
+  bot.getAgent = () => greedyAgent();
+  settings.setAgentLive('R', true);
   const sent = [];
   bot.notifier = { send: async (event, payload) => { sent.push({ event, ...payload }); return true; }, heartbeat: async () => null };
   return { bot, ex, sent, dir };
 }
 
-// Ticks tot de kruising er is (of tot de laatste candle).
-async function crossTicks(bot, ex, until = () => false) {
-  for (let n = 41; n <= 44 && !until(); n++) {
-    ex.prices = crossPrices(n);
+// Checks met elk een nieuwe candle, tot until() (hooguit vier): de AI-trader wil bij elke candle kopen.
+async function buyTicks(bot, ex, until = () => false) {
+  for (let n = 0; n < 4 && !until(); n++) {
+    if (n) ex.prices = [...ex.prices, ex.prices.at(-1)];
     await bot.tick();
   }
 }
@@ -133,7 +144,7 @@ const marketCalls = (ex, side) => ex.calls.filter((c) => c.op === 'create' && c.
 
 test('A5: stop-order deels uitgevoerd en de rest geannuleerd → hoeveelheid bijgewerkt, alleen de rest verkopen, winst over beide delen', async () => {
   const { bot, ex } = setupLive();
-  await crossTicks(bot, ex, () => bot.store.state.positions['BTC/EUR']);
+  await buyTicks(bot, ex, () => bot.store.state.positions['BTC/EUR']);
   const pos = bot.store.state.positions['BTC/EUR'];
   assert.ok(pos?.exchangeStop?.orderId);
   const amount = pos.amount;
@@ -162,7 +173,7 @@ test('A5: stop-order deels uitgevoerd en de rest geannuleerd → hoeveelheid bij
 test('A13: antwoord van Bitvavo op de stop-order verloren (order wél geplaatst) → bij de nieuwe poging de bestaande overnemen, geen tweede', async () => {
   const { bot, ex } = setupLive();
   ex.loseStopReply = true;
-  await crossTicks(bot, ex, () => bot.store.state.positions['BTC/EUR']);
+  await buyTicks(bot, ex, () => bot.store.state.positions['BTC/EUR']);
   const pos = bot.store.state.positions['BTC/EUR'];
   assert.equal(pos.exchangeStop.orderId, null);
   assert.match(pos.exchangeStop.error, /timed out/);
@@ -184,7 +195,7 @@ test('A13: antwoord van Bitvavo op de stop-order verloren (order wél geplaatst)
 test('B: saldo ophalen mislukt → geen nieuwe aankopen (reden zichtbaar); werkt het weer, dan wel', async () => {
   const { bot, ex } = setupLive();
   ex.failBalance = 'bitvavo GET https://api.bitvavo.com/v2/balance 503 Service Unavailable';
-  await crossTicks(bot, ex);
+  await buyTicks(bot, ex);
   assert.equal(bot.store.state.positions['BTC/EUR'], undefined, 'niet gekocht');
   assert.equal(marketCalls(ex, 'buy').length, 0);
   const bb = bot.safetyStatus().buyBlock;
@@ -193,10 +204,8 @@ test('B: saldo ophalen mislukt → geen nieuwe aankopen (reden zichtbaar); werkt
   const dec = bot.store.state.decisions.find((d) => d.outcome === 'blocked');
   assert.match(dec?.reason ?? '', /Live-veiligheid/);
   ex.failBalance = null;
-  bot.seenSignals['BTC/EUR'] = null;
-  ex.prices = crossPrices(41);
-  bot.lastCandleSeen['BTC/EUR'] = null;
-  await crossTicks(bot, ex, () => bot.store.state.positions['BTC/EUR']);
+  ex.prices = [...ex.prices, ex.prices.at(-1)];
+  await buyTicks(bot, ex, () => bot.store.state.positions['BTC/EUR']);
   assert.ok(bot.store.state.positions['BTC/EUR'], 'na herstel weer kopen');
   assert.deepEqual(bot.safetyStatus().buyBlock, { blocked: false, reasons: [] });
 });
@@ -204,7 +213,7 @@ test('B: saldo ophalen mislukt → geen nieuwe aankopen (reden zichtbaar); werkt
 test('B: stop van een bestaande positie mislukt → in dezelfde check geen tweede aankoop; verkopen blijft werken', async () => {
   const { bot, ex } = setupLive({ pairs: ['BTC/EUR', 'ETH/EUR'] });
   ex.failStop = 'bitvavo {"errorCode":203,"error":"Unknown error"}';
-  await crossTicks(bot, ex, () => Object.keys(bot.store.state.positions).length);
+  await buyTicks(bot, ex, () => Object.keys(bot.store.state.positions).length);
   assert.deepEqual(Object.keys(bot.store.state.positions), ['BTC/EUR'], 'alleen de eerste coin gekocht');
   assert.equal(marketCalls(ex, 'buy').length, 1);
   assert.match(bot.pairStatus['ETH/EUR'].reason, /stop-order/i);
@@ -219,7 +228,7 @@ test('B: stop van een bestaande positie mislukt → in dezelfde check geen tweed
 test('B: aankoop onzeker (antwoord verloren, coins wel gekocht) → geen nieuwe aankopen tot een saldocontrole; die volgt bij de volgende check', async () => {
   const { bot, ex, sent } = setupLive();
   ex.loseBuyReply = true;
-  await crossTicks(bot, ex, () => marketCalls(ex, 'buy').length);
+  await buyTicks(bot, ex, () => marketCalls(ex, 'buy').length);
   ex.loseBuyReply = false;
   assert.equal(bot.store.state.positions['BTC/EUR'], undefined);
   assert.ok(ex.holdings.BTC > 0, 'bij Bitvavo wel gekocht');
@@ -236,7 +245,7 @@ test('B: aankoop onzeker (antwoord verloren, coins wel gekocht) → geen nieuwe 
 
 test('B: saldocontrole vond een positie die op Bitvavo mist → geen nieuwe aankopen; mislukte saldocontrole na 10 minuten opnieuw', async () => {
   const { bot, ex } = setupLive({ pairs: ['BTC/EUR', 'ETH/EUR'] });
-  await crossTicks(bot, ex, () => bot.store.state.positions['BTC/EUR']);
+  await buyTicks(bot, ex, () => bot.store.state.positions['BTC/EUR']);
   // Gebruiker verkocht handmatig de helft op Bitvavo.
   ex.holdings.BTC /= 2;
   const r = await bot.reconcile();
@@ -256,7 +265,7 @@ test('B: saldocontrole vond een positie die op Bitvavo mist → geen nieuwe aank
 test('B: paper verandert niet — buyBlock altijd leeg, geen orders bij Bitvavo', async () => {
   const { bot, ex } = setupLive({ mode: 'paper' });
   ex.failBalance = 'kapot';
-  await crossTicks(bot, ex, () => bot.store.state.positions['BTC/EUR']);
+  await buyTicks(bot, ex, () => bot.store.state.positions['BTC/EUR']);
   assert.ok(bot.store.state.positions['BTC/EUR']);
   assert.deepEqual(bot.safetyStatus().buyBlock, { blocked: false, reasons: [] });
   assert.equal(ex.calls.length, 0);
@@ -264,7 +273,7 @@ test('B: paper verandert niet — buyBlock altijd leeg, geen orders bij Bitvavo'
 
 test('B: volgorde in live — stop-status en saldo vóór de coins: een uitgevoerde stop wordt afgesloten vóór er iets gekocht wordt', async () => {
   const { bot, ex } = setupLive();
-  await crossTicks(bot, ex, () => bot.store.state.positions['BTC/EUR']);
+  await buyTicks(bot, ex, () => bot.store.state.positions['BTC/EUR']);
   let order = [];
   const fb = ex.fetchBalance.bind(ex);
   const fo = ex.fetchOrder.bind(ex);
@@ -294,7 +303,7 @@ test('B: duidelijke weigering bij kopen (te weinig saldo) → niet onzeker, geen
   assert.equal(isOrderRefusal(new Error('Order o1 is niet gevuld (status open)')), false);
   const { bot, ex } = setupLive();
   ex.createMarketOrder = async () => { throw new ccxt.InsufficientFunds('bitvavo {"errorCode":216}'); };
-  await crossTicks(bot, ex, () => bot.store.state.buyFails?.length);
+  await buyTicks(bot, ex, () => bot.store.state.buyFails?.length);
   assert.ok(bot.store.state.buyFails?.length, 'kopen mislukte');
   assert.equal(bot.buyUncertain ?? null, null);
   assert.deepEqual(bot.safetyStatus().buyBlock, { blocked: false, reasons: [] });
@@ -317,7 +326,7 @@ test('LiveBroker.findStop: neemt alleen een stop-verkoop met dezelfde hoeveelhei
 
 test('Review: stop deels uitgevoerd vlak voor een eigen verkoop en die verkoop mislukt → verkochte deel blijft vastgelegd, later alleen de rest verkopen', async () => {
   const { bot, ex } = setupLive();
-  await crossTicks(bot, ex, () => bot.store.state.positions['BTC/EUR']);
+  await buyTicks(bot, ex, () => bot.store.state.positions['BTC/EUR']);
   const pos = bot.store.state.positions['BTC/EUR'];
   const amount = pos.amount;
   const id = pos.exchangeStop.orderId;
@@ -348,7 +357,7 @@ test('Review: stop deels uitgevoerd vlak voor een eigen verkoop en die verkoop m
 
 test('Review: market-verkoop maar deels uitgevoerd bij Bitvavo → positie houdt de rest (bewaakt, nieuwe stop), niet stil verdwenen', async () => {
   const { bot, ex } = setupLive();
-  await crossTicks(bot, ex, () => bot.store.state.positions['BTC/EUR']);
+  await buyTicks(bot, ex, () => bot.store.state.positions['BTC/EUR']);
   const pos = bot.store.state.positions['BTC/EUR'];
   const amount = pos.amount;
   const orig = ex.createMarketOrder;
@@ -379,7 +388,7 @@ test('Review: live aankoop en verkoop staan direct op schijf (niet pas aan het e
   let atOpen = null;
   let atClose = null;
   bot.onTrade = (type) => { if (type === 'open') atOpen = disk()['BTC/EUR'] ?? null; else atClose = disk(); };
-  await crossTicks(bot, ex, () => bot.store.state.positions['BTC/EUR']);
+  await buyTicks(bot, ex, () => bot.store.state.positions['BTC/EUR']);
   assert.ok(atOpen, 'positie al opgeslagen vóór de rest van de check');
   assert.ok(atOpen.exchangeStop?.orderId, 'met de stop-order');
   // Verkoop door de eigen stop-loss van de bot.

@@ -3,13 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ema, rsi } from '../src/indicators.js';
-import { evaluate } from '../src/strategy.js';
+import { ema, rsi, marketIndicators } from '../src/indicators.js';
 import { parseDecision, testConnection } from '../src/ai.js';
 import { checkEntry } from '../src/risk.js';
 import { Store } from '../src/store.js';
 
-const params = { emaFast: 3, emaSlow: 6, rsiPeriod: 5, rsiMaxEntry: 70 };
 const candlesFrom = (closes) => closes.map((c, i) => [i * 3600000, c, c, c, c, 1]);
 
 test('ema van constante reeks is die constante', () => {
@@ -23,29 +21,18 @@ test('rsi is 100 bij alleen stijgingen en 0 bij alleen dalingen', () => {
   assert.equal(rsi([7, 6, 5, 4, 3, 2, 1], 5).at(-1), 0);
 });
 
-// Loopt de reeks candle voor candle af, zoals de bot dat live doet.
-const signalsOver = (closes, p) =>
-  closes.map((_, i) => evaluate(candlesFrom(closes.slice(0, i + 1)), p).signal);
-
-test('strategie geeft koopsignaal na een daling met draai omhoog', () => {
-  const closes = [...Array(15)].map((_, i) => 30 - i).concat([16.5, 17.5, 18.5, 19.5]);
-  const signals = signalsOver(closes, { ...params, rsiMaxEntry: 100 });
-  assert.ok(signals.includes('buy'));
-  assert.ok(!signals.slice(0, 15).includes('buy'), 'geen koopsignaal tijdens de daling');
-});
-
-test('strategie geeft verkoopsignaal na een stijging met draai omlaag', () => {
-  const closes = [...Array(15)].map((_, i) => 10 + i).concat([23.5, 22.5, 21.5, 20.5]);
-  assert.ok(signalsOver(closes, params).includes('sell'));
-});
-
-test('RSI-filter blokkeert een koopsignaal bij een te hoge RSI', () => {
-  const closes = [...Array(15)].map((_, i) => 30 - i).concat([16.5, 17.5, 18.5, 19.5]);
-  assert.ok(!signalsOver(closes, { ...params, rsiMaxEntry: 1 }).includes('buy'));
-});
-
-test('strategie zonder genoeg data geeft geen signaal', () => {
-  assert.equal(evaluate(candlesFrom([1, 2, 3]), params).signal, 'none');
+test('marktbeeld (marketIndicators): EMA 12/26, RSI, verandering over 24 candles; te weinig data = null', () => {
+  assert.equal(marketIndicators(candlesFrom([1, 2, 3])), null);
+  assert.equal(marketIndicators([]), null);
+  const up = marketIndicators(candlesFrom([...Array(60)].map((_, i) => 100 + i)));
+  assert.equal(up.close, 159);
+  assert.ok(up.emaFast > up.emaSlow, 'stijgende trend');
+  assert.equal(up.rsi, 100);
+  assert.ok(Math.abs(up.change24 - ((159 - 135) / 135) * 100) < 1e-9);
+  assert.equal(up.emaTrend, null);
+  const down = marketIndicators(candlesFrom([...Array(60)].map((_, i) => 200 - i)));
+  assert.ok(down.emaFast < down.emaSlow, 'dalende trend');
+  for (const k of ['adx', 'atr', 'atrPct', 'volumeRatio']) assert.ok(k in down, k);
 });
 
 test('parseDecision leest JSON, ook met tekst eromheen', () => {
@@ -83,28 +70,6 @@ test('AI-test geeft echte fouten door in plaats van de fail-mode', async () => {
   );
 });
 
-test('kruisingen tussen twee checks worden niet gemist (lookback)', () => {
-  // Kruising omhoog en daarna nog twee candles stijging: met lookback 1 gemist, met 3 gevonden.
-  const closes = [...Array(15)].map((_, i) => 30 - i).concat([16.5, 17.5, 18.5, 19.5, 20.5, 21.5, 22.5, 23.5]);
-  const p = { ...params, rsiMaxEntry: 100 };
-  let crossIdx = -1;
-  for (let i = 10; i <= closes.length; i++) if (evaluate(candlesFrom(closes.slice(0, i)), p).signal === 'buy') { crossIdx = i; break; }
-  assert.ok(crossIdx > 0, 'er is een kruising');
-  const later = closes.slice(0, crossIdx + 2);
-  assert.ok(later.length === crossIdx + 2, 'genoeg candles na de kruising');
-  assert.notEqual(evaluate(candlesFrom(later), p, 1).signal, 'buy');
-  const r = evaluate(candlesFrom(later), p, 3);
-  assert.equal(r.signal, 'buy');
-  assert.match(r.reason, /candles? geleden/);
-  assert.ok(r.crossAt != null);
-});
-
-test('een oude kruising telt niet meer als de trend alweer omgedraaid is', () => {
-  const closes = [...Array(15)].map((_, i) => 30 - i).concat([16.5, 17.5, 18.5, 12, 9, 6]);
-  const r = evaluate(candlesFrom(closes), { ...params, rsiMaxEntry: 100 }, 10);
-  assert.notEqual(r.signal, 'buy');
-});
-
 test('ATR, ADX en volumeratio', async () => {
   const { atr, adx, volumeRatio } = await import('../src/indicators.js');
   // Elke candle exact 2 breed (high = close+1, low = close-1), geen gaten: ATR = 2
@@ -118,35 +83,6 @@ test('ATR, ADX en volumeratio', async () => {
   // Laatste candle 3× zoveel volume als het gemiddelde ervoor
   const vol = [...Array(21)].map((_, i) => [i, 1, 1, 1, 1, i === 20 ? 300 : 100]);
   assert.ok(Math.abs(volumeRatio(vol, 20) - 3) < 1e-9);
-});
-
-// Candles met realistische high/low en volume, voor de filters.
-const fullCandles = (closes, vol = () => 100) =>
-  closes.map((c, i) => [i * 3600000, i ? closes[i - 1] : c, Math.max(c, i ? closes[i - 1] : c) + 0.2, Math.min(c, i ? closes[i - 1] : c) - 0.2, c, vol(i)]);
-const signalsWith = (closes, p, vol) => closes.map((_, i) => evaluate(fullCandles(closes.slice(0, i + 1), vol), p, 1));
-
-test('trendfilter: geen aankoop als de koers onder de lange EMA ligt', () => {
-  // Lange daling, dan een korte opleving: kruising omhoog, maar nog ver onder de EMA 50.
-  const closes = [...Array(80)].map((_, i) => 200 - i * 1.5).concat([82, 84, 86, 88]);
-  const p = { ...params, rsiMaxEntry: 100 };
-  assert.ok(signalsWith(closes, { ...p, trendEma: 0 }).some((r) => r.signal === 'buy'), 'zonder filter wel een signaal');
-  const withFilter = signalsWith(closes, { ...p, trendEma: 50 });
-  assert.ok(!withFilter.some((r) => r.signal === 'buy'));
-  assert.ok(withFilter.some((r) => /trend-EMA 50/.test(r.reason)));
-});
-
-test('ADX- en volumefilter houden zwakke signalen tegen', () => {
-  const closes = [...Array(80)].map((_, i) => 200 - i * 1.5).concat([82, 84, 86, 88]);
-  const p = { ...params, rsiMaxEntry: 100 };
-  const adxBlocked = signalsWith(closes, { ...p, adxMin: 99 });
-  assert.ok(!adxBlocked.some((r) => r.signal === 'buy'));
-  assert.ok(adxBlocked.some((r) => /ADX/.test(r.reason)));
-  // Normaal volume: met volumefilter 3× geen aankoop
-  const volBlocked = signalsWith(closes, { ...p, volumeMult: 3 });
-  assert.ok(!volBlocked.some((r) => r.signal === 'buy'));
-  // Volumepiek op de kruising: wel een aankoop
-  const spike = signalsWith(closes, { ...p, volumeMult: 3 }, (i) => (i >= 80 ? 1000 : 100));
-  assert.ok(spike.some((r) => r.signal === 'buy'));
 });
 
 test('fetchPrice: laatste koers, anders midden van bied en laat, anders een fout (nooit NaN)', async () => {
