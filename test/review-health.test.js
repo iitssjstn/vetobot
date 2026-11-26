@@ -75,3 +75,16 @@ test('manager: gezondheidscontrole start de planner niet opnieuw voor een bot di
   }
 });
 
+
+test('health: probleem dat kritiek → probleem → weer kritiek wordt, wordt opnieuw gemeld', () => {
+  const c = clock();
+  const h = new Health({ now: c.now });
+  const res = (level) => ({ problems: [{ key: 'exchange', level, title: 'Bitvavo' }] });
+  assert.equal(h.alerts(res('critical')).length, 1);
+  c.add(MIN);
+  assert.equal(h.alerts(res('degraded')).length, 0);
+  c.add(MIN);
+  const again = h.alerts(res('critical'));
+  assert.equal(again.length, 1);
+  assert.equal(again[0].repeat, false);
+});

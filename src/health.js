@@ -223,6 +223,8 @@ export class Health {
       o.level = p.level;
       o.title = p.title;
       this.open.set(p.key, o);
+      // Minder erg geworden: onthouden, zodat een nieuwe verergering weer direct gemeld wordt.
+      if (o.notifiedLevel && RANK[p.level] < RANK[o.notifiedLevel]) o.notifiedLevel = p.level;
       const due = p.level === 'critical' || now - o.since >= HEALTH.degradedAfterMs;
       const worse = o.notifiedLevel && RANK[p.level] > RANK[o.notifiedLevel];
       const again = o.notifiedAt && now - o.notifiedAt >= (p.level === 'critical' ? HEALTH.renotifyCriticalMs : HEALTH.renotifyDegradedMs);
