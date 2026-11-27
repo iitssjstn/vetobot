@@ -523,6 +523,29 @@ De leerserver telt Bybit-trades mee en test de recepten ook op Bybit-koersen, **
 - **In de bot.** Op Bybit corrigeert de bot de verwachting van het model voor het kostenverschil (geleerde Bitvavo-kosten van de coin min de Bybit-kosten van de leerserver; zonder die gegevens 2 × 0,1% plus je slippage). Trainer → Live-toelating toont per recept de Bybit-cijfers naast Bitvavo, en Trainer toont de Bybit-kosten en de paper-test op Bybit. **Leert hij echt?** gaat over de beurs waarop je nu handelt: op Bybit alleen je Bybit-trades en wat de leerserver van Bybit ontving (`/learnstats?venue=bybit`).
 - **Instellingen** (via `POST /config` → `venues`): `{"venues": {"bybit": {"enabled": true, "pairs": [], "feePct": 0.1, "everyHours": 6}}}`. `enabled` standaard aan (uit = alles precies als vóór fase 3), `pairs` de coins op Bybit (leeg = de coins van de recepten), `feePct` de Bybit-fee, `everyHours` hoe vaak een recept opnieuw op Bybit getest wordt. Zonder Bybit-data verandert er niets aan `/agent.json` en `/registry`.
 
+## Bitvavo ↔ Bybit: ziet de AI-trader op Bybit hetzelfde?
+
+Op **Learning**, onder "Leert hij echt?", staat het blok **Bitvavo ↔ Bybit**. Het vergelijkt de marktdata van Bitvavo met die van de Bybit-website die je gekozen hebt (bybit.com in USDT, Bybit EU/NL in USDC), ook als je nu op Bitvavo handelt (alleen publieke data, geen keys), en zegt per coin en in totaal of het model van Bitvavo op Bybit goed genoeg is of dat apart leren voor Bybit aan te raden is.
+
+Per coin die de AI-trader of jij handelt en die op beide beurzen bestaat (X/EUR tegenover X/USDT of X/USDC), op dezelfde candles (de timeframe van het recept dat de coin handelt; de laatste 3 dagen, minstens 200 candles):
+
+| Meting | Berekening | ✅ | ⚠️ | ❌ |
+|---|---|---|---|---|
+| Prijsverschil | slot Bybit × euro per quote (de bestaande `QuoteRate`) tegenover slot Bitvavo | gemiddeld ≤ 0,5% en max ≤ 2% | ≤ 1,5% en ≤ 5% | meer |
+| Koersen bewegen gelijk | correlatie van de log-rendementen per candle op gelijke tijdstempels | ≥ 0,9 | ≥ 0,75 | lager |
+| Even onrustig | standaardafwijking rendementen Bybit ÷ Bitvavo | binnen ±25% | binnen ±50% | meer |
+| Volume | volume × koers in euro, Bybit ÷ Bitvavo | ≥ 0,1× | < 0,1× (dunne markt) | – |
+| Het model ziet hetzelfde | `computeFeatures` op beide (BTC-context van dezelfde beurs, net als de bot), per kenmerk PSI en gestandaardiseerd verschil (tijd en orderboek tellen niet mee) | PSI gemiddeld < 0,1 en elk < 0,25 | ertussen | gemiddeld ≥ 0,25 |
+| Verwachting AI-trader | `predictRaw(agent.entry, f)` op beide: verschil in gemiddelde, correlatie, hoe vaak boven je drempel (recept + bijstelling; op Bybit met de Bybit-kosten, zoals de bot rekent) | verschil ≤ 0,05 %-punt, r ≥ 0,9, even vaak (≤ 3 keer of ≤ 1,5× verschil) | verschil ≤ 0,15, r ≥ 0,7 | meer, of ≥ 3× zo vaak (minstens 10 keer) |
+| Echte trades | AI-trader-trades op Bybit tegenover Bitvavo, Welch-toets 95% (`src/stats.js`), pas vanaf 20 per beurs | niet aantoonbaar slechter | – | aantoonbaar slechter |
+
+Een coin is ❌ bij één ❌ of bij drie of meer ⚠️; ⚠️ bij één of twee ⚠️; "Nog te weinig data (x van y)" onder 100 gelijke candles. Het **totaaloordeel** is ❌ als minstens een derde van de coins ❌ is, als de echte trades op Bybit aantoonbaar slechter zijn of als de eindtest van de leerserver op Bybit-koersen (`venueStats.bybit`) verlies geeft waar Bitvavo winst gaf; ⚠️ bij een enkele afwijkende coin of een fout bij het ophalen (met de reden). Coins die maar op één beurs bestaan, staan eronder. Alle drempels staan in `VENUE_COMPARE` in `src/venuecompare.js`.
+
+- **Verzoeken.** De vergelijking draait op de achtergrond (nooit in de check, raakt de handel niet), automatisch hooguit eens per 6 uur per gebruiker (eerder als je Bybit-website, coins of de AI-trader veranderen), met de knop **Opnieuw vergelijken** hooguit eens per 15 minuten. Per ronde: per coin één candle-verzoek per beurs (hooguit 1000 candles), één keer BTC per beurs, de marktlijsten (1 uur bewaard) en de koers; coins gespreid (1,5 s ertussen). Candles worden 30 minuten gedeeld tussen gebruikers op dezelfde website. Voor 12 coins dus hooguit ongeveer 29 verzoeken per 6 uur (12 × 2 candles, 2 × BTC, 2 marktlijsten, 1 koers). Het resultaat staat in `venue-compare.json` in de map van de gebruiker.
+- **API.** `GET /api/venue-compare` (laatste resultaat) en `POST /api/venue-compare/refresh` (ingelogd).
+- **Meldingen** (meldingsoort "Leert hij echt?", alleen het admin-account): een directe Discord-melding als het totaaloordeel ❌ wordt (één keer per overgang, opnieuw pas na ✅; de toestand staat in de instellingen, dus een herstart stuurt niets dubbel) en een regel met het oordeel in het weekoverzicht op maandag.
+- **Apart leren** op Bybit-koersen zit nog niet in de leerserver. Bij ❌ is het advies: die coin(s) niet live op Bybit handelen met het Bitvavo-model.
+
 ## Live trading
 
 Doe dit pas na weken paper trading met resultaten waar je tevreden over bent.
