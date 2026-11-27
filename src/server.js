@@ -259,6 +259,7 @@ export function createApp({ users, manager, log = console }) {
       modeChangedAt: settings.data.modeChangedAt,
       // Beurs: Bitvavo (euro) of Bybit (USDT-paren; live alleen op eigen risico). Bedragen altijd in euro.
       exchange: bot.venue,
+      bybitHost: settings.bybitHost,
       exchangeLabel: bot.venueLabel,
       quote: bot.quote,
       fx: bot.venue === 'bitvavo' ? null : bot.fx?.info?.() ?? null,
@@ -522,6 +523,14 @@ export function createApp({ users, manager, log = console }) {
     bot.onScheduleChange?.();
     log.warn(`Beurs gewijzigd naar ${bot.venueLabel} door ${req.user.username}`);
     return { ok: true, exchange: bot.venue, notice: r?.notice ?? null, risk: bot.risk };
+  }));
+
+  // Welke Bybit-website (bybit.com, Bybit EU, Bybit NL): elk heeft eigen accounts en keys.
+  app.post('/api/settings/bybit-host', wrap((req) => {
+    const host = String(req.body?.host ?? '');
+    const r = manager.setBybitHost(req.user.id, host);
+    log.info(`Bybit-website gewijzigd naar ${r} door ${req.user.username}`);
+    return { ok: true, bybitHost: r };
   }));
 
   // Strategie van de admin volgen (of niet). Bestaande eigen posities blijven gewoon bewaakt.

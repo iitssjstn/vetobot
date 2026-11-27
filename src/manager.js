@@ -356,18 +356,25 @@ export class BotManager {
 
   // ---------- Beurzen ----------
   // Eén publieke verbinding per beurs voor alle gebruikers (rate limit per IP, korte cache).
-  sharedFor(venue) {
+  // Bybit: per website (bybit.com, bybit.eu, bybit.nl) een eigen verbinding; bybit.com onder de gewone sleutel.
+  #venueKey(v, host) {
+    return v === 'bybit' && host && host !== 'bybit.com' ? `${v}|${host}` : v;
+  }
+
+  sharedFor(venue, host = null) {
     const v = venueOf(venue);
-    this.sharedVenues[v] ??= createSharedMarket(v);
-    return this.sharedVenues[v];
+    const key = this.#venueKey(v, host);
+    this.sharedVenues[key] ??= createSharedMarket(v, key === v ? null : host);
+    return this.sharedVenues[key];
   }
 
   // Omrekenkoers euro per quote-munt, gedeeld door alle gebruikers op die beurs. Bitvavo: altijd 1.
-  rateFor(venue) {
+  rateFor(venue, host = null) {
     const v = venueOf(venue);
     if (v === 'bitvavo') return EUR_RATE;
-    this.rates[v] ??= new QuoteRate(this.sharedFor(v), v);
-    return this.rates[v];
+    const key = this.#venueKey(v, host);
+    this.rates[key] ??= new QuoteRate(this.sharedFor(v, host), v);
+    return this.rates[key];
   }
 
   // Alles van één gebruiker op één beurs: verbinding, brokers en eigen state-bestanden. Bitvavo precies zoals
@@ -377,9 +384,13 @@ export class BotManager {
     const v = venueOf(venue);
     if (ctx.venues[v]) return ctx.venues[v];
     const { dir, settings, secrets } = ctx;
-    const privateEx = this.makePrivateExchange(secrets, v);
-    const exchange = userExchange(this.sharedFor(v), privateEx);
-    const fx = this.rateFor(v);
+    // Bybit: de website (bybit.com / bybit.eu / bybit.nl) volgt de instelling, ook na wijzigen.
+    const host = () => settings.bybitHost;
+    const privateEx = this.makePrivateExchange(secrets, v, { hostname: host });
+    const exchange = userExchange(v === 'bybit' ? () => this.sharedFor(v, host()) : this.sharedFor(v), privateEx);
+    const fx = v === 'bybit'
+      ? new Proxy({}, { get: (_, prop) => { const r = this.rateFor(v, host()); const val = r[prop]; return typeof val === 'function' ? val.bind(r) : val; } })
+      : this.rateFor(v);
     const brokers = {
       paper: new PaperBroker(exchange, () => settings.risk.feePct, () => settings.risk.slippagePct, () => settings.risk.makerFeePct, v === 'bitvavo' ? null : fx),
       // Bybit live: echte orders in USDT, maar alleen als liveAllowedOnVenue het toestaat (eigen-risico-akkoord);
@@ -396,6 +407,23 @@ export class BotManager {
 
   // Keys van een beurs testen door het saldo op te halen (alleen lezen, nooit handelen). Voor Bitvavo op de
   // actieve beurs doet de bot dat zelf (refreshLiveBalance); dit is voor de andere gevallen (o.a. Bybit).
+  // Andere Bybit-website kiezen. Niet terwijl je live op Bybit staat of er Bybit-posities open staan
+  // (die horen bij het account op de oude website).
+  setBybitHost(userId, host) {
+    const ctx = this.contexts.get(userId);
+    if (!ctx) throw new Error('Geen bot voor deze gebruiker');
+    if (host === ctx.settings.bybitHost) return host;
+    const { bot, settings } = ctx;
+    if (bot.venue === 'bybit' && bot.mode === 'live') throw new Error('Schakel eerst terug naar paper voordat je een andere Bybit-website kiest');
+    const rt = ctx.venues?.bybit;
+    const open = rt ? Object.values(rt.stores ?? {}).flatMap((st) => Object.keys(st?.state?.positions ?? {})) : [];
+    if (open.length) throw new Error(`Er staan nog posities open op Bybit (${open.join(', ')}); sluit die eerst`);
+    settings.setBybitHost(host);
+    if (rt?.privateEx) { rt.privateEx.markets = undefined; rt.privateEx.marketsLoading = undefined; }
+    if (bot.venue === 'bybit') { bot.marketCache = null; bot.liveBalance = null; bot.lastError = null; }
+    return settings.bybitHost;
+  }
+
   async testKeys(userId, venue) {
     const ctx = this.contexts.get(userId);
     if (!ctx) throw new Error('Geen bot voor deze gebruiker');
