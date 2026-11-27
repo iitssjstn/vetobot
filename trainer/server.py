@@ -31,6 +31,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import agent as agent_mod
 import agent_search
+import learnstats
 import livecheck
 import micro as micro_mod
 import probation as probation_mod
@@ -2414,6 +2415,15 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 log(f'Modelregister: overzicht mislukt: {e}')
                 return self.send(500, {'error': f'Modelregister niet beschikbaar: {e}'})
+        if self.path == '/learnstats':
+            # Voor het blok "Leert hij echt?" van de bot: leerrondes en ontvangen trades (alleen lezen).
+            try:
+                cfg = config()
+                return self.send(200, learnstats.compute(registry().versions(500), read_json('agent_trades.json', []),
+                                                         cfg['agent']['enabled'], agent_may_learn(cfg), time.time()))
+            except Exception as e:
+                log(f'Leercontrole: telling mislukt: {e}')
+                return self.send(500, {'error': f'Telling niet beschikbaar: {e}'})
         if self.path == '/micro/latest':
             cfg = config()
             return self.send(200, {'useMicro': bool(cfg.get('useMicro')), 'features': micro_mod.latest(MICRO_DIR, cfg.get('pairs') or None)})
