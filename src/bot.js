@@ -12,7 +12,7 @@ import { MARKET_TF, RISK, LEARN, EXPLORE, explorationOutcome, rewardSummary, onl
 import { SAFETY, PUMP, exchangeStopPrice, pumpLevel, stopStatus, compareBalances, issueKey } from './safety.js';
 import path from 'node:path';
 import { Health, alertMessage } from './health.js';
-import { EUR_RATE, venueOf, venueLabel, quoteOf, toVenuePair, liveAllowedOnVenue, venueAccord, checkAccordInput, ACCORD_VENUES } from './venue.js';
+import { EUR_RATE, venueOf, venueLabel, quoteOf, toVenuePair, liveAllowedOnVenue, venueAccord, checkAccordInput, ACCORD_VENUES, venueCostShift, venueCostPct } from './venue.js';
 
 // Bedragen en koersen in Nederlandse notatie voor meldingen (€ 81,31 / € 0,3455 / −€ 0,36).
 const nl = (n, digits, min = digits) => new Intl.NumberFormat('nl-NL', { minimumFractionDigits: min, maximumFractionDigits: digits }).format(n);
@@ -1700,6 +1700,11 @@ export class Bot {
     return agent.stage === 'getest' || agent.stage === 'bewezen' || (agent.stage === 'oefenen' && this.strategy.mlTrialPaper !== 0);
   }
 
+  // Verschil in de verwachting door de kosten van deze beurs (Bitvavo: 0, zoals altijd).
+  venueCostShift(agent, pair) {
+    return this.venue === 'bitvavo' ? 0 : venueCostShift(agent, pair, this.venue, this.risk?.slippagePct ?? 0);
+  }
+
   agentLiveReady(agent) {
     return Boolean(agent?.liveCheck?.allMet) && agent.stage !== 'geblokkeerd';
   }
@@ -1881,7 +1886,7 @@ export class Bot {
       if (Date.now() - (this.pauseChatAt[pair] ?? 0) > 3600000) {
         this.pauseChatAt[pair] = Date.now();
         const x = await this.#agentFeatures(pair, main.timeframe).catch(() => null);
-        const q = x ? predictRaw(main.entry, x.f) : null;
+        const q = x ? predictRaw(main.entry, x.f) + this.venueCostShift(main, pair) : null;
         if (q != null && q > this.agentThreshold(main)) {
           talk.splice(1, 0, Bot.say('aitrader', 'AI-trader', `Ik zou kopen: ik verwacht ${pc(q)} na kosten (drempel ${pc(this.agentThreshold(main))}).`));
           this.#agentChat(pair, 'buy', 'blocked', talk);
@@ -2102,10 +2107,13 @@ export class Bot {
     if (!x || this.agentTs[key] === x.ts) return { buy: false, reason: this.agentReason?.[pair] ?? `AI-trader: wacht op de volgende ${tf}-candle` };
     this.agentTs[key] = x.ts;
     // Directe bijsturing: het model plus wat de eigen trades (ook van de verkenner) tot nu toe leerden.
-    const qModel = predictRaw(agent.entry, x.f);
+    // Op een andere beurs (Bybit) met de kosten van die beurs in plaats van die van Bitvavo (zie venueCostShift).
+    const shift = this.venueCostShift(agent, pair);
+    const qModel = predictRaw(agent.entry, x.f) + shift;
     const { q, adj } = correctedExpectation(qModel, pair, this.learnCorr);
     const nl = (v, d = 2) => `${v >= 0 ? '+' : ''}${v.toFixed(d).replace('.', ',')}`;
-    const adjTxt = Math.abs(adj) >= 0.005 ? ` (model ${nl(qModel)}%, ${adj > 0 ? 'bijgestuurd omhoog' : 'bijgestuurd omlaag'} met ${nl(adj)} door eigen trades)` : '';
+    const adjTxt = (Math.abs(adj) >= 0.005 ? ` (model ${nl(qModel)}%, ${adj > 0 ? 'bijgestuurd omhoog' : 'bijgestuurd omlaag'} met ${nl(adj)} door eigen trades)` : '') +
+      (Math.abs(shift) >= 0.005 ? ` (met de kosten van ${this.venueLabel}: ${nl(venueCostPct(agent, pair, this.venue, this.risk.slippagePct)).replace('+', '')}% per ronde)` : '');
     x.qModel = qModel;
     x.adjTxt = adjTxt;
     this.agentReason ??= {};

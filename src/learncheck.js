@@ -105,7 +105,11 @@ export function checkTraining({ trainer, now = Date.now() }) {
 }
 
 // ---------- 2. Nieuwe leerstof komt aan ----------
-export function checkFeedback({ trainer, feedback = {}, trades = [], virtualTrades = [], now = Date.now() }) {
+// Andere beurs: ' op Bybit' in de teksten. Bitvavo: leeg, zodat de teksten precies blijven zoals ze waren.
+const VENUE_LABEL = { bitvavo: 'Bitvavo', bybit: 'Bybit' };
+const venueText = (venue) => (venue && venue !== 'bitvavo' ? ` op ${VENUE_LABEL[venue] ?? venue}` : '');
+
+export function checkFeedback({ trainer, feedback = {}, trades = [], virtualTrades = [], now = Date.now(), venue = 'bitvavo' }) {
   const C = LEARN_CHECK;
   const from = now - C.feedbackWindowDays * DAY;
   const to = now - C.feedbackGraceMinutes * 60000;
@@ -122,15 +126,16 @@ export function checkFeedback({ trainer, feedback = {}, trades = [], virtualTrad
     return make('feedback', 'warn', `Niet na te gaan of je trades aankomen: ${why}. Is de leerserver bijgewerkt?`, 'Werk de leerserver bij (docker compose pull vetobot-trainer).');
   }
   const failing = failingH != null ? ` Versturen mislukt nu (${feedback.error}); de bot probeert het opnieuw.` : '';
-  const recv = `De leerserver ontving er ${got.recent ?? 0} in de laatste ${C.feedbackWindowDays} dagen (alle bots samen; laatste ${ago(got.ageHours)}).`;
+  const on = venueText(venue);
+  const recv = `De leerserver ontving er ${got.recent ?? 0}${on} in de laatste ${C.feedbackWindowDays} dagen (alle bots samen; laatste ${ago(got.ageHours)}).`;
   if (!mine) {
-    return nodata('feedback', 0, 1, `Je bot sloot de laatste ${C.feedbackWindowDays} dagen geen trades van de AI-trader, dus er was niets te versturen. ${recv}${failing}`);
+    return nodata('feedback', 0, 1, `Je bot sloot de laatste ${C.feedbackWindowDays} dagen geen trades van de AI-trader${on}, dus er was niets te versturen. ${recv}${failing}`);
   }
   if (!(got.recent > 0)) {
-    return make('feedback', 'bad', `Je bot sloot ${plural(mine, 'trade', 'trades')} van de AI-trader in de laatste ${C.feedbackWindowDays} dagen, maar de leerserver ontving niets nieuws (laatste ${ago(got.ageHours)}).${failing}`,
+    return make('feedback', 'bad', `Je bot sloot ${plural(mine, 'trade', 'trades')} van de AI-trader${on} in de laatste ${C.feedbackWindowDays} dagen, maar de leerserver ontving niets nieuws (laatste ${ago(got.ageHours)}).${failing}`,
       'Kijk bij Trainer → Leerserver of de feedback binnenkomt; staan er trades in de wachtrij, dan lukt het versturen niet.');
   }
-  return make('feedback', failing ? 'warn' : 'ok', `Je bot sloot ${plural(mine, 'trade', 'trades')} van de AI-trader in de laatste ${C.feedbackWindowDays} dagen. ${recv}${failing}`);
+  return make('feedback', failing ? 'warn' : 'ok', `Je bot sloot ${plural(mine, 'trade', 'trades')} van de AI-trader${on} in de laatste ${C.feedbackWindowDays} dagen. ${recv}${failing}`);
 }
 
 // ---------- 3. Nieuwe versies zijn aantoonbaar beter ----------
@@ -324,7 +329,15 @@ export function evaluate(input) {
   const now = input.now ?? Date.now();
   const x = { ...input, now };
   const checks = [checkTraining(x), checkFeedback(x), checkVersions(x), checkPractice(x), checkTrend(x), checkError(x)];
-  return { at: new Date(now).toISOString(), checks, verdict: verdict(checks), thresholds: LEARN_CHECK };
+  const out = { at: new Date(now).toISOString(), checks, verdict: verdict(checks), thresholds: LEARN_CHECK };
+  // Andere beurs: welke beurs, en wat er per beurs telt (Bitvavo: precies als vroeger, zonder deze velden).
+  if (input.venue && input.venue !== 'bitvavo') {
+    const label = VENUE_LABEL[input.venue] ?? input.venue;
+    out.venue = input.venue;
+    out.venueNote = `Je handelt nu op ${label}. Trades, praktijk, trend en voorspelling gaan hier alleen over je trades op ${label}; ` +
+      `de leerrondes en modelversies zijn die van de leerserver (getraind en gekozen op Bitvavo, ook op ${label}-koersen getest).`;
+  }
+  return out;
 }
 
 // ---------- meldingen ----------

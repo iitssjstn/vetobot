@@ -331,7 +331,10 @@ export function createApp({ users, manager, log = console }) {
           recipes: [...new Map(parts.map((p) => [p.recipeKey, { recipe: p.recipeKey, stage: p.stage, extra: Boolean(p.extra), stale: Boolean(p.stale), ready: bot.agentLiveReady(p), approved: approved.includes(p.recipeKey),
             riskyAllowed: bot.agentRiskyStage(p),
             risky: risky[p.recipeKey] ? { ...risky[p.recipeKey], lossEur: +bot.agentRiskyLoss(p.recipeKey).pnlEur.toFixed(2), trades: bot.agentRiskyLoss(p.recipeKey).trades } : null,
-            checks: p.liveCheck?.checks ?? [] }])).values()], smallStart: Number(bot.strategy.agentLiveSmallStart ?? 1) === 1, sizing: bot.sizingSummary(),
+            checks: p.liveCheck?.checks ?? [],
+            // Op een andere beurs (Bybit): de cijfers van de leerserver voor die beurs, naast die van Bitvavo.
+            ...(bot.venue !== 'bitvavo' ? { venue: { id: bot.venue, label: bot.venueLabel, stats: p.venueStats?.[bot.venue] ?? null,
+              costPct: p.venueCosts?.[bot.venue]?.costPct ?? null, bitvavoCostPct: p.costPct ?? null, checks: p.venueLiveCheck?.[bot.venue]?.checks ?? [] } } : {}) }])).values()], smallStart: Number(bot.strategy.agentLiveSmallStart ?? 1) === 1, sizing: bot.sizingSummary(),
           missingLive: missing.map((k) => ({ recipe: k, risky: Boolean(risky?.[k]) })) };
       })(),
       // Live-veiligheid: stop-orders bij Bitvavo en de laatste saldocontrole (licht: geen API-verzoeken).

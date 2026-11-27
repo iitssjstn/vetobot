@@ -92,8 +92,11 @@ def fetch_range(pair, timeframe, start, end):
 SAVE_EVERY_S = 30 * 60  # koersopslag met nieuwe candles hooguit eens per half uur wegschrijven
 
 
-def fetch_candles(pair, timeframe, days, cache_dir=None, now_ms=None, fetch=fetch_range, log=None):
+def fetch_candles(pair, timeframe, days, cache_dir=None, now_ms=None, fetch=None, log=None, venue='bitvavo'):
     """Candles van de afgelopen `days` dagen, oud -> nieuw, alleen gesloten candles.
+
+    venue: 'bitvavo' (standaard, zoals altijd) of 'bybit' (publieke API van Bybit, X/USDT). Geef voor
+    Bybit een eigen cache_dir (venues.data_dir), zodat de bestanden van Bitvavo nooit botsen.
 
     Met cache_dir worden de koersen bewaard: een volgende keer worden alleen de nieuwe candles
     opgehaald, en als je meer dagen wilt alleen het ontbrekende oudere stuk. Zo groeit de
@@ -101,6 +104,12 @@ def fetch_candles(pair, timeframe, days, cache_dir=None, now_ms=None, fetch=fetc
     (coin is nieuwer, of Bitvavo bewaart niet zo ver terug), dan onthouden we dat en vragen we
     het niet elke keer opnieuw.
     """
+    if fetch is None:
+        if venue == 'bybit':
+            import venues
+            fetch = venues.bybit_fetch_range
+        else:
+            fetch = fetch_range
     step = TF_MS[timeframe]
     now = now_ms or int(time.time() * 1000)
     start = now - int(days) * 86_400_000

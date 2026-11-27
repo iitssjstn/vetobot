@@ -295,7 +295,7 @@ test('wisselen naar Bybit: eigen stores, USDT-paren, euro-waarde, Bitvavo-geschi
   m2.stopAll();
 });
 
-test('live op Bybit geblokkeerd in de bot; geen echte order en geen feedback naar de leerserver', async () => {
+test('live op Bybit geblokkeerd in de bot; geen echte order; feedback met venue bybit', async () => {
   const { admin, manager } = setup();
   const { bot } = manager.ensure(admin);
   await bot.switchVenue('bybit');
@@ -303,9 +303,10 @@ test('live op Bybit geblokkeerd in de bot; geen echte order en geen feedback naa
   assert.equal(bot.mode, 'paper');
   await assert.rejects(bot.refreshLiveBalance(), LIVE_TEXT);
   await assert.rejects(bot.brokers.live.buy('BTC/USDT', 10), LIVE_TEXT);
-  // Trades van een Bybit-bot gaan niet naar de leerserver.
+  // Fase 3: trades van een Bybit-bot gaan wel naar de leerserver, gemarkeerd met venue 'bybit' (apart bewaard).
   bot.onFeedback({ kind: 'agentTrade', pair: 'SOL/USDT', pct: 1 });
-  assert.equal(manager.feedbackQueue.length, 0);
+  assert.equal(manager.feedbackQueue.length, 1);
+  assert.equal(manager.feedbackQueue[0].venue, 'bybit');
   // Orderboek-kenmerken (van Bitvavo) niet gebruiken op Bybit.
   manager.ml.micro = { features: { 'SOL/USDT': { x: 1 }, 'SOL/EUR': { x: 1 } }, at: Date.now() };
   assert.equal(bot.getMicro('SOL/USDT'), null);
@@ -315,7 +316,8 @@ test('live op Bybit geblokkeerd in de bot; geen echte order en geen feedback naa
   await bot.switchVenue('bitvavo');
   assert.deepEqual(bot.getAgent().coins, ['SOL/EUR']);
   bot.onFeedback({ kind: 'agentTrade', pair: 'SOL/EUR', pct: 1 });
-  assert.equal(manager.feedbackQueue.length, 1, 'Bitvavo stuurt gewoon feedback');
+  assert.equal(manager.feedbackQueue.length, 2, 'Bitvavo stuurt gewoon feedback');
+  assert.equal('venue' in manager.feedbackQueue[1], false, 'Bitvavo-feedback zonder venue, zoals altijd');
   // Live op Bitvavo, dan niet naar Bybit wisselen.
   bot.settings.setMode('live');
   await assert.rejects(bot.switchVenue('bybit'), LIVE_TEXT);
