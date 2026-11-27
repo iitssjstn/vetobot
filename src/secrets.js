@@ -13,7 +13,8 @@ import path from 'node:path';
 // Wie root is op de server kan bij beide bestanden; dat is bij elke opslag op disk zo.
 
 // aiApiKey hoort bij AI-model 1, aiApiKey2 t/m aiApiKey5 bij de back-ups.
-export const SECRET_NAMES = ['bitvavoApiKey', 'bitvavoApiSecret', 'aiApiKey', 'aiApiKey2', 'aiApiKey3', 'aiApiKey4', 'aiApiKey5',
+// bybitApiKey/bybitApiSecret: fase 1 alleen om de keys te testen (saldo ophalen), nog niet voor orders.
+export const SECRET_NAMES = ['bitvavoApiKey', 'bitvavoApiSecret', 'bybitApiKey', 'bybitApiSecret', 'aiApiKey', 'aiApiKey2', 'aiApiKey3', 'aiApiKey4', 'aiApiKey5',
   'discordWebhook', 'heartbeatUrl', 'trainerUrl', 'trainerToken'];
 
 // Extra controle voor secrets die een URL zijn, zodat een typfout direct opvalt.

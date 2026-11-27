@@ -93,7 +93,7 @@ export class Health {
   exchangeFailed(err) {
     this.s.exchangeErrorAt = this.now();
     this.s.consecutiveExchangeErrors++;
-    this.error('Bitvavo', err);
+    this.error(this.venueName?.() ?? 'Bitvavo', err);
   }
 
   error(where, err) {
