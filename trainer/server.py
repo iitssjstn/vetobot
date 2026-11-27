@@ -40,6 +40,8 @@ import stats
 import search as searcher
 import thoughts
 import train as trainer
+import venue_eval
+import venues
 
 DATA = os.environ.get('DATA_DIR', '/data')
 PORT = int(os.environ.get('PORT', '8787'))
@@ -86,7 +88,10 @@ DEFAULTS = {'timeframe': '5m', 'days': 60, 'targetPct': 3.0, 'stopPct': 2.0, 'ho
             'micro': {'enabled': True}, 'useMicro': False,
             # De AI-trader: leert zelf wanneer kopen en verkopen (zie agent.py). Draait doorlopend.
             'agent': {'enabled': True, 'timeframes': [], 'safetyStopPct': 10, 'pauseMinutes': 1, 'coinPool': 'top', 'maxOpen': 2,
-                      'hours': None, **PROMOTE_DEFAULTS}}
+                      'hours': None, **PROMOTE_DEFAULTS},
+            # Andere beurzen (fase 3): Bybit-trades tellen apart mee en de actieve recepten worden ook op
+            # koersen van Bybit getest (zie venues.py en venue_eval.py). Bitvavo verandert er niet door.
+            'venues': {'bybit': dict(venues.DEFAULT_CFG)}}
 # Grenzen voor de poortwachter en de regel voor opnieuw trainen.
 PROMOTE_LIMITS = {'promoteMinGainPct': (0, 100), 'promoteMinRounds': (1, 6), 'promoteMaxDdFactor': (1, 5),
                   'retrainTolerancePct': (0, 50), 'retestHours': (0, 168), 'retestTrades': (1, 1000),
@@ -184,6 +189,7 @@ def config():
     cfg['search'] = {**DEFAULTS['search'], **(saved.get('search') or {})}
     cfg['micro'] = {**DEFAULTS['micro'], **(saved.get('micro') or {})}
     cfg['agent'] = {**DEFAULTS['agent'], **(saved.get('agent') or {})}
+    cfg['venues'] = {v: {**venues.DEFAULT_CFG, **((saved.get('venues') or {}).get(v) or {})} for v in venues.OTHER}
     return cfg
 
 
@@ -278,6 +284,8 @@ def validate_config(body):
             if not lo <= v <= hi:
                 raise ValueError(f'{k} moet tussen {lo} en {hi} liggen')
             cfg['agent'][k] = int(v) if isinstance(PROMOTE_DEFAULTS[k], int) else v
+    if isinstance(body.get('venues'), dict):
+        cfg['venues'] = venues.validate(body['venues'], cfg['venues'])
     if isinstance(body.get('micro'), dict):
         cfg['micro'] = {'enabled': bool(body['micro'].get('enabled', cfg['micro']['enabled']))}
     # Zelf andere strategie-instellingen gekozen: dan is het niet meer de strategie van de zoeker.
@@ -382,6 +390,15 @@ def add_feedback(trades):
     """Echte trades van de bot opslaan. Dubbele (zelfde coin, timeframe en tijdstip) tellen één keer.
     Items met kind 'signal' zijn oordelen van de AI over een signaal (geen trade)."""
     items = trades if isinstance(trades, list) else []
+    # Andere beurs (venue 'bybit'): alleen de trades van de AI-trader, in een eigen bestand. Strategie-,
+    # signaal- en modelfeedback van een andere beurs gaan niet in de Bitvavo-data (dat leren blijft Bitvavo).
+    other = [t for t in items if isinstance(t, dict) and venues.venue_of(t.get('venue')) != venues.DEFAULT]
+    if other:
+        items = [t for t in items if not (isinstance(t, dict) and venues.venue_of(t.get('venue')) != venues.DEFAULT)]
+        for v in venues.OTHER:
+            ag_v = [t for t in other if t.get('kind') == 'agentTrade' and t.get('venue') == v]
+            if ag_v:
+                add_agent_trades(ag_v, venue=v)
     ag = [t for t in items if isinstance(t, dict) and t.get('kind') == 'agentTrade']
     if ag:
         add_agent_trades(ag)
@@ -825,12 +842,20 @@ def _p75(xs):
     return xs[min(len(xs) - 1, int(round(0.75 * (len(xs) - 1))))]
 
 
-def cost_table(cfg):
+def load_agent_trades(venue=venues.DEFAULT):
+    """Trades van de AI-trader op één beurs (oud -> nieuw). Bitvavo: agent_trades.json zoals altijd
+    (rijen zonder 'venue' zijn Bitvavo); een andere beurs heeft een eigen bestand."""
+    return venues.rows_of(read_json(venues.trades_file(venue), []), venue)
+
+
+def cost_table(cfg, venue=venues.DEFAULT):
     """Werkelijke kosten per ronde (kopen + verkopen, %) per coin, gemeten door de bot: fees plus
     de afwijking van de koers. Voorzichtig: het 75e percentiel van de laatste 30 trades.
+    Per beurs: alleen de trades van die beurs; zonder genoeg metingen Bitvavo de ingestelde kosten,
+    Bybit 2 x de Bybit-fee plus de slippage (zie venues.base_cost).
     Geeft (kosten per coin, uitleg per coin, kosten voor coins zonder eigen metingen)."""
-    rows = [t for t in read_json('agent_trades.json', []) if not t.get('virtual') and isinstance(t.get('costPct'), (int, float))]
-    base = float(cfg['costPct'])
+    rows = [t for t in load_agent_trades(venue) if not t.get('virtual') and isinstance(t.get('costPct'), (int, float))]
+    base = venues.base_cost(cfg, venue)
     default = _p75([t['costPct'] for t in rows[-200:]]) if len(rows) >= COST_MIN_ALL else base
     per, info = {}, {}
     for pair in sorted({t['pair'] for t in rows if t.get('pair')}):
@@ -847,7 +872,7 @@ def agent_extra(tf):
     (kenmerken, resultaat %, instaptijd, sluitingstijd, gewicht). train_agent gebruikt alleen trades
     die volledig vóór de validatie zijn afgesloten; virtuele voorbeelden tellen minder zwaar."""
     out = []
-    for t in read_json('agent_trades.json', []):
+    for t in load_agent_trades():
         if t.get('timeframe') != tf or not isinstance(t.get('features'), dict):
             continue
         try:
@@ -875,8 +900,14 @@ def _float_or_none(v):
         return None
 
 
-def add_agent_trades(items):
-    """Uitkomsten van echte trades van de AI-trader: telt mee voor 'bewezen' en om van te leren."""
+def add_agent_trades(items, venue=venues.DEFAULT):
+    """Uitkomsten van echte trades van de AI-trader: telt mee voor 'bewezen' en om van te leren.
+    Een andere beurs (venue 'bybit'): in een eigen bestand, met 'venue' en de coin als X/EUR (de naam op
+    de beurs in 'venuePair'); telt alleen mee voor de cijfers van die beurs, niet voor Bitvavo
+    (geen leervoorbeelden, geen tellingen in agents.json, geen proefperiode)."""
+    venue = venues.venue_of(venue)
+    if venue != venues.DEFAULT:
+        return _add_venue_trades(items, venue)
     clean = []
     for t in items:
         try:
@@ -920,6 +951,47 @@ def add_agent_trades(items):
     except Exception as e:  # de feedback mag nooit mislukken door de proef
         log(f'Modelregister: proefperiode controleren mislukt: {e}')
     return len(clean)
+
+
+def _add_venue_trades(items, venue):
+    clean = []
+    for t in items:
+        try:
+            row = {'venue': venue, 'timeframe': str(t['timeframe']), 'recipe': str(t.get('recipe') or ''), 'pct': float(t['pct']),
+                   'version': str(t.get('version') or ''), 'mode': str(t.get('mode') or ''),
+                   'pair': venues.to_base_pair(str(t.get('pair') or '')), 'venuePair': str(t.get('pair') or '')[:20],
+                   'at': datetime.now().isoformat(timespec='seconds'),
+                   'entryTs': _int_or_none(t.get('entryTs')), 'openedAt': str(t.get('openedAt') or ''), 'closedAt': str(t.get('closedAt') or ''),
+                   'marketRegime': t.get('marketRegime') if t.get('marketRegime') in agent_search.REGIMES else None,
+                   'costPct': _float_or_none(t.get('costPct')), 'explore': bool(t.get('explore') or t.get('virtual')),
+                   'virtual': bool(t.get('virtual')), 'expectedPct': _float_or_none(t.get('expectedPct'))}
+        except (KeyError, TypeError, ValueError):
+            continue
+        if math.isfinite(row['pct']):
+            clean.append(row)
+    if not clean:
+        return 0
+    with feedback_lock:
+        rows = (read_json(venues.trades_file(venue), []) + clean)[-5000:]
+        write_json(venues.trades_file(venue), rows)
+    real = [t for t in clean if not t['explore']]
+    if real:
+        log(f'{len(real)} echte trade(s) van de AI-trader op {venues.label(venue)} ontvangen')
+    return len(clean)
+
+
+def venue_live(venue):
+    """Per recept het aantal echte trades, de som en het aantal met winst op een andere beurs
+    (zoals data['live'] voor Bitvavo, maar uit het eigen bestand)."""
+    out = {}
+    for t in load_agent_trades(venue):
+        if t.get('explore'):
+            continue
+        lv = out.setdefault(t.get('recipe') or t.get('timeframe'), {'n': 0, 'sum': 0.0, 'wins': 0})
+        lv['n'] += 1
+        lv['sum'] += t['pct']
+        lv['wins'] += t['pct'] > 0
+    return out
 
 
 def agent_pairs(cfg):
@@ -967,7 +1039,7 @@ def retest_rule(cfg, trades=None):
     a = cfg.get('agent') or {}
     hours = float(a.get('retestHours') if a.get('retestHours') is not None else PROMOTE_DEFAULTS['retestHours'])
     need = int(a.get('retestTrades') if a.get('retestTrades') is not None else PROMOTE_DEFAULTS['retestTrades'])
-    rows = read_json('agent_trades.json', []) if trades is None else trades
+    rows = load_agent_trades() if trades is None else trades
     times = {}
     for t in rows:
         ts = _iso_ts(t.get('at'))
@@ -1665,7 +1737,7 @@ def registry_practice(reg, versions, trades=None):
     """Praktijkresultaten per gepromote (en de actieve) versie: de echte trades met het recept van die
     versie, zolang die versie de actieve was (van promotie of terugzetten tot de volgende). Voegt
     'practice' toe aan die versies (zie probation.practice)."""
-    by_recipe = probation_mod.real_trades(read_json('agent_trades.json', []) if trades is None else trades)
+    by_recipe = probation_mod.real_trades(load_agent_trades() if trades is None else trades)
     acts = reg.activations()
     windows = {}
     for i, (at, v, key, _) in enumerate(acts):
@@ -1682,6 +1754,7 @@ def registry_info():
     out = reg.summary(200, thresholds=promote_thresholds())
     _safe(lambda: registry_practice(reg, out['versions']), 'praktijkresultaten berekenen')
     out['cooldowns'] = _safe(lambda: active_cooldowns(reg), 'afkoelperiodes lezen', {}) or {}
+    _safe(lambda: add_registry_venues(out), 'cijfers per beurs toevoegen')
     # Versies vastgelegd vóór het portefeuille-rendement bewaard werd: aanvullen uit de laatste ronde van
     # dat recept, alleen voor het startpunt (dat is precies die ronde).
     try:
@@ -1703,6 +1776,26 @@ def registry_info():
                 m['test'] = _part_metrics(last['test'])
     except Exception as e:
         log(f'Modelregister: aanvullen mislukt: {e}')
+    return out
+
+
+def add_registry_venues(out, cfg=None):
+    """/registry: per beurs (die aan staat) de cijfers van de actieve recepten (out['venueStats']) en bij de
+    versies van die recepten (v['venueStats']), alleen voor het model dat nu in agent.json staat."""
+    cfg = cfg or config()
+    pub = read_json('agent.json', None)
+    keys = {p.get('recipeKey'): (p.get('meta') or {}).get('trainedAt') for p in agent_parts(pub) if p.get('recipeKey')}
+    for v in venues.OTHER:
+        if not venues_enabled(cfg, v) or not keys or not venue_has_data(v):
+            continue
+        stats = read_json(VENUE_STATS, {})
+        live = venue_live(v)
+        per = {k: venue_stats_for(k, v, stats, live) for k in keys}
+        out.setdefault('venueStats', {})[v] = per
+        for ver in out.get('versions') or []:
+            k = ver.get('publishedKey') or ver.get('recipeKey')
+            if k in per and (ver.get('active') or ver.get('publishedKey') == k):
+                ver.setdefault('venueStats', {})[v] = per[k]
     return out
 
 
@@ -1862,7 +1955,7 @@ def _check_probation(now=None):
     now = now or time.time()
     since = probation_mod.ts_of(p.get('since'))
     key = p.get('recipeKey')
-    rows = probation_mod.trades_in(probation_mod.real_trades(read_json('agent_trades.json', [])), key, since or 0)
+    rows = probation_mod.trades_in(probation_mod.real_trades(load_agent_trades()), key, since or 0)
     ev = probation_mod.evaluate([t['pct'] for t in rows], p.get('expectedPct'), need, conf, since, now)
     upd = {**p, 'trades': ev['trades'], 'avgPct': ev['avgPct'], 'upperPct': ev['upperPct'], 'need': need}
     if not ev['decided']:
@@ -1934,15 +2027,15 @@ def registry_unpin():
     return 200, {'ok': True, 'pinned': None, 'was': was}
 
 
-def paper_rows(key=None):
-    """Paper-trades van de AI-trader (oud -> nieuw), eventueel alleen van één recept."""
-    return [t for t in read_json('agent_trades.json', []) if t.get('mode') == 'paper' and not t.get('explore')
+def paper_rows(key=None, venue=venues.DEFAULT):
+    """Paper-trades van de AI-trader (oud -> nieuw) op één beurs, eventueel alleen van één recept."""
+    return [t for t in load_agent_trades(venue) if t.get('mode') == 'paper' and not t.get('explore')
             and (key is None or t.get('recipe') == key)]
 
 
-def live_check(key, entry, assumed_cost=None):
-    """De eisen voor live voor één recept (zie livecheck.py)."""
-    return livecheck.check(paper_rows(key), agent_search.status(entry) if entry else 'onbekend',
+def live_check(key, entry, assumed_cost=None, venue=venues.DEFAULT):
+    """De eisen voor live voor één recept op één beurs (zie livecheck.py): alleen de paper-trades van die beurs."""
+    return livecheck.check(paper_rows(key, venue), agent_search.status(entry) if entry else 'onbekend',
                            slots=int(config()['agent'].get('maxOpen') or 2), assumed_cost=assumed_cost)
 
 
@@ -1974,25 +2067,170 @@ def agent_stage(entry, lc):
     return 'getest' if st in ('betrouwbaar', 'veelbelovend') else 'oefenen'
 
 
-def fill_trade_market(cfg):
-    """Vult bij de echte trades in wat de markt deed tijdens de trade (voor 'beter dan de markt')."""
-    rows = read_json('agent_trades.json', [])
+def fill_trade_market(cfg, venue=venues.DEFAULT):
+    """Vult bij de echte trades in wat de markt deed tijdens de trade (voor 'beter dan de markt').
+    Per beurs met de koersen van die beurs (Bybit: candles-bybit/, X/USDT)."""
+    venue = venues.venue_of(venue)
+    file = venues.trades_file(venue)
+    rows = read_json(file, [])
     todo = [r for r in rows if r.get('mkt') is None and r.get('closedAt')]
     if not todo:
         return 0
-    cache = os.path.join(DATA, 'candles')
+    cache = venues.data_dir(DATA, 'candles', venue)
     candles = {}
-    for pair in agent_pairs(cfg):
+    pairs = agent_pairs(cfg) if venue == venues.DEFAULT else venue_pairs(cfg, venue, [r.get('pair') for r in rows])
+    for pair in pairs:
         try:
-            candles[pair] = trainer.fetch_candles(pair, '1h', 30, cache_dir=cache)
+            if venue == venues.DEFAULT:
+                candles[pair] = trainer.fetch_candles(pair, '1h', 30, cache_dir=cache)
+            else:
+                candles[pair] = trainer.fetch_candles(venues.to_venue_pair(pair, venue), '1h', 30, cache_dir=cache, venue=venue)
         except Exception as e:
             log(f'Marktbeweging bij trades: {pair} ophalen mislukt: {e}')
     with feedback_lock:
-        rows = read_json('agent_trades.json', [])
+        rows = read_json(file, [])
         n = livecheck.fill_market(rows, candles)
         if n:
-            write_json('agent_trades.json', rows)
+            write_json(file, rows)
     return n
+
+
+def venue_pairs(cfg, venue, extra=()):
+    """Coins op een andere beurs (als X/EUR): de ingestelde coins van die beurs, anders de gegeven coins
+    (bijv. van de recepten of de trades) plus de eigen coins. Hooguit 24."""
+    own = venues.settings(cfg, venue).get('pairs') or []
+    if own:
+        return list(own)[:50]
+    return list(dict.fromkeys([venues.to_base_pair(p) for p in list(extra) + list(cfg.get('pairs') or []) if p]))[:24]
+
+
+# ---------- Andere beurzen (fase 3): Bybit ----------
+# Bitvavo blijft bepalend voor training, promotie, proefperiode, kalibratie en terugzetten. Voor Bybit
+# komen er alleen cijfers bij: de eindtest van de actieve recepten op Bybit-koersen met Bybit-kosten
+# (venue_stats.json), de echte Bybit-trades (agent_trades-bybit.json), de kosten per coin op Bybit en
+# de eisen voor live op Bybit. Staat Bybit uit (config venues.bybit.enabled), dan is alles als vroeger.
+VENUE_STATS = 'venue_stats.json'
+
+
+def venues_enabled(cfg, venue='bybit'):
+    return bool(venues.settings(cfg, venue).get('enabled'))
+
+
+def venue_has_data(venue='bybit'):
+    """Zijn er al cijfers van deze beurs (getest of echte trades)? Zonder data blijven /agent.json en
+    /registry precies zoals vroeger."""
+    return bool((read_json(VENUE_STATS, {}).get(venue)) or read_json(venues.trades_file(venue), []))
+
+
+def agent_parts(a):
+    """Alle onderdelen (recepten) van agent.json: hoofdrecept, recepten per marktfase en extra recepten."""
+    if not isinstance(a, dict):
+        return []
+    return [a] + [p['agent'] for p in (a.get('regimes') or {}).values() if isinstance(p, dict) and p.get('agent')] + list(a.get('extras') or [])
+
+
+def venue_round(cfg, venue='bybit', fetch=None, now=None, force=False):
+    """De actieve recepten (agent.json) testen op de koersen van een andere beurs, met de kosten van die
+    beurs (zie venue_eval.py). Per recept hooguit eens per everyHours uur, of meteen bij een nieuw model.
+    Verandert niets aan Bitvavo. Geeft het aantal geteste recepten."""
+    if not venues_enabled(cfg, venue):
+        return 0
+    a = read_json('agent.json', None)
+    parts = [x for x in agent_parts(a) if isinstance(x, dict) and x.get('entry') and x.get('exit') and x.get('recipeKey')]
+    if not parts:
+        return 0
+    now = now or time.time()
+    every = float(venues.settings(cfg, venue)['everyHours']) * 3600
+    stats = read_json(VENUE_STATS, {})
+    mine = stats.get(venue) or {}
+    costs, _, default = cost_table(cfg, venue)
+    cache = venues.data_dir(DATA, 'candles', venue)
+    fetch = fetch or (lambda pair, tf, days: trainer.fetch_candles(pair, tf, days, cache_dir=cache, venue=venue))
+    pairs = venues.settings(cfg, venue).get('pairs') or None
+    slots = int(cfg['agent'].get('maxOpen') or 2)
+    done = 0
+    seen = set()
+    for part in parts:
+        key = part['recipeKey']
+        if key in seen:
+            continue
+        seen.add(key)
+        model_at = (part.get('meta') or {}).get('trainedAt')
+        old = mine.get(key) or {}
+        if not force and old.get('modelAt') == model_at and now - (probation_mod.ts_of(old.get('at')) or 0) < every:
+            continue
+        try:
+            res = venue_eval.evaluate_part(part, fetch, venue, costs, default, slots=slots,
+                                           cache_dir=venues.data_dir(DATA, 'features', venue), pairs=pairs, now_ms=int(now * 1000), log=log)
+        except Exception as e:
+            log(f'{venues.label(venue)}: recept {key} testen mislukt: {e}')
+            res = {'trades': 0, 'reason': f'testen mislukt: {e}'}
+        mine[key] = {**res, 'modelAt': model_at, 'at': datetime.fromtimestamp(now).isoformat(timespec='seconds')}
+        done += 1
+    if done:
+        keep = {x['recipeKey'] for x in parts}
+        stats[venue] = {k: v for k, v in mine.items() if k in keep}
+        write_json(VENUE_STATS, stats)
+        main = stats[venue].get(parts[0]['recipeKey']) or {}
+        if main.get('trades'):
+            think(f"Ik heb mijn recept ook op koersen van {venues.label(venue)} getest (met de kosten daar): "
+                  f"{main['trades']} trades, gemiddeld {thoughts.pct(main.get('avgPct') or 0)} per trade sinds het begin van de eindtest. "
+                  f"Dit verandert niets aan wat ik op Bitvavo doe.", kind='insight')
+    return done
+
+
+def venue_stats_for(key, venue='bybit', stats=None, live=None):
+    """venueStats van één recept op een beurs: de eindtest op die beurs (backtest) en de echte trades daar."""
+    st = ((stats if stats is not None else read_json(VENUE_STATS, {})).get(venue) or {}).get(key)
+    lv = (live if live is not None else venue_live(venue)).get(key) or {}
+    n = lv.get('n', 0)
+    out = {'trades': (st or {}).get('trades', 0), 'avgPct': (st or {}).get('avgPct'),
+           'practice': {'trades': n, 'avgPct': round(lv['sum'] / n, 4) if n else None, 'winRate': round(lv['wins'] / n * 100, 2) if n else None}}
+    if st:
+        out['backtest'] = st
+    return out
+
+
+def add_venue_fields(a, cfg, data):
+    """Velden per beurs op elk onderdeel van agent.json (bij het serveren): venueStats, venueCosts en
+    venueLiveCheck. Alleen voor beurzen die aan staan; Bitvavo-velden blijven zoals ze zijn."""
+    for v in venues.OTHER:
+        if not venues_enabled(cfg, v) or not venue_has_data(v):
+            continue
+        stats = read_json(VENUE_STATS, {})
+        live = venue_live(v)
+        costs, _, default = cost_table(cfg, v)
+        for part in agent_parts(a):
+            key = part.get('recipeKey')
+            coins = [venues.to_base_pair(c) for c in part.get('coins') or []]
+            own = {c: round(costs.get(c, default), 4) for c in coins}
+            cost = round(sum(own.values()) / len(own), 4) if own else round(default, 4)
+            part.setdefault('venueCosts', {})[v] = {'costPct': cost, 'costs': own, 'default': round(default, 4)}
+            if not key:
+                continue
+            part.setdefault('venueStats', {})[v] = venue_stats_for(key, v, stats, live)
+            entry = data['recipes'].get(key)
+            if entry:
+                part.setdefault('venueLiveCheck', {})[v] = live_check(key, entry, cost, venue=v)
+    return a
+
+
+def venues_info(cfg, data, pub=None):
+    """Voor /status (Trainer): per andere beurs de instellingen, kosten, paper-test, kalibratie en cijfers."""
+    out = {}
+    for v in venues.OTHER:
+        if not venues_enabled(cfg, v):
+            continue
+        c = cost_table(cfg, v)
+        stats = read_json(VENUE_STATS, {})
+        live = venue_live(v)
+        out[v] = {'label': venues.label(v), 'settings': venues.settings(cfg, v),
+                  'costs': {'perCoin': c[1], 'default': round(c[2], 4), 'feePct': venues.settings(cfg, v)['feePct']},
+                  'trades': len(load_agent_trades(v)),
+                  'paperTest': {'since': data.get('since'), 'weeks': livecheck.weeks(paper_rows(venue=v), data.get('since'))},
+                  'calibration': livecheck.calibration(load_agent_trades(v)),
+                  'recipes': {p['recipeKey']: venue_stats_for(p['recipeKey'], v, stats, live) for p in agent_parts(pub) if p.get('recipeKey')}}
+    return out
 
 
 AGENT_PART_KEYS = ('version', 'kind', 'timeframe', 'threshold', 'maxHoldCandles', 'safetyStopPct', 'costPct', 'coins', 'recipe', 'entry', 'exit', 'meta')
@@ -2180,8 +2418,8 @@ def cleanup_files(now=None):
     Geeft het aantal verwijderde bestanden."""
     now = now or time.time()
     removed = 0
-    for sub, days in (('features', 14), ('candles', 30)):
-        d = os.path.join(DATA, sub)
+    subs = [(venues.data_dir(DATA, sub, v), days) for v in venues.VENUES for sub, days in (('features', 14), ('candles', 30))]
+    for d, days in subs:
         if not os.path.isdir(d):
             continue
         for name in os.listdir(d):
@@ -2256,10 +2494,28 @@ def agent_worker():
         except Exception as e:
             log(f'AI-trader: leerronde mislukt: {e}')
             traceback.print_exc()
+        venue_work(config())
         pause = int(config()['agent'].get('pauseMinutes') or 0)
         state['nextAgentAt'] = (datetime.now() + timedelta(minutes=pause)).isoformat(timespec='minutes')
         agent_wake.clear()
         agent_wake.wait(timeout=max(5, pause * 60))
+
+
+def venue_work(cfg):
+    """Werk voor andere beurzen tussen de leerrondes (Bybit): marktbeweging bij de Bybit-trades en de
+    actieve recepten testen op Bybit-koersen. Fouten alleen in het log; Bitvavo merkt er niets van."""
+    for v in venues.OTHER:
+        if not venues_enabled(cfg, v):
+            continue
+        try:
+            fill_trade_market(cfg, v)
+        except Exception as e:
+            log(f'{venues.label(v)}: marktbeweging bij trades invullen mislukt: {e}')
+        try:
+            with work_lock:
+                venue_round(cfg, v)
+        except Exception as e:
+            log(f'{venues.label(v)}: recepten testen mislukt: {e}')
 
 
 def agent_info():
@@ -2292,10 +2548,12 @@ def agent_info():
             # De lange paper-test: per week, sinds de nieuwe manier van meten.
             'paperTest': {'since': data.get('since'), 'weeks': livecheck.weeks(paper_rows(), data.get('since'))},
             # Klopt zijn verwachting? Per groep verwachtingen wat er echt van terechtkwam.
-            'calibration': livecheck.calibration(read_json('agent_trades.json', [])),
+            'calibration': livecheck.calibration(load_agent_trades()),
             # Vindt de leerserver steeds betere recepten? Per dag de beste score op de validatie.
             'roundTrend': round_trend(data.get('recipes', {})),
-            'costs': (lambda c: {'perCoin': c[1], 'default': round(c[2], 4), 'configured': cfg['costPct']})(cost_table(cfg))}
+            'costs': (lambda c: {'perCoin': c[1], 'default': round(c[2], 4), 'configured': cfg['costPct']})(cost_table(cfg)),
+            # Andere beurzen: alleen als dat aan staat (anders precies als vroeger).
+            **({'venues': venues_info(cfg, data, pub)} if venues_enabled(cfg) else {})}
 
 
 def cache_info():
@@ -2401,6 +2659,10 @@ class Handler(BaseHTTPRequestHandler):
                 if entry:
                     # Resultaat per volatiliteit (eindtests): de bot handelt niet waar het recept verliest.
                     part['volStats'] = agent_search.vol_stats(entry)
+            try:
+                add_venue_fields(a, config(), data)
+            except Exception as e:  # cijfers per beurs mogen agent.json nooit tegenhouden
+                log(f'Cijfers per beurs toevoegen mislukt: {e}')
             data = json.dumps(a).encode()
             etag = '"' + hashlib.sha1(data).hexdigest()[:16] + '"'
             if self.headers.get('If-None-Match') == etag:
@@ -2415,12 +2677,18 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 log(f'Modelregister: overzicht mislukt: {e}')
                 return self.send(500, {'error': f'Modelregister niet beschikbaar: {e}'})
-        if self.path == '/learnstats':
+        if self.path.split('?')[0] == '/learnstats':
             # Voor het blok "Leert hij echt?" van de bot: leerrondes en ontvangen trades (alleen lezen).
+            # ?venue=bybit: de ontvangen trades van die beurs (met 'venue' in het antwoord); zonder: Bitvavo.
             try:
+                from urllib.parse import parse_qs, urlparse
                 cfg = config()
-                return self.send(200, learnstats.compute(registry().versions(500), read_json('agent_trades.json', []),
-                                                         cfg['agent']['enabled'], agent_may_learn(cfg), time.time()))
+                v = (parse_qs(urlparse(self.path).query).get('venue') or [venues.DEFAULT])[0]
+                out = learnstats.compute(registry().versions(500), load_agent_trades(v),
+                                         cfg['agent']['enabled'], agent_may_learn(cfg), time.time())
+                if venues.venue_of(v) != venues.DEFAULT:
+                    out['venue'] = venues.venue_of(v)
+                return self.send(200, out)
             except Exception as e:
                 log(f'Leercontrole: telling mislukt: {e}')
                 return self.send(500, {'error': f'Telling niet beschikbaar: {e}'})
