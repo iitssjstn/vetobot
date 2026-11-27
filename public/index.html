@@ -218,6 +218,17 @@
   .lc-dash .k { font-size: 13px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; }
   .lc-dash .n { font-size: 13px; color: var(--muted); }
   .lc-dash .go { margin-left: auto; font-size: 13px; color: var(--accent); white-space: nowrap; }
+  /* Bitvavo ↔ Bybit (Learning) */
+  .vc-t td, .vc-t th { white-space: nowrap; font-size: 13px; padding-left: 8px; padding-right: 8px; }
+  .vc-s { font-variant-numeric: tabular-nums; }
+  .vc-s.ok { color: var(--up); }
+  .vc-s.warn { color: var(--warn); }
+  .vc-s.bad { color: var(--down); }
+  .vc-s .sm { color: var(--muted); font-size: 12px; }
+  .vc-det { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; margin-top: 8px; }
+  .vc-det summary { cursor: pointer; font-weight: 650; font-size: 14px; }
+  .vc-det ul { margin: 6px 0 0; padding-left: 18px; font-size: 13.5px; line-height: 1.5; }
+  .vc-det li { overflow-wrap: anywhere; }
   .alert.ok svg { color: var(--up); }
   #alerts { display: grid; gap: 8px; margin-bottom: 16px; }
   #alerts:empty { display: none; }
@@ -581,6 +592,9 @@
     <section data-section="learning" hidden>
       <div class="panel" id="ln-check" style="margin-bottom:16px"><div class="panel-h"><h2><svg class="i"><use href="#i-check"/></svg>Leert hij echt?</h2><span class="hint" id="ln-check-hint"></span></div>
         <div class="panel-b" id="ln-check-body"><p class="muted" style="margin:0">Laden…</p></div></div>
+      <div class="panel" id="ln-venue" style="margin-bottom:16px"><div class="panel-h"><h2><svg class="i"><use href="#i-link"/></svg>Bitvavo ↔ Bybit</h2><span class="hint" id="ln-venue-hint"></span></div>
+        <div class="panel-b"><div id="ln-venue-body"><p class="muted" style="margin:0">Laden…</p></div>
+          <div class="row-actions" style="margin:12px 0 0;flex-wrap:wrap"><button class="btn sm" type="button" id="ln-venue-refresh">Opnieuw vergelijken</button><span class="msg" id="ln-venue-msg"></span></div></div></div>
       <div class="row-actions" style="margin:0 0 14px;flex-wrap:wrap">
         <select id="ln-mode" aria-label="Modus" style="width:auto"><option value="">Huidige modus</option><option value="paper">Paper</option><option value="live">Live</option></select>
         <select id="ln-days" aria-label="Periode" style="width:auto"><option value="7">7 dagen</option><option value="30" selected>30 dagen</option><option value="90">90 dagen</option><option value="365">1 jaar</option></select>
@@ -2915,8 +2929,97 @@ function renderLearnCheck() {
   }
 }
 
+// Bitvavo ↔ Bybit (src/venuecompare.js): berekend op de achtergrond (hooguit eens per 6 uur); hier alleen ophalen.
+// Bezig: elke 4 seconden opnieuw kijken tot het klaar is.
+let vcData = null, vcTimer = null;
+async function loadVenueCompare() {
+  clearTimeout(vcTimer);
+  try { vcData = await api('api/venue-compare'); } catch (err) { vcData = { error: err.message }; }
+  renderVenueCompare();
+  if (vcData?.busy && isOn('learning')) vcTimer = setTimeout(loadVenueCompare, 4000);
+}
+const VC_HOST = { 'bybit.com': 'Bybit (bybit.com)', 'bybit.eu': 'Bybit EU', 'bybit.nl': 'Bybit NL' };
+function renderVenueCompare() {
+  const d = vcData, body = $('ln-venue-body');
+  if (!d || !body) return;
+  const btn = $('ln-venue-refresh');
+  const nl = (v, dd = 2) => v == null || !Number.isFinite(Number(v)) ? '–' : Number(v).toFixed(dd).replace('.', ',');
+  const sg = (v, dd = 2) => v == null || !Number.isFinite(Number(v)) ? '–' : `${v > 0 ? '+' : v < 0 ? '−' : ''}${nl(Math.abs(v), dd)}`;
+  const site = VC_HOST[d.host] ?? 'Bybit';
+  if (d.error) { body.innerHTML = `<p class="muted" style="margin:0">Niet op te halen: ${esc(d.error)}</p>`; return; }
+  btn.disabled = Boolean(d.busy) || d.refreshInMinutes > 0;
+  btn.textContent = d.busy ? 'Bezig met vergelijken…' : d.refreshInMinutes > 0 ? `Opnieuw vergelijken (over ${d.refreshInMinutes} min)` : 'Opnieuw vergelijken';
+  $('ln-venue-hint').textContent = d.at ? `vergeleken ${new Date(d.at).toLocaleString('nl-NL', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} · ${site} (${d.quote})` : `${site} (${d.quote ?? ''})`;
+  if (d.pending || !Array.isArray(d.coins)) {
+    body.innerHTML = `<p class="muted" style="margin:0">${d.busy ? `Bezig: de koersen van Bitvavo en ${esc(site)} worden opgehaald en vergeleken (gespreid, kan een minuut duren).` : `Nog niet vergeleken. Dat gebeurt vanzelf op de achtergrond (hooguit eens per 6 uur), of nu met de knop hieronder.`}</p>`;
+    return;
+  }
+  const v = d.verdict ?? {};
+  const T = d.thresholds ?? {};
+  const st = (status, html, title = '') => `<span class="vc-s ${esc(status ?? '')}"${title ? ` title="${esc(title)}"` : ''}>${html}</span>`;
+  const SHORT = { ok: '✓ goed genoeg', warn: '! let op', bad: '✕ apart leren' };
+  const verdictBadge = (c) => `<span class="badge ${LC_BADGE[c.status] ?? 'soft'}" title="${esc(c.text ?? '')}">${esc(c.status === 'nodata' && c.progress ? `${c.progress.have} van ${c.progress.need}` : c.error ? '! niet te vergelijken' : SHORT[c.status] ?? c.text ?? '')}</span>`;
+  const cell = {
+    price: (c) => { const p = c.parts?.price; return p ? st(p.status, `${sg(p.meanPct)}% <span class="sm">max ${nl(p.maxPct)}%</span>`, p.text) : '–'; },
+    corr: (c) => { const p = c.parts?.corr; return p ? st(p.status, nl(p.corr), p.text) : '–'; },
+    vol: (c) => { const p = c.parts?.vol; return p ? st(p.status, `${nl(p.ratio)}×`, p.text) : '–'; },
+    volume: (c) => { const p = c.parts?.volume; return p ? st(p.status, p.ratio == null ? '–' : `${nl(p.ratio)}×`, p.text) : '–'; },
+    feat: (c) => { const p = c.parts?.features; return p && p.meanPsi != null ? st(p.status, `${nl(p.meanPsi)} <span class="sm">max ${nl(p.maxPsi)}</span>`, p.text) : '–'; },
+    exp: (c) => { const p = c.parts?.model; return p && p.meanA != null ? st(p.statuses ? (p.statuses.mean === 'ok' && p.statuses.corr === 'ok' ? 'ok' : p.statuses.mean === 'bad' || p.statuses.corr === 'bad' ? 'bad' : 'warn') : p.status,
+      `${sg(p.meanA, 3)}% / ${sg(p.meanB, 3)}% <span class="sm">r ${nl(p.corr)}</span>`, p.text) : '–'; },
+    above: (c) => { const p = c.parts?.model; return p && p.aboveA != null ? st(p.statuses?.freq ?? p.status, `${p.aboveA} / ${p.aboveB} <span class="sm">van ${p.n}</span>`, p.text) : '–'; },
+    trades: (c) => { const p = c.parts?.trades; if (p) return st(p.status, `${sg(p.meanA)}% / ${sg(p.meanB)}% <span class="sm">${p.nA}/${p.nB}</span>`, p.text);
+      return c.tradeCounts ? `<span class="muted">${c.tradeCounts.bitvavo}/${c.tradeCounts.bybit}</span>` : '–'; },
+  };
+  const coinName = (c) => `<b>${esc(c.pair.split('/')[0])}</b> <span class="muted">${esc(c.timeframe ?? '')}</span>`;
+  const rows = d.coins;
+  const tableHtml = rows.length ? `<div class="scroll"><table class="vc-t"><thead><tr><th>Coin</th><th>Oordeel</th><th class="r">Prijsverschil</th><th class="r">Correlatie</th><th class="r">Volatiliteit</th><th class="r">Volume</th>
+      <th class="r">Kenmerken (PSI)</th><th class="r">Verwachting AI<br><span class="muted">Bitvavo / Bybit</span></th><th class="r">Boven drempel<br><span class="muted">Bitvavo / Bybit</span></th><th class="r">Echte trades<br><span class="muted">Bitvavo / Bybit</span></th></tr></thead>
+    <tbody>${rows.map((c) => `<tr><td>${coinName(c)}</td><td>${verdictBadge(c)}</td><td class="r">${cell.price(c)}</td><td class="r">${cell.corr(c)}</td><td class="r">${cell.vol(c)}</td><td class="r">${cell.volume(c)}</td>
+      <td class="r">${cell.feat(c)}</td><td class="r">${cell.exp(c)}</td><td class="r">${cell.above(c)}</td><td class="r">${cell.trades(c)}</td></tr>`).join('')}</tbody></table></div>` :
+    '<p class="muted" style="margin:0">Geen coins die op beide beurzen bestaan.</p>';
+  const PT = { price: 'Prijsverschil', corr: 'Koersen bewegen gelijk', vol: 'Even onrustig', volume: 'Volume', features: 'Het model ziet hetzelfde', model: 'Verwachting AI-trader', trades: 'Echte trades' };
+  const ICON = { ok: '✅', warn: '⚠️', bad: '❌', nodata: '⏳' };
+  const detail = rows.filter((c) => c.status !== 'ok' || c.parts).map((c) => `<details class="vc-det"${c.status === 'bad' ? ' open' : ''}><summary>${ICON[c.status] ?? ''} ${esc(c.pair.split('/')[0])}: ${esc(c.text ?? '')}</summary>
+      <ul>${c.detail ? `<li>${esc(c.detail.charAt(0).toUpperCase() + c.detail.slice(1))}.</li>` : ''}${Object.entries(c.parts ?? {}).map(([k, p]) => `<li>${ICON[p.status] ?? ''} <b>${esc(PT[k] ?? k)}:</b> ${esc(p.text ?? '')}</li>`).join('')}
+      ${c.action ? `<li><b>Wat je kunt doen:</b> ${esc(c.action)}</li>` : ''}</ul></details>`).join('');
+  const bt = (d.backtest?.recipes ?? []).filter((r) => r.bybit || r.bitvavo);
+  const extra = [
+    ...bt.map((r) => `${ICON[r.status] ?? ''} Recept ${esc(r.recipe ?? '')}${r.timeframe ? ` (${esc(r.timeframe)})` : ''}: ${esc(r.text ?? '')}`),
+    d.trades ? `${ICON[d.trades.status] ?? ''} ${esc(d.trades.text)}` : '',
+  ].filter(Boolean);
+  const only = [
+    d.onlyBitvavo?.length ? `Alleen op Bitvavo (niet op ${esc(site)}): <b>${d.onlyBitvavo.map((p) => esc(p.split('/')[0])).join(', ')}</b>` : '',
+    d.onlyBybit?.length ? `Alleen op ${esc(site)} (niet op Bitvavo, dus geen leerstof en niet te vergelijken): <b>${d.onlyBybit.map((p) => esc(p.split('/')[0])).join(', ')}</b>` : '',
+  ].filter(Boolean);
+  const win = rows.find((c) => c.from);
+  body.innerHTML = `<div class="lc-verdict ${esc(v.level === 'nodata' ? '' : v.level ?? '')}"><span class="lc-ico ${esc(v.level === 'nodata' ? '' : v.level ?? '')}" aria-hidden="true">${LC[v.level]?.[1] ?? '?'}</span>
+      <div>${esc(v.text ?? '')}<span class="d">${esc(v.detail ?? '')}${v.action ? ` · ${esc(v.action)}` : ''}</span></div></div>
+    <p class="muted" style="margin:0 0 10px;font-size:13px">Dezelfde candles op Bitvavo (X/EUR) en ${esc(site)} (X/${esc(d.quote ?? '')})${win ? `, ${esc(String(win.timeframe))}-candles van ${esc(new Date(win.from).toLocaleString('nl-NL', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))} tot ${esc(new Date(win.to).toLocaleString('nl-NL', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))} (${win.candles} candles)` : ''}.
+      Bybit omgerekend met ${d.eurPerQuote ? `1 ${esc(d.quote)} = € ${nl(d.eurPerQuote, 4)}` : 'een onbekende koers'}. ${d.venue === 'bitvavo' ? `Je handelt nu op Bitvavo; dit is de Bybit-website die je gekozen hebt (alleen publieke data, geen keys).` : ''}
+      ${d.stale ? ' <b>Je instellingen of de AI-trader zijn sinds deze vergelijking veranderd; hij wordt binnenkort opnieuw gedaan.</b>' : ''}</p>
+    ${tableHtml}
+    ${only.length ? `<p style="margin:10px 0 0;font-size:13.5px">${only.join('<br>')}</p>` : ''}
+    ${extra.length ? `<div class="lc-x" style="margin-top:10px">${extra.join('<br>')}</div>` : ''}
+    ${detail}
+    ${(d.errors ?? []).length ? `<p class="muted" style="margin:10px 0 0;font-size:13px">⚠️ ${d.errors.map(esc).join(' · ')}</p>` : ''}
+    <p class="muted" style="margin:10px 0 0;font-size:12.5px">✅ als de koersen bewegen met een correlatie vanaf ${nl(T.corr?.ok ?? 0.9)}, de onrust binnen ±${T.vol?.okPct ?? 25}% ligt, het prijsverschil gemiddeld hooguit ${nl(T.price?.okMeanPct ?? 0.5, 1)}% is, de kenmerken nauwelijks verschoven zijn (PSI onder ${nl(T.psi?.ok ?? 0.1)}), de verwachting van de AI-trader sterk gelijk is en hij even vaak boven zijn drempel komt (op Bybit met de kosten van Bybit). Echte trades tellen mee vanaf ${T.trades?.minTrades ?? 20} per beurs (toets met 95% zekerheid). Automatisch hooguit eens per ${T.refreshHours ?? 6} uur; gaat het totaaloordeel naar ❌, dan meldt de bot dat via Discord (meldingsoort Leert hij echt?, alleen het admin-account).</p>`;
+}
+$('ln-venue-refresh').onclick = async () => {
+  const m = $('ln-venue-msg');
+  m.className = 'msg';
+  m.textContent = '';
+  try {
+    await api('api/venue-compare/refresh', {});
+    m.textContent = 'gestart…';
+    setTimeout(() => { m.textContent = ''; }, 4000);
+  } catch (err) { m.className = 'msg err'; m.textContent = err.message; }
+  loadVenueCompare();
+};
+
 async function loadLearning() {
   loadLearnCheck(true);
+  loadVenueCompare();
   const q = new URLSearchParams({ days: $('ln-days').value, ...($('ln-mode').value ? { mode: $('ln-mode').value } : {}) });
   $('ln-msg').textContent = 'laden…';
   try {

@@ -431,6 +431,11 @@ export function createApp({ users, manager, log = console }) {
   // leerserver is gedeeld, de trades zijn van deze gebruiker. Geen secrets in het antwoord.
   app.get('/api/learncheck', wrap(async (req) => manager.learnCheck(req.user.id)));
 
+  // Bitvavo ↔ Bybit (src/venuecompare.js): het laatste resultaat (berekend op de achtergrond, hooguit eens per
+  // 6 uur) en de knop "Opnieuw vergelijken" (hooguit eens per 15 minuten). Alleen publieke marktdata.
+  app.get('/api/venue-compare', wrap(async (req) => manager.venueCompare(req.user.id)));
+  app.post('/api/venue-compare/refresh', wrap(async (req) => manager.startVenueCompare(req.user.id)));
+
   // Terug naar een eerder goedgekeurde modelversie (vastzetten), of het vastzetten opheffen.
   // Dit raakt alleen paper/het gepubliceerde model; live blijft altijd jouw eigen akkoord per recept.
   app.post('/api/admin/learning/rollback', adminOnly, wrap(async (req) => {

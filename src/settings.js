@@ -163,7 +163,9 @@ export class Settings {
       },
       summaryLastSent: saved.summaryLastSent ?? null,
       // "Leert hij echt?": laatst verzonden weekoverzicht (ISO-week) en de toestand per controle (meldingen).
-      learnCheck: { weekSent: saved.learnCheck?.weekSent ?? null, alerts: saved.learnCheck?.alerts && typeof saved.learnCheck.alerts === 'object' ? saved.learnCheck.alerts : {} },
+      learnCheck: { weekSent: saved.learnCheck?.weekSent ?? null, alerts: saved.learnCheck?.alerts && typeof saved.learnCheck.alerts === 'object' ? saved.learnCheck.alerts : {},
+        // Bitvavo ↔ Bybit (src/venuecompare.js): laatste totaaloordeel en of de ❌-melding al verstuurd is.
+        ...(saved.learnCheck?.venueCompare && typeof saved.learnCheck.venueCompare === 'object' ? { venueCompare: saved.learnCheck.venueCompare } : {}) },
       modeChangedAt: saved.modeChangedAt ?? null,
       follow: { enabled: Boolean(saved.follow?.enabled), since: saved.follow?.since ?? null },
     };
