@@ -437,3 +437,18 @@ test('een check op Bybit haalt alleen USDT-paren van Bybit op (marktdata per beu
   assert.ok(bot.pairStatus['SOL/USDT']);
   manager.stopAll();
 });
+
+test('wisselen tijdens een lopende check: de check maakt eerst af op de oude beurs, geen X/EUR op Bybit', async () => {
+  const { admin, manager, bitvavo, bybit } = setup();
+  const { bot } = manager.ensure(admin);
+  // Bitvavo-candles traag, zodat de check loopt terwijl er gewisseld wordt.
+  const orig = bitvavo.fetchOHLCV.bind(bitvavo);
+  bitvavo.fetchOHLCV = async (...a) => { await new Promise((r) => setTimeout(r, 20)); return orig(...a); };
+  const tick = bot.tick();
+  await new Promise((r) => setTimeout(r, 5));
+  const sw = bot.switchVenue('bybit');
+  await Promise.all([tick, sw]);
+  assert.equal(bot.venue, 'bybit');
+  assert.deepEqual(bybit.calls.filter((c) => /\/EUR$/.test(c[1]) && c[1] !== 'USDT/EUR'), [], 'geen Bitvavo-coin naar Bybit');
+  assert.equal(bot.lastError, null);
+});
