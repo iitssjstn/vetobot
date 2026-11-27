@@ -804,7 +804,7 @@
             <div><label for="vn-select">Beurs</label>
               <select id="vn-select">
                 <option value="bitvavo">Bitvavo (paper en live, paren in EUR)</option>
-                <option value="bybit">Bybit (paper, en live op eigen risico; paren in USDT)</option>
+                <option value="bybit">Bybit (paper, en live op eigen risico; paren in USDT, op Bybit EU/NL in USDC)</option>
               </select></div>
             <div style="display:flex;align-items:flex-end"><button class="btn primary" type="submit" id="vn-save">Beurs wisselen</button></div>
           </div>
@@ -1211,7 +1211,7 @@ softenPasswords();
 const eur = (n, d) => n == null ? '–' : new Intl.NumberFormat('nl-NL', { style: 'currency', currency: 'EUR',
   maximumFractionDigits: d ?? (Math.abs(n) < 1 ? 6 : Math.abs(n) < 100 ? 4 : 2) }).format(n);
 const eur2 = (n) => eur(n, 2);
-// Koers in de munt van de beurs: euro op Bitvavo, USDT op Bybit (bedragen blijven altijd in euro).
+// Koers in de munt van de beurs: euro op Bitvavo, USDT op Bybit (USDC op Bybit EU/NL); bedragen blijven altijd in euro.
 const px = (n, quote = state?.quote) => n == null ? '–' : !quote || quote === 'EUR' ? eur(n)
   : `${new Intl.NumberFormat('nl-NL', { maximumFractionDigits: Math.abs(n) < 1 ? 6 : Math.abs(n) < 100 ? 4 : 2 }).format(n)} ${esc(quote)}`;
 // Naam van de beurs voor teksten.
@@ -1910,14 +1910,16 @@ function renderVenue(s) {
   $('vn-state').textContent = `Nu: ${xname()}${s.exchange === 'bybit' ? (s.mode === 'live' ? ' (live, eigen risico)' : ' (paper)') : ''}`;
   const rate = s.fx?.rate ? `1 ${s.quote} = ${eur(s.fx.rate, 4)}` : s.fx ? `<span class="down">koers ${esc(s.quote)}/EUR nog onbekend${s.fx.error ? `: ${esc(s.fx.error)}` : ''}</span>` : '';
   const bb = (s.venues ?? []).find((v) => v.id === 'bybit');
+  const q = s.exchange === 'bybit' ? s.quote ?? bb?.quote ?? 'USDT' : bb?.quote ?? 'USDT';
   const fee = (f) => `${String(f.feePct).replace('.', ',')}% taker / ${String(f.makerFeePct).replace('.', ',')}% maker`;
   $('vn-help').innerHTML = [
     s.exchange === 'bybit'
-      ? `De bot handelt op Bybit in <b>USDT-paren</b> (bijv. BTC/USDT). Inzet, winst, limieten en het dashboard blijven in <b>euro</b>, omgerekend met de actuele USDT/EUR-koers van Bybit${rate ? ` (${rate})` : ''}. Koersen staan in USDT.`
+      ? `De bot handelt op Bybit (${esc(s.bybitHost ?? 'bybit.com')}) in <b>${esc(q)}-paren</b> (bijv. BTC/${esc(q)}). Inzet, winst, limieten en het dashboard blijven in <b>euro</b>, omgerekend met de actuele ${esc(q)}/EUR-koers van Bybit${rate ? ` (${rate})` : ''}. Koersen staan in ${esc(q)}.`
+        + (q === 'USDC' ? ' Bybit EU en Bybit NL hebben (door MiCA) geen USDT-paren; coins zonder USDC-markt op deze website slaat de bot over.' : '')
       : 'Bitvavo: paren in euro, paper en live.',
     'Live op Bybit kan alleen <b>op eigen risico</b>: bij "Overschakelen naar live" bevestig je met je wachtwoord, typ je EIGEN RISICO en kies je een verliesgrens in euro. Bybit is nieuw in vetobot en nog niet met echt geld getest.',
     `Kiest je Bybit en staat je fee nog op de standaard van Bitvavo, dan zet de bot hem op de standaard van Bybit (${bb ? fee(bb.fees) : '0,1%'}); een eigen fee blijft staan. Te wijzigen bij Risico.`,
-    'De AI-trader gebruikt op Bybit dezelfde recepten (relatieve kenmerken, BTC-context via BTC/USDT). De leerserver traint op Bitvavo-data en test de recepten ook op Bybit-koersen; je Bybit-trades gaan apart naar de leerserver (eigen kosten en eisen per beurs), en de bot rekent op Bybit met de Bybit-kosten.',
+    `De AI-trader gebruikt op Bybit dezelfde recepten (relatieve kenmerken, BTC-context via BTC/${esc(q)}). De leerserver traint op Bitvavo-data en test de recepten ook op Bybit-koersen; je Bybit-trades gaan apart naar de leerserver (eigen kosten en eisen per beurs), en de bot rekent op Bybit met de Bybit-kosten.`,
     'Paper-saldo, posities en trades worden per beurs apart bewaard: je Bitvavo-geschiedenis blijft staan.',
     open ? `<span class="down">Er staan ${open} positie(s) open. Sluit die eerst; daarna kun je van beurs wisselen.</span>` : '',
   ].filter(Boolean).map((t) => `<div style="margin-top:6px">${t}</div>`).join('');
@@ -4064,7 +4066,7 @@ $('keys-test').onclick = async () => {
 $('k-bbhost').onchange = async (e) => {
   const host = e.target.value;
   keyMsg('Bybit-website opslaan…');
-  try { await api('api/settings/bybit-host', { host }); keyMsg(`Bybit-website: ${host}. Test je keys opnieuw.`, 'ok'); load(); }
+  try { const r = await api('api/settings/bybit-host', { host }); keyMsg(`Bybit-website: ${host}${r?.quote ? ` (paren in ${r.quote})` : ''}. Test je keys opnieuw.`, 'ok'); load(); }
   catch (err) { keyMsg(err.message, 'err'); if (state?.bybitHost) e.target.value = state.bybitHost; }
 };
 $('keys-test-bybit').onclick = async () => {
@@ -4072,7 +4074,8 @@ $('keys-test-bybit').onclick = async () => {
   try {
     const r = await api('api/settings/keys/test', { venue: 'bybit' });
     const b = r.balances ?? {};
-    keyMsg(`Bybit-keys werken (alleen gelezen). Saldo: ${nl(b.USDT?.free ?? 0, 2)} USDT en ${eur2(b.EUR?.free ?? 0)} vrij.`, 'ok');
+    const q = r.quote ?? 'USDT';
+    keyMsg(`Bybit-keys werken (alleen gelezen). Saldo: ${nl(b[q]?.free ?? 0, 2)} ${q}${r.quoteFreeEur != null ? ` (± ${eur2(r.quoteFreeEur)})` : ''} en ${eur2(b.EUR?.free ?? 0)} vrij.`, 'ok');
   } catch (err) { keyMsg(err.message, 'err'); }
 };
 $('keys-clear').onclick = async () => {

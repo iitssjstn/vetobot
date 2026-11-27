@@ -11,7 +11,7 @@ import { aiLabel } from './ai.js';
 import { allAgentParts } from './agents.js';
 import { analyzeTrades } from './analysis.js';
 import { AI_PROVIDERS, MAX_PAIRS, TIMEFRAMES, RISK_LIMITS, STRATEGY_LIMITS } from './settings.js';
-import { VENUES, VENUE_IDS, liveAllowedOnVenue, checkAccordInput } from './venue.js';
+import { VENUES, VENUE_IDS, liveAllowedOnVenue, checkAccordInput, quoteFor } from './venue.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -257,14 +257,14 @@ export function createApp({ users, manager, log = console }) {
       },
       mode: bot.mode,
       modeChangedAt: settings.data.modeChangedAt,
-      // Beurs: Bitvavo (euro) of Bybit (USDT-paren; live alleen op eigen risico). Bedragen altijd in euro.
+      // Beurs: Bitvavo (euro) of Bybit (USDT-paren op bybit.com, USDC op Bybit EU/NL; live alleen op eigen risico). Bedragen altijd in euro.
       exchange: bot.venue,
       bybitHost: settings.bybitHost,
       exchangeLabel: bot.venueLabel,
       quote: bot.quote,
       fx: bot.venue === 'bitvavo' ? null : bot.fx?.info?.() ?? null,
       liveAllowed: liveAllowedOnVenue(bot.venue, settings),
-      venues: VENUE_IDS.map((v) => ({ id: v, label: VENUES[v].label, quote: VENUES[v].quote, fees: VENUES[v].fees, live: liveAllowedOnVenue(v, settings) })),
+      venues: VENUE_IDS.map((v) => ({ id: v, label: VENUES[v].label, quote: quoteFor(v, v === 'bybit' ? settings.bybitHost : null), fees: VENUES[v].fees, live: liveAllowedOnVenue(v, settings) })),
       // Bybit live op eigen risico: verliesgrens en resultaat sinds het akkoord (null zonder akkoord).
       venueRisk: bot.venueRiskStatus?.() ?? null,
       bybitKeysSet: Boolean(keys.bybitApiKey?.set && keys.bybitApiSecret?.set),
@@ -530,7 +530,7 @@ export function createApp({ users, manager, log = console }) {
     const host = String(req.body?.host ?? '');
     const r = manager.setBybitHost(req.user.id, host);
     log.info(`Bybit-website gewijzigd naar ${r} door ${req.user.username}`);
-    return { ok: true, bybitHost: r };
+    return { ok: true, bybitHost: r, quote: quoteFor('bybit', r) };
   }));
 
   // Strategie van de admin volgen (of niet). Bestaande eigen posities blijven gewoon bewaakt.

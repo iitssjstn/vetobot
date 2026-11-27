@@ -1,8 +1,9 @@
 // Beurzen (venues) waarop de bot kan handelen, en alles wat per beurs verschilt.
 //
 // - Bitvavo: paren in euro (BTC/EUR). Paper en live. Dit is het standaardgedrag en blijft precies gelijk.
-// - Bybit: paren in USDT (BTC/USDT). Paper, en live alleen op eigen risico (fase 2, zie liveAllowedOnVenue). Inzet, winst, limieten en het dashboard blijven
-//   in euro; de bot rekent om met de actuele USDT/EUR-koers van Bybit (QuoteRate hieronder).
+// - Bybit: paren in USDT (BTC/USDT) op bybit.com, in USDC (BTC/USDC) op Bybit EU en Bybit NL (zie quoteFor). Paper, en
+//   live alleen op eigen risico (fase 2, zie liveAllowedOnVenue). Inzet, winst, limieten en het dashboard blijven
+//   in euro; de bot rekent om met de actuele koers USDT/EUR (of USDC/EUR) van Bybit (QuoteRate hieronder).
 //
 // De leerserver levert coins als X/EUR (Bitvavo-namen). toVenuePair/toBasePair vertalen tussen de
 // naam van de leerserver en de naam op de beurs; posities en trades van Bitvavo veranderen niet.
@@ -18,22 +19,39 @@ export const VENUE_IDS = Object.keys(VENUES);
 // Onbekend of leeg (oude settings.json): Bitvavo.
 export const venueOf = (v) => (Object.hasOwn(VENUES, v) ? v : DEFAULT_VENUE);
 export const venueLabel = (v) => VENUES[venueOf(v)].label;
-export const quoteOf = (v) => VENUES[venueOf(v)].quote;
 
-// Quotes die we tussen de beurzen vertalen. Een paar met een andere quote (bijv. BTC/USDC) blijft zoals het is.
-const TRANSLATED = new Set(VENUE_IDS.map((v) => VENUES[v].quote));
+// ---------- Quote-munt per beurs en Bybit-website ----------
+// Bybit EU (api.bybit.eu) heeft door MiCA geen USDT-paren: daar wordt in USDC gehandeld (telling op de server
+// van de eigenaar: 107 USDC-, 17 EUR-, 4 PLN- en 0 USDT-markten). Voor Bybit NL nemen we hetzelfde aan (ook
+// MiCA), maar dat is NIET gecontroleerd met een echt account. bybit.com blijft USDT, precies zoals altijd.
+export const BYBIT_QUOTES = Object.freeze({ 'bybit.com': 'USDT', 'bybit.eu': 'USDC', 'bybit.nl': 'USDC' });
 
-// "SOL/EUR" → "SOL/USDT" op Bybit, "SOL/USDT" → "SOL/EUR" op Bitvavo.
-export function toVenuePair(pair, venue) {
+// De ene plek waar de quote-munt vandaan komt. host: de Bybit-website (settings.bybitHost); zonder host of
+// onbekend: bybit.com (USDT). Andere beurzen negeren host.
+export function quoteFor(venue, host = null) {
+  const v = venueOf(venue);
+  if (v === 'bybit') return BYBIT_QUOTES[host] ?? VENUES.bybit.quote;
+  return VENUES[v].quote;
+}
+export const quoteOf = quoteFor;
+
+// Alle quotes die we tussen beurzen vertalen.
+export const KNOWN_QUOTES = Object.freeze(['EUR', 'USDT', 'USDC']);
+// Op bybit.com is BTC/USDC een eigen, echte markt naast BTC/USDT: daar blijft een USDC-paar zoals het is
+// (zoals altijd). Overal elders (Bitvavo, Bybit EU/NL) wordt USDC net als USDT vertaald.
+const translatedOn = (venue, host) => (quoteFor(venue, host) === 'USDT' ? new Set(['EUR', 'USDT']) : new Set(KNOWN_QUOTES));
+
+// "SOL/EUR" → "SOL/USDT" op Bybit (bybit.com) of "SOL/USDC" op Bybit EU/NL; "SOL/USDT" of "SOL/USDC" → "SOL/EUR" op Bitvavo.
+export function toVenuePair(pair, venue, host = null) {
   const s = String(pair ?? '');
   const i = s.indexOf('/');
   if (i < 0) return s;
   const quote = s.slice(i + 1);
-  if (!TRANSLATED.has(quote)) return s;
-  return `${s.slice(0, i)}/${quoteOf(venue)}`;
+  if (!translatedOn(venue, host).has(quote)) return s;
+  return `${s.slice(0, i)}/${quoteFor(venue, host)}`;
 }
 
-// Naam zoals de leerserver hem kent (X/EUR).
+// Naam zoals de leerserver hem kent (X/EUR): X/USDT en X/USDC worden X/EUR.
 export const toBasePair = (pair) => toVenuePair(pair, DEFAULT_VENUE);
 
 // ---------- Live per beurs ----------
@@ -84,9 +102,10 @@ export function checkAccordInput(venue, { confirmText, maxLossEur } = {}) {
 }
 
 // ---------- AI-trader: coins van de leerserver naar de beurs ----------
-// De leerserver stuurt coins als X/EUR. Op Bybit worden dat X/USDT. Zelfde object → zelfde kopie, zodat
-// vergelijkingen op identiteit (hoofdrecept = recept van een marktfase) blijven werken.
-export function venueAgent(agent, venue) {
+// De leerserver stuurt coins als X/EUR. Op Bybit worden dat X/USDT (bybit.com) of X/USDC (Bybit EU/NL).
+// Zelfde object → zelfde kopie, zodat vergelijkingen op identiteit (hoofdrecept = recept van een marktfase)
+// blijven werken.
+export function venueAgent(agent, venue, host = null) {
   if (!agent || venueOf(venue) === DEFAULT_VENUE) return agent;
   const seen = new Map();
   const part = (p) => {
@@ -94,7 +113,7 @@ export function venueAgent(agent, venue) {
     if (seen.has(p)) return seen.get(p);
     const copy = { ...p };
     seen.set(p, copy);
-    if (Array.isArray(p.coins)) copy.coins = p.coins.map((c) => toVenuePair(c, venue));
+    if (Array.isArray(p.coins)) copy.coins = p.coins.map((c) => toVenuePair(c, venue, host));
     return copy;
   };
   const main = part(agent);
@@ -103,7 +122,7 @@ export function venueAgent(agent, venue) {
       if (!r || typeof r !== 'object') return [k, r];
       const copy = { ...r };
       if (r.agent) copy.agent = part(r.agent);
-      if (Array.isArray(r.coins)) copy.coins = r.coins.map((c) => toVenuePair(c, venue));
+      if (Array.isArray(r.coins)) copy.coins = r.coins.map((c) => toVenuePair(c, venue, host));
       return [k, copy];
     }));
   }
@@ -116,15 +135,16 @@ export function venueAgent(agent, venue) {
 // Bitvavo handelt al in euro: altijd 1.
 export const EUR_RATE = Object.freeze({ quote: 'EUR', async eurPerQuote() { return 1; }, last() { return 1; }, info() { return { quote: 'EUR', rate: 1 }; } });
 
-// Bybit: hoeveel euro is 1 USDT? Uit de ticker USDT/EUR (of omgekeerd EUR/USDT), via de gedeelde marktdata
+// Bybit: hoeveel euro is 1 USDT (bybit.com) of 1 USDC (Bybit EU/NL)? Uit de ticker USDT/EUR (of omgekeerd EUR/USDT), via de gedeelde marktdata
 // (één verzoek voor alle gebruikers), één minuut bewaard. Kopen vraagt een verse koers (hooguit ttl oud;
 // lukt ophalen niet, dan nog maxStaleMs de laatste bekende); verkopen mag altijd met de laatst bekende koers,
 // zodat een positie nooit vastzit op een ontbrekende koers. Geen koers bekend: een duidelijke fout.
 export class QuoteRate {
-  constructor(market, venue, { ttlMs = 60000, maxStaleMs = 10 * 60000, now = () => Date.now() } = {}) {
+  // host: de Bybit-website; bepaalt de quote (USDT op bybit.com, USDC op Bybit EU/NL).
+  constructor(market, venue, { ttlMs = 60000, maxStaleMs = 10 * 60000, now = () => Date.now(), host = null } = {}) {
     this.market = market;
     this.venue = venueOf(venue);
-    this.quote = quoteOf(venue);
+    this.quote = quoteFor(venue, host);
     this.ttlMs = ttlMs;
     this.maxStaleMs = maxStaleMs;
     this.now = now;

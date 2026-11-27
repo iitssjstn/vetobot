@@ -1,5 +1,10 @@
 """Beurzen (venues) in de leerserver: Bitvavo (standaard, X/EUR) en Bybit (X/USDT).
 
+Bybit EU en Bybit NL hebben (MiCA) geen USDT-paren; de bot handelt daar in X/USDC. Feedback van die bots
+heeft dus een venuePair X/USDC; to_base_pair maakt daar net als van X/USDT weer X/EUR van. De leerserver
+zelf haalt zijn Bybit-koersen altijd van bybit.com (X/USDT, publieke API): bewust zo gelaten, de koersen
+van USDT- en USDC-paren liggen vrijwel gelijk en de kenmerken zijn relatief.
+
 Bitvavo blijft precies zoals het was: dezelfde bestanden (agent_trades.json, candles/, features/),
 dezelfde kosten, dezelfde livecheck en dezelfde training/promotie. Bybit krijgt eigen bestanden
 (agent_trades-bybit.json, candles-bybit/, features-bybit/), zodat de Bitvavo-kant nooit vervuild raakt:
@@ -22,6 +27,8 @@ VENUES = {
 }
 OTHER = tuple(v for v in VENUES if v != DEFAULT)
 _QUOTES = {v['quote'] for v in VENUES.values()}
+# Quotes die terug naar X/EUR gaan (naam van de leerserver): ook USDC (Bybit EU/NL, zie boven).
+BASE_QUOTES = _QUOTES | {'USDC'}
 
 
 def venue_of(v):
@@ -45,8 +52,14 @@ def to_venue_pair(pair, venue):
 
 
 def to_base_pair(pair):
-    """Naam zoals de leerserver en de recepten hem kennen (X/EUR)."""
-    return to_venue_pair(pair, DEFAULT)
+    """Naam zoals de leerserver en de recepten hem kennen (X/EUR): X/USDT en X/USDC worden X/EUR."""
+    s = str(pair or '')
+    if '/' not in s:
+        return s
+    base, quote = s.split('/', 1)
+    if quote not in BASE_QUOTES:
+        return s
+    return f"{base}/{VENUES[DEFAULT]['quote']}"
 
 
 def trades_file(venue):
@@ -80,7 +93,9 @@ def validate(body, current):
         if not isinstance(b, dict):
             raise ValueError(f'Instellingen voor {label(v)} moeten een object zijn')
         c = {**DEFAULT_CFG, **out.get(v, {}), **b}
-        pairs = [to_base_pair(str(p).upper()) for p in c.get('pairs') or []]
+        raw = [str(p).upper() for p in c.get('pairs') or []]
+        # Coins voor de Bybit-koersen van de leerserver (bybit.com): tegen USDT of EUR, zoals altijd.
+        pairs = [to_base_pair(p) if p.split('/', 1)[-1] in _QUOTES else p for p in raw]
         if len(pairs) > 50 or any(not p.endswith('/EUR') for p in pairs):
             raise ValueError(f'Coins op {label(v)}: maximaal 50, tegen USDT (of EUR)')
         fee = float(c.get('feePct'))

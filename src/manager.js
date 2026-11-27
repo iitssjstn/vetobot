@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createExchange, createSharedMarket, PaperBroker, LiveBroker, BlockedLiveBroker, SharedMarket, userExchange } from './exchange.js';
 import { BybitLiveBroker } from './bybit-broker.js';
-import { EUR_RATE, QuoteRate, venueOf, venueLabel, venueAgent, liveAllowedOnVenue } from './venue.js';
+import { EUR_RATE, QuoteRate, venueOf, venueLabel, venueAgent, quoteFor, liveAllowedOnVenue } from './venue.js';
 import { Store } from './store.js';
 import { SecretStore } from './secrets.js';
 import { Settings } from './settings.js';
@@ -369,11 +369,12 @@ export class BotManager {
   }
 
   // Omrekenkoers euro per quote-munt, gedeeld door alle gebruikers op die beurs. Bitvavo: altijd 1.
+  // Bybit per website: USDT/EUR op bybit.com, USDC/EUR op Bybit EU/NL (quoteFor).
   rateFor(venue, host = null) {
     const v = venueOf(venue);
     if (v === 'bitvavo') return EUR_RATE;
     const key = this.#venueKey(v, host);
-    this.rates[key] ??= new QuoteRate(this.sharedFor(v, host), v);
+    this.rates[key] ??= new QuoteRate(this.sharedFor(v, host), v, { host });
     return this.rates[key];
   }
 
@@ -420,7 +421,9 @@ export class BotManager {
     if (open.length) throw new Error(`Er staan nog posities open op Bybit (${open.join(', ')}); sluit die eerst`);
     settings.setBybitHost(host);
     if (rt?.privateEx) { rt.privateEx.markets = undefined; rt.privateEx.marketsLoading = undefined; }
-    if (bot.venue === 'bybit') { bot.marketCache = null; bot.liveBalance = null; bot.lastError = null; }
+    // Andere website = mogelijk andere quote (USDT op bybit.com, USDC op Bybit EU/NL): marktlijst, saldo, het
+    // AI-trader-recept (coins in de nieuwe quote, via de sleutel in getAgent) en de meldingen over ontbrekende coins opnieuw.
+    if (bot.venue === 'bybit') { bot.marketCache = null; bot.liveBalance = null; bot.lastError = null; bot.missingPairs = null; }
     return settings.bybitHost;
   }
 
@@ -438,7 +441,18 @@ export class BotManager {
       throw new Error(`${venueLabel(v)}-keys werken niet: ${err.message}`);
     }
     const pick = (c) => ({ free: Number(bal?.[c]?.free) || 0, total: Number(bal?.[c]?.total) || 0 });
-    return { venue: v, label: venueLabel(v), balances: { EUR: pick('EUR'), USDT: pick('USDT') }, at: new Date().toISOString() };
+    // Saldo in de quote van deze website (USDT op bybit.com, USDC op Bybit EU/NL) plus EUR. USDT blijft er altijd
+    // bij (zoals altijd); quote zegt welke de bot gebruikt.
+    const host = v === 'bybit' ? ctx.settings.bybitHost : null;
+    const quote = quoteFor(v, host);
+    const balances = { EUR: pick('EUR'), USDT: pick('USDT'), ...(quote !== 'EUR' && quote !== 'USDT' ? { [quote]: pick(quote) } : {}) };
+    // Het quote-saldo ook in euro (laatst bekende of verse koers); geen koers: null (alleen ter informatie).
+    let eurPerQuote = null;
+    if (quote !== 'EUR') {
+      try { eurPerQuote = await this.rateFor(v, host).eurPerQuote({ allowStale: true }); } catch { eurPerQuote = null; }
+    }
+    return { venue: v, label: venueLabel(v), quote, eurPerQuote, quoteFreeEur: eurPerQuote ? balances[quote].free * eurPerQuote : null,
+      balances, at: new Date().toISOString() };
   }
 
   // Zet de data van vóór meerdere gebruikers (direct in data/) over naar de map van de admin.
@@ -500,11 +514,11 @@ export class BotManager {
       const raw = this.ml.agent ?? null;
       if (!raw) return null;
       const { approved, risky } = settings.agentLive;
-      const sig = `${bot.mode}|${bot.venue}|${approved.join(',')}|${Object.keys(risky ?? {}).join(',')}`;
+      const sig = `${bot.mode}|${bot.venue}|${bot.venueHost ?? ''}|${approved.join(',')}|${Object.keys(risky ?? {}).join(',')}`;
       if (memo?.raw !== raw || memo.sig !== sig) {
         const active = (k) => bot.mode === 'live' && (approved.includes(k) || Boolean(risky?.[k]));
-        // Coins van de leerserver (X/EUR) naar de beurs vertalen (Bybit: X/USDT); Bitvavo ongewijzigd.
-        memo = { raw, sig, agent: venueAgent(activeAgent(raw, active), bot.venue) };
+        // Coins van de leerserver (X/EUR) naar de beurs vertalen (Bybit: X/USDT, op Bybit EU/NL X/USDC); Bitvavo ongewijzigd.
+        memo = { raw, sig, agent: venueAgent(activeAgent(raw, active), bot.venue, bot.venueHost) };
       }
       return memo.agent;
     };
