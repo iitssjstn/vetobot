@@ -2,15 +2,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createExchange, createSharedMarket, PaperBroker, LiveBroker, BlockedLiveBroker, SharedMarket, userExchange } from './exchange.js';
 import { BybitLiveBroker } from './bybit-broker.js';
-import { EUR_RATE, QuoteRate, venueOf, venueLabel, venueAgent, quoteFor, liveAllowedOnVenue } from './venue.js';
+import { EUR_RATE, QuoteRate, venueOf, venueLabel, venueAgent, quoteFor, liveAllowedOnVenue, toVenuePair, toBasePair, venueCostShift } from './venue.js';
 import { Store } from './store.js';
 import { SecretStore } from './secrets.js';
 import { Settings } from './settings.js';
 import { Bot } from './bot.js';
 import { Notifier } from './notify.js';
 import { validateModel, validateAgent } from './mlmodel.js';
-import { activeAgent } from './agents.js';
+import { activeAgent, allAgentCoins } from './agents.js';
 import { evaluate as evaluateLearning, learnAlerts, weeklyDue, weeklyMessage, alertMessage, LEARN_CHECK } from './learncheck.js';
+import { collectVenueCompare, compareDue, compareAlert, compareAlertMessage, compareWeeklyLine, VENUE_COMPARE } from './venuecompare.js';
 
 // Beheert één bot per gebruiker.
 //
@@ -275,13 +276,188 @@ export class BotManager {
         this.log.warn(`Leert hij echt? ${c.title}: ${c.text}`);
         await ctx.notifier?.send('learning', alertMessage(c)).catch(() => {});
       }
-      if (week) await ctx.notifier?.send('learning', weeklyMessage(result)).catch(() => {});
+      if (week) {
+        const msg = weeklyMessage(result);
+        // Bitvavo ↔ Bybit: het laatste oordeel als regel erbij (alleen als er al een vergelijking is).
+        const vc = compareWeeklyLine(this.venueCompareCached(admin.id));
+        if (vc) msg.message += `\n\n${vc}`;
+        await ctx.notifier?.send('learning', msg).catch(() => {});
+      }
       return { result, sent: send.map((c) => c.key), weekly: week };
     } catch (err) {
       this.log.error(`Leercontrole mislukt: ${err.message}`);
       return null;
     } finally {
       this._learnBusy = false;
+    }
+  }
+
+  // ---------- Bitvavo ↔ Bybit (src/venuecompare.js) ----------
+  // Vergelijkt per gebruiker de marktdata van Bitvavo met die van de gekozen Bybit-website (ook als hij nu op
+  // Bitvavo handelt: alleen publieke data, geen keys) en wat de AI-trader op beide ziet. Draait op de achtergrond
+  // (eigen timer, nooit in de check), hooguit eens per 6 uur per gebruiker; candles komen via de gedeelde
+  // publieke verbindingen (sharedFor) met een eigen cache van 30 minuten, zodat gebruikers op dezelfde website
+  // de verzoeken delen. Het resultaat staat in <gebruiker>/venue-compare.json (na een herstart meteen zichtbaar).
+  #vcFile(ctx) {
+    return path.join(ctx.dir, 'venue-compare.json');
+  }
+
+  venueCompareCached(userId) {
+    const ctx = this.contexts.get(userId);
+    if (!ctx) return null;
+    if (ctx.venueCompare === undefined) {
+      try { ctx.venueCompare = JSON.parse(fs.readFileSync(this.#vcFile(ctx), 'utf8')); } catch { ctx.venueCompare = null; }
+    }
+    return ctx.venueCompare;
+  }
+
+  // Wat de uitkomst bepaalt buiten de markt: website, AI-trader (versie), drempelbijstelling en coins.
+  #vcInput(ctx) {
+    const { settings } = ctx;
+    const host = settings.bybitHost;
+    const raw = this.ml.agent ?? null;
+    const { approved, risky } = settings.agentLive;
+    const agent = raw ? activeAgent(raw, (k) => approved.includes(k) || Boolean(risky?.[k])) : null;
+    const bybitPairs = settings.pairsFor('bybit');
+    const coins = [...new Set([...allAgentCoins(agent).map(toBasePair), ...(settings.pairs ?? []).map(toBasePair), ...bybitPairs.map(toBasePair)])].sort();
+    const thrAdjust = Number(settings.strategy?.agentThrAdjust) || 0;
+    const sig = [host, raw?.recipeKey ?? '', raw?.meta?.trainedAt ?? '', thrAdjust, coins.join(',')].join('|');
+    return { host, agent, coins, bybitPairs, thrAdjust, sig };
+  }
+
+  // Candles via de gedeelde publieke verbinding van een beurs (en website), 30 minuten bewaard voor iedereen.
+  #vcCandles(venue, host = null) {
+    this.vcCandleCache ??= new Map();
+    const shared = this.sharedFor(venue, host);
+    const key = `${venue}|${venue === 'bybit' ? host ?? 'bybit.com' : ''}`;
+    const ttl = VENUE_COMPARE.candleCacheMinutes * 60000;
+    return async (pair, tf, limit) => {
+      const k = `${key}|${pair}|${tf}|${limit}`;
+      const hit = this.vcCandleCache.get(k);
+      if (hit && Date.now() - hit.at < ttl) return hit.value;
+      const value = await shared.fetchOHLCV(pair, tf, undefined, limit);
+      for (const [kk, v] of this.vcCandleCache) if (Date.now() - v.at > ttl) this.vcCandleCache.delete(kk);
+      this.vcCandleCache.set(k, { at: Date.now(), value });
+      this.vcFetches = (this.vcFetches ?? 0) + 1;
+      return value;
+    };
+  }
+
+  // Trades van de AI-trader per beurs (paper en live). Bybit: uit de geladen stores, of alleen-lezen uit de
+  // bestanden (geen stores aanmaken voor iemand die nooit op Bybit handelde).
+  #vcTrades(ctx) {
+    const of = (stores) => Object.entries(stores ?? {}).flatMap(([mode, st]) => (st?.state?.trades ?? []).map((t) => (t.mode ? t : { ...t, mode })));
+    const bitvavo = of(ctx.stores);
+    if (ctx.venues?.bybit?.stores) return { bitvavo, bybit: of(ctx.venues.bybit.stores) };
+    const bybit = [];
+    for (const mode of ['paper', 'live']) {
+      try {
+        const st = JSON.parse(fs.readFileSync(path.join(ctx.dir, `state-${mode}-bybit.json`), 'utf8'));
+        bybit.push(...(st.trades ?? []).map((t) => (t.mode ? t : { ...t, mode })));
+      } catch { /* geen Bybit-trades */ }
+    }
+    return { bitvavo, bybit };
+  }
+
+  // Opnieuw vergelijken (als het mag volgens compareDue). manual: de knop "Opnieuw vergelijken" (hooguit eens per
+  // 15 minuten; te vroeg geeft een fout met de wachttijd). Fouten bij het ophalen komen als ⚠️ in het resultaat;
+  // een onverwachte fout alleen in het log. Raakt de handel niet (eigen timer, geen locks van de bot).
+  async refreshVenueCompare(userId, { manual = false, now = Date.now() } = {}) {
+    const ctx = this.contexts.get(userId);
+    if (!ctx) throw new Error('Geen bot voor deze gebruiker');
+    if (ctx.vcBusy) return ctx.vcBusy;
+    const input = this.#vcInput(ctx);
+    const prev = this.venueCompareCached(userId);
+    const due = compareDue(prev, now, { manual, sig: input.sig });
+    if (!due.due) {
+      if (manual) throw new Error(`Net vergeleken; opnieuw kan over ${due.waitMinutes} min (hooguit eens per ${VENUE_COMPARE.manualMinMinutes} minuten)`);
+      return prev;
+    }
+    const { host } = input;
+    const slippage = Number(ctx.settings.risk?.slippagePct) || 0;
+    const job = (async () => {
+      try {
+        const result = await collectVenueCompare({
+          coins: input.coins, bybitPairs: input.bybitPairs, agent: input.agent, thrAdjust: input.thrAdjust, host, quote: quoteFor('bybit', host),
+          bitvavo: { loadMarkets: () => this.sharedFor('bitvavo').loadMarkets(), fetchCandles: this.#vcCandles('bitvavo'), toVenue: (p) => p },
+          bybit: { loadMarkets: () => this.sharedFor('bybit', host).loadMarkets(), fetchCandles: this.#vcCandles('bybit', host), toVenue: (p) => toVenuePair(p, 'bybit', host) },
+          eurPerQuote: () => this.rateFor('bybit', host).eurPerQuote({ allowStale: true }),
+          costShift: (part, pair) => venueCostShift(part, toVenuePair(pair, 'bybit', host), 'bybit', slippage),
+          trades: this.#vcTrades(ctx),
+          ...(this.vcSleep ? { sleep: this.vcSleep } : {}),
+          spacingMs: this.vcSpacingMs ?? VENUE_COMPARE.spacingMs,
+          now: this.vcNow ?? (() => Date.now()),
+        });
+        result.sig = input.sig;
+        result.manual = manual;
+        ctx.venueCompare = result;
+        try { fs.writeFileSync(this.#vcFile(ctx), JSON.stringify(result)); } catch { /* dan alleen in het geheugen */ }
+        this.log.info(`Bitvavo ↔ Bybit (${ctx.user.username}): ${result.verdict.text} (${result.coins.length} coins, hooguit ${result.requests} verzoeken)`);
+        await this.#venueCompareAlert(ctx, result).catch((err) => this.log.error(`Melding Bitvavo ↔ Bybit mislukt: ${err.message}`));
+        return result;
+      } catch (err) {
+        this.log.error(`Bitvavo ↔ Bybit vergelijken mislukt (${ctx.user.username}): ${err.message}`);
+        return prev;
+      } finally {
+        ctx.vcBusy = null;
+      }
+    })();
+    ctx.vcBusy = job;
+    return job;
+  }
+
+  // Melding (alleen het admin-account, meldingsoort learning): direct als het totaaloordeel ❌ wordt, één keer
+  // per overgang. De toestand staat in de instellingen (learnCheck.venueCompare), dus een herstart stuurt niets dubbel.
+  async #venueCompareAlert(ctx, result) {
+    if (ctx.user.role !== 'admin') return false;
+    const s = ctx.settings;
+    const { send, state } = compareAlert(s.learnCheck?.venueCompare ?? {}, result);
+    s.setLearnCheck({ venueCompare: state });
+    if (!send || !s.notify.events.learning) return false;
+    this.log.warn(`Bitvavo ↔ Bybit: ${result.verdict.text} (${result.verdict.detail})`);
+    await ctx.notifier?.send('learning', compareAlertMessage(result)).catch(() => {});
+    return true;
+  }
+
+  // Voor GET /api/venue-compare: het laatste resultaat (meteen, zonder te wachten), of het nog bezig is en wanneer
+  // de volgende vergelijking komt. Alleen als de achtergrondplanner draait (startAll), start een verouderd
+  // resultaat hier ook een nieuwe ronde (zonder erop te wachten).
+  venueCompare(userId, now = Date.now()) {
+    const ctx = this.contexts.get(userId);
+    if (!ctx) throw new Error('Geen bot voor deze gebruiker');
+    const input = this.#vcInput(ctx);
+    const prev = this.venueCompareCached(userId);
+    const due = compareDue(prev, now, { sig: input.sig });
+    if (due.due && this.vcTimer && !ctx.vcBusy) this.refreshVenueCompare(userId).catch(() => {});
+    const manual = compareDue(prev, now, { manual: true });
+    return { ...(prev ?? { pending: true }), busy: Boolean(ctx.vcBusy), host: prev?.host ?? input.host, quote: prev?.quote ?? quoteFor('bybit', input.host),
+      stale: Boolean(prev && prev.sig !== input.sig), venue: venueOf(ctx.settings.exchange), refreshInMinutes: manual.due ? 0 : manual.waitMinutes,
+      nextAutoMinutes: due.due ? 0 : due.waitMinutes, thresholds: VENUE_COMPARE };
+  }
+
+  // De knop "Opnieuw vergelijken": controleert de throttle meteen (te vroeg: fout met de wachttijd) en rekent op
+  // de achtergrond; het dashboard haalt daarna het resultaat op.
+  startVenueCompare(userId, now = Date.now()) {
+    const ctx = this.contexts.get(userId);
+    if (!ctx) throw new Error('Geen bot voor deze gebruiker');
+    if (ctx.vcBusy) return { started: false, busy: true };
+    const due = compareDue(this.venueCompareCached(userId), now, { manual: true });
+    if (!due.due) throw new Error(`Net vergeleken; opnieuw kan over ${due.waitMinutes} min (hooguit eens per ${VENUE_COMPARE.manualMinMinutes} minuten)`);
+    this.refreshVenueCompare(userId, { manual: true, now }).catch(() => {});
+    return { started: true, busy: true };
+  }
+
+  // Achtergrondplanner: gebruikers één voor één (nooit tegelijk), elk alleen als zijn resultaat verouderd is.
+  async checkVenueCompare() {
+    if (this._vcRunning) return;
+    this._vcRunning = true;
+    try {
+      for (const ctx of [...this.contexts.values()]) {
+        if (this.contexts.get(ctx.user.id) !== ctx) continue;
+        await this.refreshVenueCompare(ctx.user.id).catch((err) => this.log.error(`Bitvavo ↔ Bybit (${ctx.user.username}): ${err.message}`));
+      }
+    } finally {
+      this._vcRunning = false;
     }
   }
 
@@ -644,6 +820,12 @@ export class BotManager {
     // "Leert hij echt?": meldingen en het weekoverzicht, elke 5 minuten (los van de handel).
     clearInterval(this.learnTimer);
     this.learnTimer = setInterval(() => { this.checkLearning().catch(() => {}); }, LEARN_CHECK.cacheMinutes * 60 * 1000);
+    // Bitvavo ↔ Bybit: elke 10 minuten kijken wie een verouderde vergelijking heeft (hooguit eens per 6 uur per
+    // gebruiker); de eerste keer 2 minuten na de start, zodat het opstarten van de bots voorgaat.
+    clearInterval(this.vcTimer);
+    clearTimeout(this.vcStartTimer);
+    this.vcTimer = setInterval(() => { this.checkVenueCompare().catch(() => {}); }, 10 * 60 * 1000);
+    this.vcStartTimer = setTimeout(() => { this.checkVenueCompare().catch(() => {}); }, 2 * 60 * 1000);
     // Eigen model: bij de start en daarna elk half uur kijken of er een nieuwe is.
     clearInterval(this.modelTimer);
     clearInterval(this.microTimer);
@@ -702,6 +884,9 @@ export class BotManager {
     clearInterval(this.summaryTimer);
     clearInterval(this.healthTimer);
     clearInterval(this.learnTimer);
+    clearInterval(this.vcTimer);
+    clearTimeout(this.vcStartTimer);
+    this.vcTimer = null;
     clearInterval(this.modelTimer);
     clearInterval(this.microTimer);
     clearInterval(this.armsTimer);
