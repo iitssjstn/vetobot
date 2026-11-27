@@ -478,6 +478,18 @@ Je kunt andere mensen uitnodigen. Iedereen heeft een eigen bot met eigen Bitvavo
 
 Let op als je dit voor anderen draait: je bewaart dan hun API-keys op jouw server en wie root heeft, kan erbij. Laat iedereen een Bitvavo-key maken **zonder opnamerechten**, gekoppeld aan het IP van je server. Handel je voor anderen tegen betaling of beheer je hun geld, dan kan dat onder de Europese MiCA-regels vergunningplichtig zijn. Voor vrienden die hun eigen account en eigen keys gebruiken is het een hulpmiddel, geen beleggingsadvies.
 
+## Bybit (paper)
+
+Naast Bitvavo kan elke gebruiker Bybit kiezen bij Instellingen → Handel & risico → **Beurs**. Standaard (en bij een oud `settings.json`) blijft het Bitvavo, precies zoals het was.
+
+- **Alleen paper (fase 1).** Live op Bybit is geblokkeerd, in het dashboard én op de server ("Live op Bybit (op eigen risico) komt in de volgende stap"). Eén centrale check (`liveAllowedOnVenue` in `src/venue.js`) bepaalt dat; live op Bybit komt later als eigen-risico-keuze.
+- **USDT-paren, bedragen in euro.** Op Bybit handelt de bot in `X/USDT` (BTC/USDT, SOL/USDT …). Inzet, winst, limieten, paper-saldo en het dashboard blijven in euro, omgerekend met de actuele USDT/EUR-koers van Bybit (ticker `USDT/EUR`, anders `EUR/USDT` omgekeerd; één minuut bewaard). Zonder koers koopt de bot niets (duidelijke fout); verkopen kan met de laatst bekende koers. Koersen staan in USDT; trades bewaren ook de USDT-bedragen en de gebruikte koers.
+- **Fee.** Bybit spot rekent standaard 0,1% (taker en maker). Stond je fee nog op de Bitvavo-standaard (0,25% / 0,15%), dan zet de bot hem bij het kiezen van Bybit op 0,1% (en terug bij Bitvavo); een eigen fee blijft staan. Het dashboard meldt wat er gebeurde.
+- **Wisselen** kan alleen zonder open posities. Elke beurs heeft eigen bestanden (`state-paper-bybit.json`, `bandit-bybit.json`, `learning-bybit.db`); je Bitvavo-geschiedenis blijft staan. Coins kies je per beurs; zonder eigen keuze neemt Bybit je Bitvavo-coins over als USDT-paar.
+- **Marktdata** gaat per beurs via één gedeelde publieke verbinding (cache, rate limit).
+- **AI-trader en leerserver.** Op Bybit gebruikt de AI-trader dezelfde recepten: de kenmerken zijn relatieve indicatoren, met BTC/USDT als BTC-context, en de coins van de leerserver (`X/EUR`) worden `X/USDT`. De leerserver leert nog op Bitvavo-data, dus de verwachtingen kunnen op Bybit minder precies zijn. Trades van een Bybit-bot gaan **niet** als feedback naar de leerserver (dat zou de Bitvavo-kosten en de livecheck vervuilen), en orderboek-kenmerken (van Bitvavo) worden op Bybit niet gebruikt.
+- **API-keys.** Bybit-key en -secret staan versleuteld bij Instellingen → API-keys & account. Ze worden nu alleen gebruikt voor **Bybit-keys testen** (saldo ophalen), nooit voor orders.
+
 ## Live trading
 
 Doe dit pas na weken paper trading met resultaten waar je tevreden over bent.
