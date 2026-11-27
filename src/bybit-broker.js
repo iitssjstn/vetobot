@@ -1,7 +1,8 @@
 import ccxt from 'ccxt';
 import { orderTiming, hasTradingKeys } from './exchange.js';
 
-// ---------- Live handelen op Bybit (spot, paren in USDT), alleen op eigen risico ----------
+// ---------- Live handelen op Bybit (spot, paren in USDT op bybit.com, USDC op Bybit EU/NL), alleen op eigen risico ----------
+// De quote-munt komt van fx (QuoteRate per website, zie quoteFor in venue.js). Hieronder staat "USDT" voor de quote-munt.
 // Zelfde interface als LiveBroker (Bitvavo): buy/sell (market en limiet), placeStop/cancelStop/fetchStop/findStop.
 // Alle bedragen die de bot ziet zijn in euro (costEur, feeEur); daarnaast bewaren we de bedragen in USDT
 // (costQuote, feeQuote) en de koers waarmee is omgerekend (eurRate), net als PaperBroker met fx.
@@ -35,7 +36,7 @@ import { orderTiming, hasTradingKeys } from './exchange.js';
 // hem niet, dan heet de stop 'open' (getriggerd): de bot verkoopt dan zelf NIET (annuleren lukt niet, dus geen
 // eigen verkoop), zodat er nooit dubbel verkocht wordt; de saldocontrole meldt het.
 
-const BYBIT_MIN_COST = 5; // USDT: gangbaar minimum per spot-order als de markt geen limits.cost.min geeft
+const BYBIT_MIN_COST = 5; // in de quote-munt (USDT/USDC): gangbaar minimum per spot-order als de markt geen limits.cost.min geeft
 const STOP_FILTER = { orderFilter: 'tpslOrder' };
 // Bybit-fouten waarbij de order misschien tóch is aangemaakt of geannuleerd (time-out aan de kant van Bybit,
 // "create/cancel failed"). ccxt maakt er InvalidOrder/ExchangeError van, maar het is géén duidelijke weigering.
@@ -52,7 +53,7 @@ function minimumError(text) {
 }
 
 export class BybitLiveBroker {
-  // fx: { quote: 'USDT', eurPerQuote({ allowStale }) } (QuoteRate van de manager).
+  // fx: { quote: 'USDT' | 'USDC', eurPerQuote({ allowStale }) } (QuoteRate van de manager, per Bybit-website).
   // allowed: () => liveAllowedOnVenue('bybit', settings). Extra vangnet: zonder geldig eigen-risico-akkoord
   // koopt deze broker niets, wat de bot ook vraagt. Verkopen en stops gaan altijd door (een positie moet dicht kunnen).
   constructor(ex, fx, { allowed = null } = {}) {
@@ -61,7 +62,11 @@ export class BybitLiveBroker {
     this.allowed = allowed;
     this.mode = 'live';
     this.venue = 'bybit';
-    this.quote = 'USDT';
+  }
+
+  // Quote-munt van de gekozen website: USDT (bybit.com) of USDC (Bybit EU/NL). Zonder fx: USDT.
+  get quote() {
+    return this.fx?.quote ?? 'USDT';
   }
 
   #requireKeys() {
@@ -205,11 +210,11 @@ export class BybitLiveBroker {
     if (ok && !ok.ok) throw new Error(ok.reason);
     this.#requireKeys();
     await this.ex.loadMarkets();
-    // Kopen: een verse USDT/EUR-koers (anders geen aankoop); de inzet in euro wordt USDT.
+    // Kopen: een verse koers quote/EUR (anders geen aankoop); de inzet in euro wordt de quote-munt (USDT/USDC).
     const rate = await this.fx.eurPerQuote();
     const stake = stakeEur / rate;
     const min = this.minimums(pair);
-    if (stake < min.cost) throw minimumError(`Bybit: inzet ${stake.toFixed(2)} USDT (€ ${stakeEur.toFixed(2)}) ligt onder het minimum van ${pair} (${min.cost} USDT)`);
+    if (stake < min.cost) throw minimumError(`Bybit: inzet ${stake.toFixed(2)} ${this.quote} (€ ${stakeEur.toFixed(2)}) ligt onder het minimum van ${pair} (${min.cost} ${this.quote})`);
     if (opts.limit) {
       const t = await this.ex.fetchTicker(pair);
       const price = Number(this.ex.priceToPrecision(pair, t.bid ?? t.last));
@@ -246,7 +251,7 @@ export class BybitLiveBroker {
     const t = await this.ex.fetchTicker(pair).catch(() => null);
     const px = num(t?.last) > 0 ? num(t.last) : num(t?.bid);
     if (!(amt > 0) || (min.amount > 0 && amt < min.amount) || (px > 0 && amt * px < min.cost)) {
-      throw minimumError(`Bybit: verkoop van ${amt} ${pair.split('/')[0]}${px > 0 ? ` (± ${(amt * px).toFixed(2)} USDT)` : ''} ligt onder het minimum van ${pair} (${min.cost} USDT${min.amount ? `, ${min.amount} ${pair.split('/')[0]}` : ''})`);
+      throw minimumError(`Bybit: verkoop van ${amt} ${pair.split('/')[0]}${px > 0 ? ` (± ${(amt * px).toFixed(2)} ${this.quote})` : ''} ligt onder het minimum van ${pair} (${min.cost} ${this.quote}${min.amount ? `, ${min.amount} ${pair.split('/')[0]}` : ''})`);
     }
     if (opts.limit && (t?.ask ?? t?.last)) {
       const price = Number(this.ex.priceToPrecision(pair, t.ask ?? t.last));
@@ -304,7 +309,7 @@ export class BybitLiveBroker {
     if (!(trigger > 0)) throw new Error(`Ongeldige stopprijs ${stopPrice}`);
     if (amt * trigger < min.cost) {
       const rate = this.fx?.last?.() ?? null;
-      return { skipped: `de stop is ${(amt * trigger).toFixed(2)} USDT${rate ? ` (± € ${(amt * trigger * rate).toFixed(2)})` : ''} waard, onder het minimum van Bybit (${min.cost} USDT); de bot bewaakt de noodstop zelf` };
+      return { skipped: `de stop is ${(amt * trigger).toFixed(2)} ${this.quote}${rate ? ` (± € ${(amt * trigger * rate).toFixed(2)})` : ''} waard, onder het minimum van Bybit (${min.cost} ${this.quote}); de bot bewaakt de noodstop zelf` };
     }
     const clientOrderId = `vbs${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
     const o = await this.#create('createOrder', pair, 'market', 'sell', amt, undefined, { triggerPrice: trigger, ...STOP_FILTER, clientOrderId });

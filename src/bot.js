@@ -12,7 +12,7 @@ import { MARKET_TF, RISK, LEARN, EXPLORE, explorationOutcome, rewardSummary, onl
 import { SAFETY, PUMP, exchangeStopPrice, pumpLevel, stopStatus, compareBalances, issueKey } from './safety.js';
 import path from 'node:path';
 import { Health, alertMessage } from './health.js';
-import { EUR_RATE, venueOf, venueLabel, quoteOf, toVenuePair, liveAllowedOnVenue, venueAccord, checkAccordInput, ACCORD_VENUES, venueCostShift, venueCostPct } from './venue.js';
+import { EUR_RATE, venueOf, venueLabel, quoteFor, toVenuePair, liveAllowedOnVenue, venueAccord, checkAccordInput, ACCORD_VENUES, venueCostShift, venueCostPct } from './venue.js';
 
 // Bedragen en koersen in Nederlandse notatie voor meldingen (€ 81,31 / € 0,3455 / −€ 0,36).
 const nl = (n, digits, min = digits) => new Intl.NumberFormat('nl-NL', { minimumFractionDigits: min, maximumFractionDigits: digits }).format(n);
@@ -107,13 +107,24 @@ export class Bot {
     return venueLabel(this.venue);
   }
 
-  get quote() {
-    return quoteOf(this.venue);
+  // Bybit-website (bybit.com / bybit.eu / bybit.nl), of null op een andere beurs.
+  get venueHost() {
+    return this.venue === 'bybit' ? this.settings?.bybitHost ?? null : null;
   }
 
-  // BTC als marktcontext voor de AI-trader: BTC/EUR op Bitvavo, BTC/USDT op Bybit.
+  // Quote-munt van de beurs: EUR op Bitvavo, USDT op bybit.com, USDC op Bybit EU/NL (zie quoteFor).
+  get quote() {
+    return quoteFor(this.venue, this.venueHost);
+  }
+
+  // Coin in de quote van deze beurs en website (SOL/EUR → SOL/USDT of SOL/USDC).
+  venuePair(pair) {
+    return toVenuePair(pair, this.venue, this.venueHost);
+  }
+
+  // BTC als marktcontext voor de AI-trader: BTC/EUR op Bitvavo, BTC/USDT op bybit.com, BTC/USDC op Bybit EU/NL.
   get btcPair() {
-    return toVenuePair('BTC/EUR', this.venue);
+    return this.venuePair('BTC/EUR');
   }
 
   // Euro per quote-munt (synchroon, laatst bekende koers): 1 op Bitvavo, null als hij (nog) onbekend is.
@@ -314,7 +325,7 @@ export class Bot {
   get pairs() {
     if (!this.following) return this.settings.pairs;
     // Volgen op een andere beurs: dezelfde coins, met de quote van je eigen beurs (SOL/EUR → SOL/USDT).
-    return this.leader.venue === this.venue ? this.leader.pairs : this.leader.pairs.map((p) => toVenuePair(p, this.venue));
+    return this.leader.venue === this.venue && (this.leader.quote ?? this.quote) === this.quote ? this.leader.pairs : [...new Set(this.leader.pairs.map((p) => this.venuePair(p)))];
   }
 
   get timeframe() {
@@ -346,7 +357,7 @@ export class Bot {
     return this.#exclusive(async () => {
       if (!this.following) return;
       // De leider op een andere beurs: dezelfde coin met de quote van je eigen beurs.
-      const pair = this.leader?.venue && this.leader.venue !== this.venue ? toVenuePair(leaderPair, this.venue) : leaderPair;
+      const pair = this.leader?.venue && (this.leader.venue !== this.venue || (this.leader.quote ?? this.quote) !== this.quote) ? this.venuePair(leaderPair) : leaderPair;
       const pos = this.store.state.positions[pair];
       try {
         if (type === 'open' && !pos) {
@@ -610,13 +621,14 @@ export class Bot {
     return run;
   }
 
-  // Alle actieve spotmarkten in de quote van de beurs (Bitvavo: EUR, Bybit: USDT) met 24-uursvolume,
+  // Alle actieve spotmarkten in de quote van de beurs (Bitvavo: EUR, Bybit: USDT, Bybit EU/NL: USDC) met 24-uursvolume,
   // gecachet voor 10 minuten. Het volume staat in euro (op Bybit omgerekend), de koers in de quote-munt.
   async listMarkets() {
     if (this.marketCache && Date.now() - this.marketCache.at < 10 * 60 * 1000) return this.marketCache.list;
     await this.ex.loadMarkets();
     const quote = this.quote;
-    const eur = Object.values(this.ex.markets).filter((m) => m.quote === quote && m.spot && m.active !== false);
+    // Niet-euro-quote (Bybit): de euro zelf (EUR/USDT, EUR/USDC) is geen coin om te handelen.
+    const eur = Object.values(this.ex.markets).filter((m) => m.quote === quote && m.spot && m.active !== false && (quote === 'EUR' || m.base !== 'EUR'));
     const rate = quote === 'EUR' ? 1 : (await this.fx?.eurPerQuote?.().catch(() => null)) ?? this.eurRate();
     let tickers = {};
     try {
@@ -1158,7 +1170,9 @@ export class Bot {
       // altijd bewaakt blijft, ook als de coin uit de lijst is gehaald.
       // Met de AI-trader aan: ook de coins die hij zelf gekozen heeft (hij zoekt uit waar hij het best handelt).
       const agentCoins = this.strategy.agentMode && !this.following ? allAgentCoins(this.getAgent?.()) : [];
-      const pairs = [...new Set([...this.pairs, ...agentCoins, ...Object.keys(this.store.state.positions)])];
+      // Niet-Bitvavo: coins die op deze beurs (website) niet bestaan overslaan, met één melding (zie #knownPairs).
+      const wanted = await this.#knownPairs([...new Set([...this.pairs, ...agentCoins])]);
+      const pairs = [...new Set([...wanted, ...Object.keys(this.store.state.positions)])];
       const venueAtStart = this.venue;
       await this.#prefetch(pairs);
       // Live: eerst de stand bij Bitvavo (saldo, stop-orders, zo nodig de saldocontrole), pas daarna de coins.
@@ -1325,6 +1339,32 @@ export class Bot {
   // gedeelde cache gevuld is voordat de coins één voor één beoordeeld worden. Scheelt bij
   // veel coins veel tijd: anders wacht elke coin op zijn eigen verzoek naar Bitvavo.
   // Fouten hier zijn niet erg; dan haalt #handlePair het gewoon zelf op.
+  // Op een andere beurs dan Bitvavo (bijv. Bybit EU, waar alleen USDC-paren bestaan): eigen coins en coins van de
+  // AI-trader die op deze website geen markt hebben, slaan we over in plaats van elke check een fout per coin te
+  // geven. Eén melding in het activiteitenlog per coin (per beurs en website). Posities vallen hier buiten: die
+  // blijven altijd bewaakt. Markten (nog) onbekend: de lijst zoals hij is. Bitvavo: precies zoals altijd.
+  async #knownPairs(list) {
+    if (this.venue === 'bitvavo' || !list.length) return list;
+    try {
+      await this.ex.loadMarkets?.();
+    } catch {
+      return list;
+    }
+    const markets = this.ex.markets;
+    if (!markets || !Object.keys(markets).length) return list;
+    const missing = list.filter((p) => !markets[p]);
+    if (!missing.length) return list;
+    const scope = `${this.venue}|${this.venueHost ?? ''}`;
+    if (this.missingPairs?.scope !== scope) this.missingPairs = { scope, seen: new Set() };
+    const fresh = missing.filter((p) => !this.missingPairs.seen.has(p));
+    if (fresh.length) {
+      for (const p of fresh) this.missingPairs.seen.add(p);
+      const site = this.venueHost ? ` (${this.venueHost})` : '';
+      this.#event('warn', null, `${fresh.length === 1 ? 'Deze coin bestaat' : 'Deze coins bestaan'} niet op ${this.venueLabel}${site} (paren in ${this.quote}) en ${fresh.length === 1 ? 'wordt' : 'worden'} overgeslagen: ${fresh.join(', ')}.`);
+    }
+    return list.filter((p) => markets[p]);
+  }
+
   async #prefetch(pairs) {
     if (pairs.length < 2) return;
     this.#step(`Koersen en candles van ${pairs.length} coins ophalen`);

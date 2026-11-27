@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { PUMP_DEFAULTS } from './safety.js';
-import { VENUES, venueOf, venueLabel, toVenuePair, liveAllowedOnVenue } from './venue.js';
+import { VENUES, venueOf, venueLabel, toVenuePair, quoteFor, liveAllowedOnVenue } from './venue.js';
 
 // Instellingen die je in het dashboard wijzigt: handelsmodus en AI-provider.
 // Opgeslagen in data/settings.json. Bij de eerste start komen de waarden uit
@@ -223,12 +223,19 @@ export class Settings {
   }
 
   // Coins voor een beurs. Bitvavo: de gewone lijst (pairs). Andere beurs: een eigen lijst; nog niet gekozen,
-  // dan de Bitvavo-lijst vertaald (SOL/EUR → SOL/USDT).
+  // dan de Bitvavo-lijst vertaald (SOL/EUR → SOL/USDT op bybit.com, SOL/USDC op Bybit EU/NL).
+  // Een eigen lijst met een andere quote (bijv. gekozen op bybit.com in USDT, nu op Bybit EU) wordt vertaald naar
+  // de quote van de huidige website. Coins die daar niet bestaan, slaat de bot over (zie Bot.#tick).
   pairsFor(venue) {
     const v = venueOf(venue);
     if (v === 'bitvavo') return this.data.pairs;
+    const host = v === 'bybit' ? this.bybitHost : null;
     const own = this.data.venuePairs?.[v];
-    return Array.isArray(own) && own.length ? own : this.data.pairs.map((p) => toVenuePair(p, v));
+    const list = Array.isArray(own) && own.length ? own : this.data.pairs;
+    const quote = quoteFor(v, host);
+    // Ongewijzigde lijst (de quote klopt al): hetzelfde object, zoals altijd.
+    if (list === own && own.every((p) => String(p).endsWith(`/${quote}`))) return own;
+    return [...new Set(list.map((p) => toVenuePair(p, v, host)))];
   }
 
   // Wisselt van beurs. Fees: stond de fee nog op de standaard van de oude beurs, dan de standaard van de
