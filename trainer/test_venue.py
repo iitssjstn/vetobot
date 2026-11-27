@@ -93,6 +93,16 @@ class Venues(unittest.TestCase):
         self.assertEqual(venues.data_dir('/d', 'candles', 'bitvavo'), os.path.join('/d', 'candles'))
         self.assertEqual(venues.data_dir('/d', 'candles', 'bybit'), os.path.join('/d', 'candles-bybit'))
 
+    def test_usdc_back_to_eur(self):
+        # Bybit EU/NL (MiCA): de bot handelt in X/USDC; de leerserver kent alles als X/EUR.
+        self.assertEqual(venues.to_base_pair('SOL/USDC'), 'SOL/EUR')
+        self.assertEqual(venues.to_base_pair('SOL/USDT'), 'SOL/EUR')
+        self.assertEqual(venues.to_base_pair('SOL/EUR'), 'SOL/EUR')
+        self.assertEqual(venues.to_base_pair('SOL/PLN'), 'SOL/PLN')
+        self.assertEqual(venues.to_base_pair('SOL'), 'SOL')
+        # Koersen van de leerserver blijven van bybit.com in USDT.
+        self.assertEqual(venues.to_venue_pair(venues.to_base_pair('SOL/USDC'), 'bybit'), 'SOL/USDT')
+
     def test_rows_without_venue_are_bitvavo(self):
         rows = [{'a': 1}, {'a': 2, 'venue': 'bitvavo'}, {'a': 3, 'venue': 'bybit'}, 'kapot']
         self.assertEqual([r['a'] for r in venues.rows_of(rows, 'bitvavo')], [1, 2])
@@ -232,6 +242,18 @@ class ServerVenue(unittest.TestCase):
         self.assertEqual(live['r1']['n'], 1, 'alleen de Bitvavo-trade telt in agents.json')
         self.assertIsNone(agents_before)
         self.assertEqual(self.s.venue_live('bybit')['r1']['n'], 1, 'verkenner telt niet')
+
+    def test_feedback_from_bybit_eu_usdc(self):
+        # Feedback van een bot op Bybit EU: pair X/USDC wordt X/EUR, de naam op de beurs blijft in venuePair.
+        before = self.s.read_json('agent_trades.json', None)
+        self.s.add_feedback([self.bybit_trade(pair='SOL/USDC'), self.bybit_trade(pair='ETH/USDC', pct=-0.1)])
+        by = self.s.read_json('agent_trades-bybit.json', [])
+        self.assertEqual([r['pair'] for r in by], ['SOL/EUR', 'ETH/EUR'])
+        self.assertEqual([r['venuePair'] for r in by], ['SOL/USDC', 'ETH/USDC'])
+        self.assertEqual(self.s.read_json('agent_trades.json', None), before, 'Bitvavo onaangeroerd')
+        self.assertEqual(self.s.venue_live('bybit')['r1']['n'], 2)
+        # Coins voor de Bybit-koersen van de leerserver: X/EUR (opgehaald als X/USDT van bybit.com).
+        self.assertEqual(self.s.venue_pairs({}, 'bybit', [r['venuePair'] for r in by]), ['SOL/EUR', 'ETH/EUR'])
 
     def test_old_data_same_livecheck_and_costs(self):
         rows = old_rows()
