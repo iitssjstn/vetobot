@@ -12,6 +12,7 @@ import { MARKET_TF, RISK, LEARN, EXPLORE, explorationOutcome, rewardSummary, onl
 import { SAFETY, PUMP, exchangeStopPrice, pumpLevel, stopStatus, compareBalances, issueKey } from './safety.js';
 import path from 'node:path';
 import { Health, alertMessage } from './health.js';
+import { EUR_RATE, venueOf, venueLabel, quoteOf, toVenuePair, liveAllowedOnVenue } from './venue.js';
 
 // Bedragen en koersen in Nederlandse notatie voor meldingen (€ 81,31 / € 0,3455 / −€ 0,36).
 const nl = (n, digits, min = digits) => new Intl.NumberFormat('nl-NL', { minimumFractionDigits: min, maximumFractionDigits: digits }).format(n);
@@ -81,6 +82,41 @@ export class Bot {
     this.activity = [];
     // Coins waarvoor nu een koop- of verkooporder loopt: nooit twee orders tegelijk voor dezelfde coin.
     this.ordering = new Set();
+    // Omrekenkoers euro per quote-munt van de beurs (Bitvavo: altijd 1; Bybit: USDT/EUR, gezet door de manager).
+    this.fx = EUR_RATE;
+    this.health.venueName = () => this.venueLabel;
+  }
+
+  // ---------- Beurs ----------
+  // Bitvavo (euro) of Bybit (USDT, fase 1 alleen paper). Bedragen blijven overal in euro; koersen in de
+  // quote-munt van de beurs.
+  get venue() {
+    return venueOf(this.settings?.exchange);
+  }
+
+  get venueLabel() {
+    return venueLabel(this.venue);
+  }
+
+  get quote() {
+    return quoteOf(this.venue);
+  }
+
+  // BTC als marktcontext voor de AI-trader: BTC/EUR op Bitvavo, BTC/USDT op Bybit.
+  get btcPair() {
+    return toVenuePair('BTC/EUR', this.venue);
+  }
+
+  // Euro per quote-munt (synchroon, laatst bekende koers): 1 op Bitvavo, null als hij (nog) onbekend is.
+  eurRate() {
+    if (this.venue === 'bitvavo') return 1;
+    const r = this.fx?.last?.();
+    return Number.isFinite(r) && r > 0 ? r : null;
+  }
+
+  // Koers in de munt van de beurs: "€ 81,31" op Bitvavo, "95.000,12 USDT" op Bybit.
+  fmtQ(n) {
+    return this.quote === 'EUR' ? fmtPrice(n) : `${nl(n, priceDigits(n), 2)} ${this.quote}`;
   }
 
   // Logt een gebeurtenis én bewaart hem voor het activiteitenlog in het dashboard.
@@ -180,7 +216,9 @@ export class Bot {
   }
 
   get pairs() {
-    return this.following ? this.leader.pairs : this.settings.pairs;
+    if (!this.following) return this.settings.pairs;
+    // Volgen op een andere beurs: dezelfde coins, met de quote van je eigen beurs (SOL/EUR → SOL/USDT).
+    return this.leader.venue === this.venue ? this.leader.pairs : this.leader.pairs.map((p) => toVenuePair(p, this.venue));
   }
 
   get timeframe() {
@@ -208,9 +246,11 @@ export class Bot {
 
   // Een trade van de leider meedoen. Eigen limieten (aantal trades, daglimiet, budget, saldo)
   // gelden gewoon; de AI wordt niet opnieuw gevraagd, die heeft de leider al gevraagd.
-  mirror(type, { pair, reason, indicators }) {
+  mirror(type, { pair: leaderPair, reason, indicators }) {
     return this.#exclusive(async () => {
       if (!this.following) return;
+      // De leider op een andere beurs: dezelfde coin met de quote van je eigen beurs.
+      const pair = this.leader?.venue && this.leader.venue !== this.venue ? toVenuePair(leaderPair, this.venue) : leaderPair;
       const pos = this.store.state.positions[pair];
       try {
         if (type === 'open' && !pos) {
@@ -265,7 +305,7 @@ export class Bot {
   get bandit() {
     if (!this._bandit) {
       const dir = this.stores.paper?.file ? path.dirname(this.stores.paper.file) : null;
-      this._bandit = new Bandit(dir ? path.join(dir, 'bandit.json') : null);
+      this._bandit = new Bandit(dir ? path.join(dir, `bandit${this.#venueSuffix()}.json`) : null);
     }
     return this._bandit;
   }
@@ -274,13 +314,18 @@ export class Bot {
   get journal() {
     if (this._journal === undefined) {
       const dir = this.stores.paper?.file ? path.dirname(this.stores.paper.file) : null;
-      this._journal = new Journal(dir ? path.join(dir, 'learning.db') : null, { ...journalOptionsFromEnv(), ...(this.config.journal ?? {}), log: this.log });
+      this._journal = new Journal(dir ? path.join(dir, `learning${this.#venueSuffix()}.db`) : null, { ...journalOptionsFromEnv(), ...(this.config.journal ?? {}), log: this.log });
     }
     return this._journal;
   }
 
   set journal(j) {
     this._journal = j;
+  }
+
+  // Eigen bestanden per beurs (bandit, leerdagboek): Bitvavo houdt de oude namen, Bybit krijgt "-bybit".
+  #venueSuffix() {
+    return this.venue === 'bitvavo' ? '' : `-${this.venue}`;
   }
 
   // Wat het dagboek leerde, standaard voor de huidige modus.
@@ -469,11 +514,14 @@ export class Bot {
     return run;
   }
 
-  // Alle actieve EUR-markten op Bitvavo met 24-uursvolume, gecachet voor 10 minuten.
+  // Alle actieve spotmarkten in de quote van de beurs (Bitvavo: EUR, Bybit: USDT) met 24-uursvolume,
+  // gecachet voor 10 minuten. Het volume staat in euro (op Bybit omgerekend), de koers in de quote-munt.
   async listMarkets() {
     if (this.marketCache && Date.now() - this.marketCache.at < 10 * 60 * 1000) return this.marketCache.list;
     await this.ex.loadMarkets();
-    const eur = Object.values(this.ex.markets).filter((m) => m.quote === 'EUR' && m.spot && m.active !== false);
+    const quote = this.quote;
+    const eur = Object.values(this.ex.markets).filter((m) => m.quote === quote && m.spot && m.active !== false);
+    const rate = quote === 'EUR' ? 1 : (await this.fx?.eurPerQuote?.().catch(() => null)) ?? this.eurRate();
     let tickers = {};
     try {
       tickers = await this.ex.fetchTickers(eur.map((m) => m.symbol));
@@ -485,8 +533,10 @@ export class Bot {
         pair: m.symbol,
         base: m.base,
         price: tickers[m.symbol]?.last ?? null,
-        volumeEur: tickers[m.symbol]?.quoteVolume ?? null,
+        volumeEur: quote === 'EUR' ? tickers[m.symbol]?.quoteVolume ?? null
+          : tickers[m.symbol]?.quoteVolume != null && rate ? tickers[m.symbol].quoteVolume * rate : null,
         change24h: tickers[m.symbol]?.percentage ?? null,
+        ...(quote === 'EUR' ? {} : { quote }),
       }))
       .sort((a, b) => (b.volumeEur ?? 0) - (a.volumeEur ?? 0));
     this.marketCache = { at: Date.now(), list };
@@ -801,10 +851,12 @@ export class Bot {
   // Waarde en open winst/verlies van de posities, inclusief de geschatte verkoopfee.
   openPositionsValue() {
     const fee = (this.risk.feePct ?? 0) / 100;
+    // Op een beurs in USDT: de waarde in euro met de laatst bekende koers (onbekend: geen waarde). Bitvavo: 1.
+    const rate = this.eurRate();
     const list = Object.values(this.store.state.positions).map((p) => {
       const live = this.livePrices?.[p.pair];
       const price = live?.price ?? this.pairStatus[p.pair]?.price ?? null;
-      const valueEur = price != null ? p.amount * price * (1 - fee) + (p.stopFill?.costEur ?? 0) : null;
+      const valueEur = price != null && rate != null ? p.amount * price * rate * (1 - fee) + (p.stopFill?.costEur ?? 0) : null;
       const pnlEur = valueEur != null ? valueEur - p.costEur : null;
       return {
         ...p,
@@ -828,6 +880,8 @@ export class Bot {
 
   // Haalt het echte EUR-saldo op bij Bitvavo. Gooit als de keys niet werken.
   async refreshLiveBalance() {
+    const allowed = liveAllowedOnVenue(this.venue);
+    if (!allowed.ok) throw new Error(allowed.reason);
     if (!hasTradingKeys(this.ex)) {
       this.liveBalance = null;
       throw new Error('Bitvavo-keys ontbreken, vul ze in bij Instellingen');
@@ -843,6 +897,11 @@ export class Bot {
     return this.#exclusive(async () => {
       if (!['paper', 'live'].includes(mode)) throw new Error(`Ongeldige modus "${mode}"`);
       if (mode === this.mode) return;
+      // Live alleen op een beurs waar live mag (centrale check; fase 1: Bybit alleen paper).
+      if (mode === 'live') {
+        const allowed = liveAllowedOnVenue(this.venue);
+        if (!allowed.ok) throw new Error(allowed.reason);
+      }
       const open = Object.keys(this.store.state.positions);
       if (open.length) {
         throw new Error(`Er staan nog ${open.length} positie(s) open in ${this.mode} (${open.join(', ')}). Sluit die eerst.`);
@@ -868,6 +927,48 @@ export class Bot {
         ? { title: 'vetobot staat nu op LIVE', message: 'Er worden echte orders geplaatst op Bitvavo.', level: 'live',
             fields: this.liveBalance ? [{ name: 'Beschikbaar saldo', value: fmtEur(this.liveBalance.eurFree) }] : [] }
         : { title: 'vetobot staat nu op paper', message: 'Er worden geen echte orders meer geplaatst.', level: 'info' });
+    });
+  }
+
+  // Wisselt van beurs (Bitvavo ↔ Bybit). Alleen zonder open posities (paper én live van de huidige beurs),
+  // en live alleen naar een beurs waar live mag. Elke beurs heeft eigen state-bestanden, bandit en leerdagboek
+  // (venueRuntime, van de manager), zodat de Bitvavo-geschiedenis intact blijft. Geeft { venue, notice }.
+  switchVenue(venue) {
+    return this.#exclusive(async () => {
+      const next = venueOf(venue);
+      if (venue !== next) throw new Error(`Onbekende beurs "${venue}"`);
+      if (next === this.venue) return { venue: next, notice: null };
+      if (this.mode === 'live') {
+        const allowed = liveAllowedOnVenue(next);
+        if (!allowed.ok) throw new Error(allowed.reason);
+      }
+      const open = Object.entries(this.stores ?? {}).flatMap(([m, st]) => Object.keys(st?.state?.positions ?? {}).map((p) => `${p} (${m})`));
+      if (open.length) {
+        throw new Error(`Er staan nog ${open.length} positie(s) open op ${this.venueLabel}: ${open.join(', ')}. Sluit die eerst; daarna kun je van beurs wisselen.`);
+      }
+      if (this.ordering.size) throw new Error('Er loopt nog een order; probeer het zo opnieuw');
+      if (typeof this.venueRuntime !== 'function') throw new Error('Wisselen van beurs is hier niet mogelijk');
+      const rt = this.venueRuntime(next);
+      for (const st of Object.values(this.stores ?? {})) st?.save?.();
+      const notice = this.settings.setExchange(next);
+      this.ex = rt.exchange;
+      this.brokers = rt.brokers;
+      this.stores = rt.stores;
+      this.fx = rt.fx ?? EUR_RATE;
+      // Alles wat aan de vorige beurs vastzat opnieuw beginnen (koersen, markten, candles, dagboek, bandit).
+      try { this._journal?.close?.(); } catch { /* niets aan te doen */ }
+      this._journal = undefined;
+      this._bandit = undefined;
+      this.marketCache = null;
+      this.livePrices = {};
+      this.pairStatus = {};
+      this.lastFeatures = {};
+      this.agentTs = {};
+      this.marketRegimes = {};
+      this.lastArmTs = {};
+      this.liveBalance = null;
+      this.#event('warn', null, `Beurs gewisseld naar ${this.venueLabel}${next === 'bitvavo' ? '' : ` (paper, paren in ${this.quote}, bedragen in euro)`}.${notice ? ` ${notice}` : ''}`);
+      return { venue: next, notice };
     });
   }
 
@@ -1100,7 +1201,8 @@ export class Bot {
     for (const tf of tfs) {
       const tfMs = (this.ex.parseTimeframe?.(tf) ?? 900) * 1000;
       const due = pairs.filter((p) => { const seen = this.agentTs?.[`${p}|${tf}`]; return !seen || now >= seen + 2 * tfMs; });
-      if (due.length) jobs.push(['BTC/EUR', tf], ...due.filter((p) => p !== 'BTC/EUR').map((p) => [p, tf]));
+      const btcPair = this.btcPair;
+      if (due.length) jobs.push([btcPair, tf], ...due.filter((p) => p !== btcPair).map((p) => [p, tf]));
     }
     for (const p of pairs) if (!this.marketRegimes?.[p] || now - this.marketRegimes[p].at >= 5 * 60000) jobs.push([p, MARKET_TF]);
     const work = async () => {
@@ -1242,10 +1344,12 @@ export class Bot {
       const base = this.entryRisk().stakeEur;
       const planned = ga ? (ga.explore ? Math.min(base, LIVE_MIN_STAKE_EUR) : riskStake(Math.max(base, ga.sizeEur ?? 0), ga.stakeFactor ?? 1)) : base;
       const raw = await this.ex.fetchOrderBook?.(pair, 50);
-      book = analyzeBook(raw, planned);
+      // Het orderboek staat in de quote-munt van de beurs: de inzet (euro) daarnaar omrekenen (Bitvavo: gelijk).
+      const toQuote = (eur) => (this.venue === 'bitvavo' ? eur : eur / (this.eurRate() ?? 1));
+      book = analyzeBook(raw, toQuote(planned));
       // Te dun voor de grotere inzet van de AI-trader? Dan met jouw gewone inzet.
       if (ga?.sizeEur && bookProblem(book, { maxSpreadPct: risk.maxSpreadPct ?? 0, maxBookCostPct: risk.maxBookCostPct ?? 0 })) {
-        const small = analyzeBook(raw, riskStake(base, ga.stakeFactor ?? 1));
+        const small = analyzeBook(raw, toQuote(riskStake(base, ga.stakeFactor ?? 1)));
         if (!bookProblem(small, { maxSpreadPct: risk.maxSpreadPct ?? 0, maxBookCostPct: risk.maxBookCostPct ?? 0 })) {
           result.agentTalk?.push(Bot.say('risk', 'Orderboek-check', `Voor ${fmtEur(ga.sizeEur)} is het orderboek te dun; ik zet ${fmtEur(base)} in.`));
           delete ga.sizeEur;
@@ -1412,7 +1516,7 @@ export class Bot {
         const ex = this.store.state.execLog?.[0];
         chat.outcome = pos ? 'bought' : 'notFilled';
         chat.talk.push(Bot.say('execution', 'Execution Agent', pos
-          ? `Gekocht: ${fmtEur(pos.costEur)} op ${fmtPrice(pos.entryPrice)}${ex?.pair === pair && ex.side === 'buy' ? `, ${ex.slipPct >= 0 ? `${ex.slipPct.toFixed(2).replace('.', ',')}% duurder` : `${(-ex.slipPct).toFixed(2).replace('.', ',')}% goedkoper`} dan de koers vlak ervoor` : ''}.`
+          ? `Gekocht: ${fmtEur(pos.costEur)} op ${this.fmtQ(pos.entryPrice)}${ex?.pair === pair && ex.side === 'buy' ? `, ${ex.slipPct >= 0 ? `${ex.slipPct.toFixed(2).replace('.', ',')}% duurder` : `${(-ex.slipPct).toFixed(2).replace('.', ',')}% goedkoper`} dan de koers vlak ervoor` : ''}.`
           : 'Niet gekocht: de order werd niet gevuld.'));
       }
     }
@@ -1483,7 +1587,8 @@ export class Bot {
     for (const p of Object.values(st.positions ?? {})) {
       if (p.agent?.recipe !== recipeKey || Date.parse(p.openedAt) < since) continue;
       const price = this.livePrices?.[p.pair]?.price ?? this.pairStatus?.[p.pair]?.price;
-      if (price != null) pnl += p.amount * price * (1 - fee) + (p.stopFill?.costEur ?? 0) - p.costEur;
+      const rate = this.eurRate();
+      if (price != null && rate != null) pnl += p.amount * price * rate * (1 - fee) + (p.stopFill?.costEur ?? 0) - p.costEur;
     }
     return { pnlEur: pnl, trades: closed.length };
   }
@@ -1555,7 +1660,7 @@ export class Bot {
     const candles = await fetchClosedCandles(this.ex, pair, tf, CANDLES_NEEDED).catch(() => null);
     const ts = candles?.at(-1)?.[0];
     if (!ts) return null;
-    const btc = pair === 'BTC/EUR' ? candles : await fetchClosedCandles(this.ex, 'BTC/EUR', tf, CANDLES_NEEDED).catch(() => null);
+    const btc = pair === this.btcPair ? candles : await fetchClosedCandles(this.ex, this.btcPair, tf, CANDLES_NEEDED).catch(() => null);
     const f = computeFeatures(candles, { btc, micro: this.getMicro?.(pair) });
     return f ? { f, ts, close: candles.at(-1)[4], volRegime: volRegimeOf(candles) } : null;
   }
@@ -1985,7 +2090,7 @@ export class Bot {
     // Uitschieter: de winstgrens beslist over verkopen, niet het model (noodstop en maximale duur blijven werken).
     const pump = pumpLevel(position, this.risk);
     if (pump != null) {
-      (this.agentHold ??= {})[pair] = `Uitschieter: de winstgrens verkoopt (onder ${fmtPrice(pump)}), het model van de AI-trader niet`;
+      (this.agentHold ??= {})[pair] = `Uitschieter: de winstgrens verkoopt (onder ${this.fmtQ(pump)}), het model van de AI-trader niet`;
       return false;
     }
     const tf = a.timeframe;
@@ -2019,7 +2124,7 @@ export class Bot {
     this.#agentChat(pair, position.explore ? 'exploreSell' : 'sell', 'sold', [
       Bot.say('aitrader', 'AI-trader', `Ik verkoop ${pair} (recept ${a.recipe ?? '–'}): van langer vasthouden verwacht ik ${nl(q)}%, nu sta ik op ${nl(pf.posPnlPct)}%.` +
         (why.length ? ` Vooral door: ${why.map((w) => `${w.label} ${w.text}`).join(', ')}.` : '')),
-      ...(ex?.pair === pair && ex.side === 'sell' ? [Bot.say('execution', 'Execution Agent', `Verkocht op ${fmtPrice(ex.price)}, ${ex.slipPct >= 0 ? `${ex.slipPct.toFixed(2).replace('.', ',')}% slechter` : `${(-ex.slipPct).toFixed(2).replace('.', ',')}% beter`} dan de koers vlak ervoor.`)] : []),
+      ...(ex?.pair === pair && ex.side === 'sell' ? [Bot.say('execution', 'Execution Agent', `Verkocht op ${this.fmtQ(ex.price)}, ${ex.slipPct >= 0 ? `${ex.slipPct.toFixed(2).replace('.', ',')}% slechter` : `${(-ex.slipPct).toFixed(2).replace('.', ',')}% beter`} dan de koers vlak ervoor.`)] : []),
       ...(t?.pair === pair ? [Bot.say('result', 'Resultaat', `${nl(t.pnlPct)}% (${fmtSigned(t.pnlEur)}) na kosten; bij het kopen verwachtte ik ${nl(a.expectedPct ?? 0)}%.`, t.pnlEur >= 0 ? 'approve' : 'reject')] : []),
     ]);
     return true;
@@ -2044,7 +2149,7 @@ export class Bot {
       if (!ts || this.lastArmTs[`${pair}|${tf}`] === ts) continue; // deze candle al bekeken
       this.lastArmTs[`${pair}|${tf}`] = ts;
       (this.lastArmClose ??= {})[`${pair}|${tf}`] = candles.at(-1)[4];
-      const btc = pair === 'BTC/EUR' ? candles : await fetchClosedCandles(this.ex, 'BTC/EUR', tf, CANDLES_NEEDED).catch(() => null);
+      const btc = pair === this.btcPair ? candles : await fetchClosedCandles(this.ex, this.btcPair, tf, CANDLES_NEEDED).catch(() => null);
       const f = computeFeatures(candles, { btc, micro: this.getMicro?.(pair) });
       if (!f) continue;
       evaluated++;
@@ -2277,6 +2382,8 @@ export class Bot {
       lowest: fill.price,
       atrAtEntry: indicators?.atr ?? null,
       entrySlipPct: slippagePct('buy', expected, fill.price),
+      // Beurs in USDT: ook wat de aankoop in USDT kostte en tegen welke koers naar euro is omgerekend.
+      ...(fill.quote ? { venue: this.venue, quote: fill.quote, costQuote: fill.costQuote, entryFeeQuote: fill.feeQuote, entryEurRate: fill.eurRate } : {}),
     };
     // AI-trader: hij beslist zelf wanneer hij verkoopt; alleen de noodstop en maximale duur als vangnet.
     if (indicators?.agent) {
@@ -2301,7 +2408,7 @@ export class Bot {
     await this.#placeExchangeStop(pair, this.store.state.positions[pair]);
     // Meteen opslaan: na een crash later in de check mag een echte positie niet verloren gaan.
     this.#saveNow(pair);
-    this.#event('info', pair, `Gekocht:${fmtAmount(fill.amount)} @ ${fmtPrice(fill.price)} (${this.broker.mode}${fill.limit ? `, limietorder${fill.partial ? ', deels gevuld' : ''}` : ''})` +
+    this.#event('info', pair, `Gekocht:${fmtAmount(fill.amount)} @ ${this.fmtQ(fill.price)} (${this.broker.mode}${fill.limit ? `, limietorder${fill.partial ? ', deels gevuld' : ''}` : ''})` +
       (stakeInfo.extra > 0 ? `, inzet ${fmtEur(stake)} waarvan ${fmtEur(stakeInfo.extra)} herinvesteerde winst` : '') +
       (stake < stakeInfo.effective ? `, inzet verlaagd naar ${fmtEur(stake)} door de Risk Agent` : '') + sellableNote);
     // Volgers laten meedoen (alleen gezet op de bot van de leider).
@@ -2311,7 +2418,7 @@ export class Bot {
       message: reason,
       level: this.broker.mode === 'live' ? 'live' : 'info',
       fields: [
-        { name: 'Koers', value: fmtPrice(fill.price) },
+        { name: 'Koers', value: this.fmtQ(fill.price) },
         { name: 'Inzet', value: fmtEur(fill.costEur) },
         { name: 'Hoeveelheid', value: `${fmtAmount(fill.amount)} ${pair.split('/')[0]}` },
       ],
@@ -2338,9 +2445,9 @@ export class Bot {
     const timeUp = risk.maxHoldMinutes > 0 && heldMin >= risk.maxHoldMinutes;
     // Uitschieter: meeschuivende winstgrens (alleen AI-trader, zie safety.js).
     const pump = this.#pumpUpdate(position, risk);
-    return atrStop != null && price <= atrStop ? `ATR-stop (${changePct.toFixed(2)}%, stop op ${fmtPrice(atrStop)})`
+    return atrStop != null && price <= atrStop ? `ATR-stop (${changePct.toFixed(2)}%, stop op ${this.fmtQ(atrStop)})`
       : atrStop == null && risk.stopLossPct > 0 && changePct <= -risk.stopLossPct ? `Stop-loss (${changePct.toFixed(2)}%)`
-      : risk.trailingStopPct > 0 && fromTop <= -risk.trailingStopPct ? `Trailing stop (${fromTop.toFixed(2)}% vanaf top ${fmtPrice(position.highest)}, resultaat ${changePct.toFixed(2)}%)`
+      : risk.trailingStopPct > 0 && fromTop <= -risk.trailingStopPct ? `Trailing stop (${fromTop.toFixed(2)}% vanaf top ${this.fmtQ(position.highest)}, resultaat ${changePct.toFixed(2)}%)`
       : pump != null && price <= pump ? `Winst vastgezet bij uitschieter (top ${fmtPct(position.pump.topPct)}, nu ${fmtPct(changePct)})`
       : risk.takeProfitPct > 0 && changePct >= risk.takeProfitPct ? `Take-profit (${changePct.toFixed(2)}%)`
       : timeUp ? `Tijdslimiet: ${Math.round(heldMin)} min in de positie (resultaat ${changePct.toFixed(2)}%)` : null;
@@ -2357,7 +2464,7 @@ export class Bot {
     if (!position.pump) {
       position.pump = { since: new Date().toISOString(), level: lvl, topPct, levelPct };
       this.#event('info', position.pair ?? null, `Uitschieter: ${fmtPct(topPct)} winst, de winstgrens staat aan. De bot verkoopt als de koers onder ` +
-        `${fmtPrice(lvl)} (${fmtPct(levelPct)}) zakt; die grens schuift mee omhoog met de top. Het model van de AI-trader verkoopt zolang niet zelf.`);
+        `${this.fmtQ(lvl)} (${fmtPct(levelPct)}) zakt; die grens schuift mee omhoog met de top. Het model van de AI-trader verkoopt zolang niet zelf.`);
     } else Object.assign(position.pump, { level: lvl, topPct, levelPct });
     return lvl;
   }
@@ -2551,9 +2658,9 @@ export class Bot {
         return;
       }
       pos.exchangeStop = { orderId: r.orderId, stopPrice: r.stopPrice ?? stopPrice, amount: r.amount ?? pos.amount, placedAt: now };
-      this.#event(found ? 'warn' : 'info', pair, found ? `Bestaande stop-order bij Bitvavo teruggevonden en overgenomen (order ${r.orderId}, ${fmtPrice(pos.exchangeStop.stopPrice)}); geen tweede gezet`
-        : raisedFrom ? `Uitschieter: stop bij Bitvavo omhoog geschoven van ${fmtPrice(raisedFrom)} naar ${fmtPrice(pos.exchangeStop.stopPrice)} (order ${r.orderId})`
-        : `Stop-order bij Bitvavo gezet op ${fmtPrice(pos.exchangeStop.stopPrice)} (order ${r.orderId})`);
+      this.#event(found ? 'warn' : 'info', pair, found ? `Bestaande stop-order bij Bitvavo teruggevonden en overgenomen (order ${r.orderId}, ${this.fmtQ(pos.exchangeStop.stopPrice)}); geen tweede gezet`
+        : raisedFrom ? `Uitschieter: stop bij Bitvavo omhoog geschoven van ${this.fmtQ(raisedFrom)} naar ${this.fmtQ(pos.exchangeStop.stopPrice)} (order ${r.orderId})`
+        : `Stop-order bij Bitvavo gezet op ${this.fmtQ(pos.exchangeStop.stopPrice)} (order ${r.orderId})`);
     } catch (err) {
       const msg = String(err?.message ?? err).slice(0, 300);
       pos.exchangeStop = { orderId: null, stopPrice, placedAt: null, error: msg, attemptAt: now, attempts: (prev.attempts ?? 0) + 1, notified: Boolean(prev.notified) };
@@ -2561,7 +2668,7 @@ export class Bot {
       if (!prev.notified) {
         pos.exchangeStop.notified = true;
         this.#notify('errors', { title: `Stop-order bij Bitvavo mislukt: ${pair}`, level: 'error',
-          message: `${msg}\n\nDe positie blijft open en wordt door de bot zelf bewaakt (noodstop op ${fmtPrice(stopPrice)}). ` +
+          message: `${msg}\n\nDe positie blijft open en wordt door de bot zelf bewaakt (noodstop op ${this.fmtQ(stopPrice)}). ` +
             'Hij probeert de stop-order elke 10 minuten opnieuw te zetten; je krijgt hier voor deze positie geen nieuwe melding van.' });
       }
     }
@@ -2917,12 +3024,14 @@ export class Bot {
       costPct: tradeCost,
       mfePct,
       maePct,
+      ...(pos.quote || fill.quote ? { venue: pos.venue ?? this.venue, quote: pos.quote ?? fill.quote, costQuote: pos.costQuote ?? null, proceedsQuote: fill.costQuote ?? null,
+        entryEurRate: pos.entryEurRate ?? null, exitEurRate: fill.eurRate ?? null } : {}),
       ...(pos.agent ? { agent: { recipe: pos.agent.recipe ?? null, marketRegime: pos.agent.marketRegime ?? null, expectedPct: pos.agent.expectedPct ?? null,
         ...(pos.agent.sizeFactor != null ? { sizeFactor: pos.agent.sizeFactor } : {}),
         ...(pos.agent.explore ? { explore: true, exploreWhy: pos.agent.exploreWhy ?? null } : {}) } } : {}),
     });
     const how = fill.limitFallback ? (fill.limit ? ', limietorder deels gevuld, rest market' : ', limietorder niet gevuld, market') : fill.limit ? ', limietorder' : '';
-    this.#event(pnlEur >= 0 ? 'info' : 'warn', pair, `Verkocht @ ${fmtPrice(fill.price)}, resultaat ${fmtSigned(pnlEur)} (${reason}${how})`);
+    this.#event(pnlEur >= 0 ? 'info' : 'warn', pair, `Verkocht @ ${this.fmtQ(fill.price)}, resultaat ${fmtSigned(pnlEur)} (${reason}${how})`);
     // Meteen opslaan: na een crash mag een verkochte positie niet terugkomen (dan zou hij nog eens verkopen).
     this.#saveNow(pair);
     this.#journalTrade({ decisionId: pos.journalId ?? null, mode: this.broker.mode, pair, openedAt: pos.openedAt, closedAt: Date.now(),
@@ -2972,7 +3081,7 @@ export class Bot {
       level: pnlEur >= 0 ? 'ok' : 'warn',
       fields: [
         { name: 'Resultaat', value: `${fmtSigned(pnlEur)} (${fmtPct((pnlEur / pos.costEur) * 100)})` },
-        { name: 'In → uit', value: `${fmtPrice(pos.entryPrice)} → ${fmtPrice(fill.price)}` },
+        { name: 'In → uit', value: `${this.fmtQ(pos.entryPrice)} → ${this.fmtQ(fill.price)}` },
       ],
     });
 

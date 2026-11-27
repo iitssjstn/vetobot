@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { PUMP_DEFAULTS } from './safety.js';
+import { VENUES, venueOf, venueLabel, toVenuePair, liveAllowedOnVenue } from './venue.js';
 
 // Instellingen die je in het dashboard wijzigt: handelsmodus en AI-provider.
 // Opgeslagen in data/settings.json. Bij de eerste start komen de waarden uit
@@ -127,8 +128,12 @@ export class Settings {
     this.file = path.join(dataDir, 'settings.json');
     fs.mkdirSync(dataDir, { recursive: true });
     const saved = fs.existsSync(this.file) ? JSON.parse(fs.readFileSync(this.file, 'utf8')) : {};
+    // Beurs: Bitvavo, tenzij de gebruiker zelf Bybit koos (oude settings.json zonder dit veld: Bitvavo).
+    const exchange = venueOf(saved.exchange);
+    // Live alleen op een beurs waar live mag (fase 1: Bybit alleen paper), ook als het bestand iets anders zegt.
+    const wantMode = saved.mode ?? (defaults.liveTrading ? 'live' : 'paper');
     this.data = {
-      mode: saved.mode ?? (defaults.liveTrading ? 'live' : 'paper'),
+      mode: wantMode === 'live' && !liveAllowedOnVenue(exchange).ok ? 'paper' : wantMode,
       ai: {
         provider: saved.ai?.provider ?? defaults.ai.provider,
         model: saved.ai?.model ?? defaults.ai.model,
@@ -157,6 +162,48 @@ export class Settings {
       modeChangedAt: saved.modeChangedAt ?? null,
       follow: { enabled: Boolean(saved.follow?.enabled), since: saved.follow?.since ?? null },
     };
+    // Alleen opslaan als het bestand ze al had, zodat een Bitvavo-settings.json er precies hetzelfde uit blijft zien.
+    if (saved.exchange !== undefined) this.data.exchange = exchange;
+    if (saved.venuePairs && typeof saved.venuePairs === 'object') this.data.venuePairs = saved.venuePairs;
+  }
+
+  // ---------- Beurs ----------
+  get exchange() {
+    return venueOf(this.data.exchange);
+  }
+
+  // Coins voor een beurs. Bitvavo: de gewone lijst (pairs). Andere beurs: een eigen lijst; nog niet gekozen,
+  // dan de Bitvavo-lijst vertaald (SOL/EUR → SOL/USDT).
+  pairsFor(venue) {
+    const v = venueOf(venue);
+    if (v === 'bitvavo') return this.data.pairs;
+    const own = this.data.venuePairs?.[v];
+    return Array.isArray(own) && own.length ? own : this.data.pairs.map((p) => toVenuePair(p, v));
+  }
+
+  // Wisselt van beurs. Fees: stond de fee nog op de standaard van de oude beurs, dan de standaard van de
+  // nieuwe beurs (bijv. Bybit 0,1%); had je zelf iets ingesteld, dan blijft dat staan. Geeft een korte uitleg terug.
+  setExchange(venue) {
+    const next = venueOf(venue);
+    if (venue !== next && venue !== undefined) throw new Error(`Onbekende beurs "${venue}"`);
+    const prev = this.exchange;
+    if (next === prev) return null;
+    if (this.data.mode === 'live' && !liveAllowedOnVenue(next).ok) throw new Error(liveAllowedOnVenue(next).reason);
+    const oldF = VENUES[prev].fees;
+    const newF = VENUES[next].fees;
+    const r = this.data.risk;
+    const pctText = (n) => `${String(n).replace('.', ',')}%`;
+    let notice;
+    if (Number(r.feePct) === oldF.feePct && Number(r.makerFeePct) === oldF.makerFeePct) {
+      this.data.risk = { ...r, feePct: newF.feePct, makerFeePct: newF.makerFeePct };
+      notice = `Fee aangepast naar de standaard van ${venueLabel(next)}: ${pctText(newF.feePct)} (taker) en ${pctText(newF.makerFeePct)} (maker). Aan te passen bij Risico.`;
+    } else {
+      notice = `Je eigen fee (${pctText(r.feePct)} taker, ${pctText(r.makerFeePct)} maker) blijft staan; ${venueLabel(next)} rekent standaard ${pctText(newF.feePct)} taker en ${pctText(newF.makerFeePct)} maker.`;
+    }
+    this.data.exchange = next;
+    this.data.exchangeChangedAt = new Date().toISOString();
+    this.#save();
+    return notice;
   }
 
   get mode() {
@@ -167,8 +214,9 @@ export class Settings {
     return this.data.ai;
   }
 
+  // Coins van de huidige beurs (Bitvavo: precies de opgeslagen lijst).
   get pairs() {
-    return this.data.pairs;
+    return this.pairsFor(this.exchange);
   }
 
   get timeframe() {
@@ -294,6 +342,7 @@ export class Settings {
 
   setMode(mode) {
     if (!['paper', 'live'].includes(mode)) throw new Error(`Ongeldige modus "${mode}"`);
+    if (mode === 'live' && !liveAllowedOnVenue(this.exchange).ok) throw new Error(liveAllowedOnVenue(this.exchange).reason);
     this.data.mode = mode;
     this.data.modeChangedAt = new Date().toISOString();
     this.#save();
@@ -306,8 +355,9 @@ export class Settings {
     if (!unique.length) throw new Error('Kies minimaal één coin');
     if (unique.length > MAX_PAIRS) throw new Error(`Maximaal ${MAX_PAIRS} coins tegelijk`);
     const unknown = unique.filter((p) => !validPairs.has(p));
-    if (unknown.length) throw new Error(`Onbekend op Bitvavo: ${unknown.join(', ')}`);
-    this.data.pairs = unique;
+    if (unknown.length) throw new Error(`Onbekend op ${venueLabel(this.exchange)}: ${unknown.join(', ')}`);
+    if (this.exchange === 'bitvavo') this.data.pairs = unique;
+    else this.data.venuePairs = { ...this.data.venuePairs, [this.exchange]: unique };
     this.#save();
   }
 

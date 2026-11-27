@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createExchange, PaperBroker, LiveBroker, SharedMarket, userExchange } from './exchange.js';
+import { createExchange, createSharedMarket, PaperBroker, LiveBroker, BlockedLiveBroker, SharedMarket, userExchange } from './exchange.js';
+import { EUR_RATE, QuoteRate, venueOf, venueLabel, venueAgent } from './venue.js';
 import { Store } from './store.js';
 import { SecretStore } from './secrets.js';
 import { Settings } from './settings.js';
@@ -20,11 +21,15 @@ import { evaluate as evaluateLearning, learnAlerts, weeklyDue, weeklyMessage, al
 const LEGACY_FILES = ['settings.json', 'state-paper.json', 'state-live.json'];
 
 export class BotManager {
-  constructor({ config, users, log = console, shared = null, makePrivateExchange = createExchange }) {
+  // shared: gedeelde marktdata van Bitvavo; sharedVenues: die van andere beurzen ({ bybit }), anders bij het
+  // eerste gebruik aangemaakt. makePrivateExchange(secrets, venue): eigen verbinding (keys) per beurs.
+  constructor({ config, users, log = console, shared = null, sharedVenues = {}, makePrivateExchange = createExchange }) {
     this.config = config;
     this.users = users;
     this.log = log;
     this.shared = shared ?? new SharedMarket();
+    this.sharedVenues = { ...sharedVenues, bitvavo: this.shared };
+    this.rates = {};
     this.makePrivateExchange = makePrivateExchange;
     this.contexts = new Map();
     this.root = config.dataDir;
@@ -332,6 +337,63 @@ export class BotManager {
     return path.join(this.root, 'users', userId);
   }
 
+  // ---------- Beurzen ----------
+  // Eén publieke verbinding per beurs voor alle gebruikers (rate limit per IP, korte cache).
+  sharedFor(venue) {
+    const v = venueOf(venue);
+    this.sharedVenues[v] ??= createSharedMarket(v);
+    return this.sharedVenues[v];
+  }
+
+  // Omrekenkoers euro per quote-munt, gedeeld door alle gebruikers op die beurs. Bitvavo: altijd 1.
+  rateFor(venue) {
+    const v = venueOf(venue);
+    if (v === 'bitvavo') return EUR_RATE;
+    this.rates[v] ??= new QuoteRate(this.sharedFor(v), v);
+    return this.rates[v];
+  }
+
+  // Alles van één gebruiker op één beurs: verbinding, brokers en eigen state-bestanden. Bitvavo precies zoals
+  // altijd (state-paper.json, state-live.json, LiveBroker). Bybit: paper in USDT met omrekenen naar euro,
+  // eigen bestanden (state-paper-bybit.json) en live geblokkeerd (fase 1).
+  #venueRuntime(ctx, venue) {
+    const v = venueOf(venue);
+    if (ctx.venues[v]) return ctx.venues[v];
+    const { dir, settings, secrets } = ctx;
+    const privateEx = this.makePrivateExchange(secrets, v);
+    const exchange = userExchange(this.sharedFor(v), privateEx);
+    const fx = this.rateFor(v);
+    const brokers = {
+      paper: new PaperBroker(exchange, () => settings.risk.feePct, () => settings.risk.slippagePct, () => settings.risk.makerFeePct, v === 'bitvavo' ? null : fx),
+      live: v === 'bitvavo' ? new LiveBroker(exchange) : new BlockedLiveBroker(v),
+    };
+    const stores = {
+      paper: new Store(dir, 'paper', this.config.paper.startBalanceEur, v),
+      live: new Store(dir, 'live', this.config.paper.startBalanceEur, v),
+    };
+    ctx.venues[v] = { venue: v, privateEx, exchange, brokers, stores, fx };
+    return ctx.venues[v];
+  }
+
+  // Keys van een beurs testen door het saldo op te halen (alleen lezen, nooit handelen). Voor Bitvavo op de
+  // actieve beurs doet de bot dat zelf (refreshLiveBalance); dit is voor de andere gevallen (o.a. Bybit).
+  async testKeys(userId, venue) {
+    const ctx = this.contexts.get(userId);
+    if (!ctx) throw new Error('Geen bot voor deze gebruiker');
+    const v = venueOf(venue);
+    const { privateEx } = this.#venueRuntime(ctx, v);
+    if (!privateEx?.apiKey || !privateEx?.secret) throw new Error(`${venueLabel(v)}-keys ontbreken, vul ze in bij Instellingen`);
+    if (typeof privateEx.fetchBalance !== 'function') throw new Error(`Keys testen bij ${venueLabel(v)} is niet mogelijk`);
+    let bal;
+    try {
+      bal = await privateEx.fetchBalance();
+    } catch (err) {
+      throw new Error(`${venueLabel(v)}-keys werken niet: ${err.message}`);
+    }
+    const pick = (c) => ({ free: Number(bal?.[c]?.free) || 0, total: Number(bal?.[c]?.total) || 0 });
+    return { venue: v, label: venueLabel(v), balances: { EUR: pick('EUR'), USDT: pick('USDT') }, at: new Date().toISOString() };
+  }
+
   // Zet de data van vóór meerdere gebruikers (direct in data/) over naar de map van de admin.
   migrateLegacy(adminId) {
     const dir = this.dirOf(adminId);
@@ -363,18 +425,17 @@ export class BotManager {
     // Nieuwe gebruikers beginnen altijd in paper, ongeacht LIVE_TRADING in de compose.
     const settings = new Settings(dir, user.role === 'admin' ? this.config : { ...this.config, liveTrading: false });
     const secrets = new SecretStore(dir, { keyDir: this.root, scope: user.id });
-    const privateEx = this.makePrivateExchange(secrets);
-    const exchange = userExchange(this.shared, privateEx);
-    const brokers = {
-      paper: new PaperBroker(exchange, () => settings.risk.feePct, () => settings.risk.slippagePct, () => settings.risk.makerFeePct),
-      live: new LiveBroker(exchange),
-    };
-    const stores = {
-      paper: new Store(dir, 'paper', this.config.paper.startBalanceEur),
-      live: new Store(dir, 'live', this.config.paper.startBalanceEur),
-    };
+    // Per beurs eigen verbinding, brokers en state-bestanden (ctx.venues). ctx.exchange/brokers/stores blijven
+    // die van Bitvavo (o.a. voor "Leert hij echt?": de leerserver kent alleen Bitvavo-trades); de bot gebruikt
+    // die van de gekozen beurs.
+    const ctx0 = { dir, settings, secrets, venues: {} };
+    const bv = this.#venueRuntime(ctx0, 'bitvavo');
+    const { exchange, brokers, stores } = bv;
+    const active = this.#venueRuntime(ctx0, settings.exchange);
     const notifier = new Notifier({ secrets, settings });
-    const bot = new Bot({ config: this.config, exchange, brokers, stores, settings, secrets, notifier });
+    const bot = new Bot({ config: this.config, exchange: active.exchange, brokers: active.brokers, stores: active.stores, settings, secrets, notifier });
+    bot.fx = active.fx;
+    bot.venueRuntime = (v) => this.#venueRuntime(ctx0, v);
     bot.userId = user.id;
     bot.uncleanRestart = this.uncleanRestart ?? null;
     bot.username = user.username;
@@ -383,7 +444,8 @@ export class BotManager {
     bot.getModel = () => this.ml.model;
     bot.getTeamwork = () => this.ml.teamwork ?? null;
     bot.getArms = () => this.ml.arms ?? [];
-    bot.getMicro = (pair) => this.ml.micro?.features?.[pair] ?? null;
+    // Orderboek-kenmerken komen van Bitvavo: op een andere beurs niet gebruiken.
+    bot.getMicro = (pair) => (bot.venue === 'bitvavo' ? this.ml.micro?.features?.[pair] ?? null : null);
     // Extra recepten van de leerserver gebruikt de bot alleen live, en alleen als je ze zelf live
     // toestond of op eigen risico live zette. Onthouden zolang er niets verandert.
     let memo = null;
@@ -391,15 +453,21 @@ export class BotManager {
       const raw = this.ml.agent ?? null;
       if (!raw) return null;
       const { approved, risky } = settings.agentLive;
-      const sig = `${bot.mode}|${approved.join(',')}|${Object.keys(risky ?? {}).join(',')}`;
+      const sig = `${bot.mode}|${bot.venue}|${approved.join(',')}|${Object.keys(risky ?? {}).join(',')}`;
       if (memo?.raw !== raw || memo.sig !== sig) {
         const active = (k) => bot.mode === 'live' && (approved.includes(k) || Boolean(risky?.[k]));
-        memo = { raw, sig, agent: activeAgent(raw, active) };
+        // Coins van de leerserver (X/EUR) naar de beurs vertalen (Bybit: X/USDT); Bitvavo ongewijzigd.
+        memo = { raw, sig, agent: venueAgent(activeAgent(raw, active), bot.venue) };
       }
       return memo.agent;
     };
-    bot.onFeedback = (trade) => { this.queueFeedback(trade).catch(() => {}); };
-    const ctx = { user, dir, settings, secrets, exchange, brokers, stores, notifier, bot, timer: null, watchTimer: null };
+    // Feedback naar de leerserver alleen van Bitvavo: de leerserver leert (fase 1) op Bitvavo-data, en trades
+    // van een andere beurs (andere kosten, andere koersen) zouden de livecheck en de kostenschatting vervuilen.
+    bot.onFeedback = (trade) => {
+      if (bot.venue !== 'bitvavo') return;
+      this.queueFeedback(trade).catch(() => {});
+    };
+    const ctx = Object.assign(ctx0, { user, exchange, brokers, stores, notifier, bot, timer: null, watchTimer: null, privateEx: bv.privateEx });
     this.contexts.set(user.id, ctx);
     this.#wire();
     return ctx;
@@ -548,8 +616,10 @@ export class BotManager {
     if (!ctx) return;
     clearTimeout(ctx.timer);
     clearTimeout(ctx.watchTimer);
-    ctx.stores.paper.save();
-    ctx.stores.live.save();
+    for (const rt of Object.values(ctx.venues ?? { bitvavo: { stores: ctx.stores } })) {
+      rt.stores.paper.save();
+      rt.stores.live.save();
+    }
     // Het leerdagboek (SQLite) netjes dicht, zodat de map veilig verplaatst kan worden.
     try { ctx.bot._journal?.close?.(); } catch { /* niets aan te doen */ }
     this.contexts.delete(userId);
@@ -587,6 +657,7 @@ export class BotManager {
         ...u,
         running: Boolean(ctx),
         mode: ctx?.settings.mode ?? null,
+        exchange: ctx?.settings.exchange ?? null,
         following: Boolean(b?.following),
         openPositions: st ? Object.keys(st.positions).length : 0,
         trades: st?.trades.length ?? 0,

@@ -8,11 +8,16 @@ const MAX_DECISIONS = 500;
 const MAX_TRADES = 1000;
 
 export class Store {
-  constructor(dataDir, mode, startBalanceEur) {
-    this.file = path.join(dataDir, `state-${mode}.json`);
+  // venue: andere beurs dan Bitvavo (bijv. 'bybit') krijgt een eigen bestand (state-paper-bybit.json), zodat de
+  // Bitvavo-geschiedenis (state-paper.json / state-live.json) nooit wordt aangeraakt.
+  constructor(dataDir, mode, startBalanceEur, venue = 'bitvavo') {
+    const own = venue && venue !== 'bitvavo';
+    this.file = path.join(dataDir, `state-${mode}${own ? `-${venue}` : ''}.json`);
+    this.venue = own ? venue : 'bitvavo';
     fs.mkdirSync(dataDir, { recursive: true });
     this.state = this.#load() ?? {
       mode,
+      ...(own ? { venue } : {}),
       createdAt: new Date().toISOString(),
       balanceEur: mode === 'paper' ? startBalanceEur : null,
       startBalanceEur: mode === 'paper' ? startBalanceEur : null,
@@ -36,6 +41,7 @@ export class Store {
   reset(startBalanceEur) {
     this.state = {
       mode: this.state.mode,
+      ...(this.venue !== 'bitvavo' ? { venue: this.venue } : {}),
       createdAt: new Date().toISOString(),
       balanceEur: startBalanceEur,
       startBalanceEur,

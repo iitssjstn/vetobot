@@ -11,6 +11,7 @@ import { aiLabel } from './ai.js';
 import { allAgentParts } from './agents.js';
 import { analyzeTrades } from './analysis.js';
 import { AI_PROVIDERS, MAX_PAIRS, TIMEFRAMES, RISK_LIMITS, STRATEGY_LIMITS } from './settings.js';
+import { VENUES, VENUE_IDS, liveAllowedOnVenue } from './venue.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -256,6 +257,14 @@ export function createApp({ users, manager, log = console }) {
       },
       mode: bot.mode,
       modeChangedAt: settings.data.modeChangedAt,
+      // Beurs: Bitvavo (euro) of Bybit (USDT-paren, fase 1 alleen paper). Bedragen altijd in euro.
+      exchange: bot.venue,
+      exchangeLabel: bot.venueLabel,
+      quote: bot.quote,
+      fx: bot.venue === 'bitvavo' ? null : bot.fx?.info?.() ?? null,
+      liveAllowed: liveAllowedOnVenue(bot.venue),
+      venues: VENUE_IDS.map((v) => ({ id: v, label: VENUES[v].label, quote: VENUES[v].quote, fees: VENUES[v].fees, live: liveAllowedOnVenue(v) })),
+      bybitKeysSet: Boolean(keys.bybitApiKey?.set && keys.bybitApiSecret?.set),
       pairs: bot.pairs,
       ownPairs: settings.pairs,
       maxPairs: MAX_PAIRS,
@@ -477,12 +486,26 @@ export function createApp({ users, manager, log = console }) {
   app.post('/api/settings/mode', wrap(async (req, { bot }) => {
     const { mode, password, confirm: word } = req.body ?? {};
     confirm(req, password);
+    // Centrale check per beurs (fase 1: Bybit alleen paper), vóór alles en los van wat het dashboard doet.
+    if (mode === 'live' && !liveAllowedOnVenue(bot.venue).ok) throw new Error(liveAllowedOnVenue(bot.venue).reason);
     if (mode === 'live' && String(word ?? '').trim() !== 'LIVE') {
       throw new Error('Typ LIVE ter bevestiging');
     }
     await bot.switchMode(mode);
     log.warn(`Modus gewijzigd naar ${mode} door ${req.user.username}`);
     return { ok: true, mode: bot.mode, liveBalance: bot.liveBalance };
+  }));
+
+  // Beurs kiezen (Bitvavo of Bybit). Alleen zonder open posities; live alleen waar live mag. Paper op Bybit is
+  // nepgeld, dus geen wachtwoord; staat de bot live, dan wel.
+  app.post('/api/settings/exchange', wrap(async (req, { bot }) => {
+    const exchange = String(req.body?.exchange ?? '');
+    if (!VENUE_IDS.includes(exchange)) throw new Error(`Onbekende beurs "${exchange}"`);
+    if (bot.mode === 'live') confirm(req, req.body?.password);
+    const r = await bot.switchVenue(exchange);
+    bot.onScheduleChange?.();
+    log.warn(`Beurs gewijzigd naar ${bot.venueLabel} door ${req.user.username}`);
+    return { ok: true, exchange: bot.venue, notice: r?.notice ?? null, risk: bot.risk };
   }));
 
   // Strategie van de admin volgen (of niet). Bestaande eigen posities blijven gewoon bewaakt.
@@ -573,8 +596,13 @@ export function createApp({ users, manager, log = console }) {
 
   app.post('/api/settings/ai/test', wrap(async (_req, { bot }) => ({ ok: true, ...(await bot.testAi()) })));
 
-  // Test de Bitvavo-keys zonder van modus te wisselen.
-  app.post('/api/settings/keys/test', wrap(async (_req, { bot }) => ({ ok: true, liveBalance: await bot.refreshLiveBalance() })));
+  // Test de keys van een beurs zonder van modus te wisselen (alleen saldo ophalen). Zonder venue: Bitvavo.
+  app.post('/api/settings/keys/test', wrap(async (req, { bot }) => {
+    const venue = String(req.body?.venue ?? 'bitvavo');
+    if (!VENUE_IDS.includes(venue)) throw new Error(`Onbekende beurs "${venue}"`);
+    if (venue === 'bitvavo' && bot.venue === 'bitvavo') return { ok: true, liveBalance: await bot.refreshLiveBalance() };
+    return { ok: true, ...(await manager.testKeys(req.user.id, venue)) };
+  }));
 
   // --- Eigen model / trainer -------------------------------------------------
   // Status van het model (voor iedereen zichtbaar; instellen alleen door de admin).

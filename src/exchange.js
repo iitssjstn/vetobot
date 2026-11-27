@@ -1,5 +1,6 @@
 import { fillBuy, fillSell } from './orderbook.js';
 import ccxt from 'ccxt';
+import { VENUES, venueOf, venueLabel, liveAllowedOnVenue } from './venue.js';
 
 // Wrapper rond ccxt voor Bitvavo. Marktdata is publiek en werkt zonder keys.
 // De keys komen uit de versleutelde SecretStore en worden bijgewerkt zodra je ze
@@ -10,7 +11,19 @@ import ccxt from 'ccxt';
 // verkopen. Te wijzigen met BITVAVO_OPERATOR_ID.
 export const OPERATOR_ID = Number(process.env.BITVAVO_OPERATOR_ID) > 0 ? Math.floor(Number(process.env.BITVAVO_OPERATOR_ID)) : 1;
 
-export function createExchange(secrets) {
+// venue: 'bitvavo' (standaard) of 'bybit'. Elke beurs zijn eigen keys uit de SecretStore.
+// Bybit wordt in fase 1 alleen gebruikt om de keys te testen (saldo ophalen), nooit voor orders.
+export function createExchange(secrets, venue = 'bitvavo') {
+  if (venueOf(venue) === 'bybit') {
+    const bx = new ccxt.bybit({ enableRateLimit: true, options: { defaultType: 'spot' } });
+    const applyBybit = () => {
+      bx.apiKey = secrets.get('bybitApiKey') || undefined;
+      bx.secret = secrets.get('bybitApiSecret') || undefined;
+    };
+    applyBybit();
+    secrets.onChange(applyBybit);
+    return bx;
+  }
   const ex = new ccxt.bitvavo({ enableRateLimit: true, options: { operatorId: OPERATOR_ID } });
   const apply = () => {
     ex.apiKey = secrets.get('bitvavoApiKey') || undefined;
@@ -117,6 +130,13 @@ export class SharedMarket {
   }
 }
 
+// Gedeelde publieke verbinding voor een beurs (zonder keys). Bybit: alleen spot.
+export function createSharedMarket(venue = 'bitvavo') {
+  const v = venueOf(venue);
+  const Ex = ccxt[VENUES[v].ccxt];
+  return new SharedMarket(new Ex({ enableRateLimit: true, ...(v === 'bybit' ? { options: { defaultType: 'spot' } } : {}) }));
+}
+
 // Verbinding voor één gebruiker: marktdata uit de gedeelde cache, al het andere (orders,
 // saldo, keys) via de eigen ccxt-instantie van de gebruiker.
 export function userExchange(shared, privateEx) {
@@ -191,12 +211,17 @@ export class PaperBroker {
   // feePct mag een getal of een functie zijn, zodat de fee uit het dashboard direct geldt.
   // slippagePct (getal of functie): koop zoveel procent duurder en verkoop zoveel goedkoper
   // dan de laatste koers, zodat paper niet rooskleuriger is dan live.
-  constructor(ex, feePct, slippagePct = 0, makerFeePct = null) {
+  // fx (alleen voor een beurs die niet in euro handelt, bijv. Bybit in USDT): { quote, eurPerQuote(opts) }.
+  // Dan rekent de broker in de quote-munt (inzet in euro → USDT, vullen tegen USDT-koersen) en geeft hij
+  // costEur/feeEur in euro terug (omgerekend met de actuele koers), plus de bedragen in de quote-munt.
+  // Zonder fx (Bitvavo) is alles in euro, precies zoals altijd.
+  constructor(ex, feePct, slippagePct = 0, makerFeePct = null, fx = null) {
     this.ex = ex;
     this.fee = typeof feePct === 'function' ? feePct : () => feePct;
     this.slip = typeof slippagePct === 'function' ? slippagePct : () => slippagePct;
     const maker = makerFeePct ?? feePct;
     this.maker = typeof maker === 'function' ? maker : () => maker;
+    this.fx = fx;
     this.mode = 'paper';
   }
 
@@ -212,7 +237,15 @@ export class PaperBroker {
     return this.slip() ?? 0;
   }
 
+  // Bedragen in de quote-munt erbij (alleen met fx): wat de order in USDT kostte/opbracht en tegen welke koers.
+  #quoteFields(rate, costQuote, feeQuote) {
+    return this.fx ? { quote: this.fx.quote, eurRate: rate, costQuote, feeQuote } : {};
+  }
+
   async buy(pair, stakeEur, opts = {}) {
+    // Kopen: een verse koers nodig (anders geen aankoop). Zonder fx is de koers 1 en is alles in euro.
+    const rate = this.fx ? await this.fx.eurPerQuote() : 1;
+    const stake = this.fx ? stakeEur / rate : stakeEur;
     if (opts.limit) {
       // Nagebootst: limiet op de huidige koers. Na de wachttijd gevuld als de koers er niet
       // boven is weggelopen (binnen een halve spread); anders gaat de aankoop niet door.
@@ -220,36 +253,59 @@ export class PaperBroker {
       await orderTiming.sleep((opts.waitSec ?? 20) * 1000);
       const now = await fetchPrice(this.ex, pair);
       if (now > limit * (1 + this.slippagePct / 200)) return null;
-      const feeEur = (stakeEur * this.makerFeePct) / 100;
-      return { amount: (stakeEur - feeEur) / limit, price: limit, costEur: stakeEur, feeEur, limit: true };
+      const fee = (stake * this.makerFeePct) / 100;
+      return { amount: (stake - fee) / limit, price: limit, costEur: stakeEur, feeEur: this.fx ? fee * rate : fee, limit: true, ...this.#quoteFields(rate, stake, fee) };
     }
-    const feeEur = (stakeEur * this.feePct) / 100;
+    const fee = (stake * this.feePct) / 100;
     // Vullen tegen de echte prijzen in het orderboek (zoals live); lukt dat niet, dan de
     // laatste koers plus de ingestelde slippage.
-    const fromBook = await bookPrice(this.ex, pair, 'buy', stakeEur - feeEur);
+    const fromBook = await bookPrice(this.ex, pair, 'buy', stake - fee);
     const price = fromBook ?? (await fetchPrice(this.ex, pair)) * (1 + this.slippagePct / 100);
-    const amount = (stakeEur - feeEur) / price;
-    return { amount, price, costEur: stakeEur, feeEur, ...(fromBook ? { book: true } : {}) };
+    const amount = (stake - fee) / price;
+    return { amount, price, costEur: stakeEur, feeEur: this.fx ? fee * rate : fee, ...(fromBook ? { book: true } : {}), ...this.#quoteFields(rate, stake, fee) };
   }
 
   async sell(pair, amount, opts = {}) {
+    // Verkopen mag met de laatst bekende koers: een positie mag nooit vastzitten op een ontbrekende koers.
+    const rate = this.fx ? await this.fx.eurPerQuote({ allowStale: true }) : 1;
+    const eur = (v) => (this.fx ? v * rate : v);
     if (opts.limit) {
       const limit = await fetchPrice(this.ex, pair);
       await orderTiming.sleep((opts.waitSec ?? 20) * 1000);
       const now = await fetchPrice(this.ex, pair);
       if (now >= limit * (1 - this.slippagePct / 200)) {
         const gross = amount * limit;
-        const feeEur = (gross * this.makerFeePct) / 100;
-        return { amount, price: limit, costEur: gross - feeEur, feeEur, limit: true };
+        const fee = (gross * this.makerFeePct) / 100;
+        return { amount, price: limit, costEur: eur(gross - fee), feeEur: eur(fee), limit: true, ...this.#quoteFields(rate, gross - fee, fee) };
       }
       // Niet gevuld: alsnog market.
     }
     const fromBook = await bookPrice(this.ex, pair, 'sell', amount);
     const price = fromBook ?? (await fetchPrice(this.ex, pair)) * (1 - this.slippagePct / 100);
     const gross = amount * price;
-    const feeEur = (gross * this.feePct) / 100;
-    return { amount, price, costEur: gross - feeEur, feeEur, ...(opts.limit ? { limitFallback: true } : {}) };
+    const fee = (gross * this.feePct) / 100;
+    return { amount, price, costEur: eur(gross - fee), feeEur: eur(fee), ...(opts.limit ? { limitFallback: true } : {}), ...this.#quoteFields(rate, gross - fee, fee) };
   }
+}
+
+// Live op een beurs waar live (nog) niet mag (fase 1: Bybit). Elke order of stop geeft dezelfde duidelijke
+// fout als de centrale check liveAllowedOnVenue, zodat er nooit per ongeluk een echte order uitgaat.
+export class BlockedLiveBroker {
+  constructor(venue) {
+    this.venue = venueOf(venue);
+    this.mode = 'live';
+  }
+
+  #refuse() {
+    throw new Error(liveAllowedOnVenue(this.venue).reason ?? `Live op ${venueLabel(this.venue)} is niet mogelijk`);
+  }
+
+  async buy() { this.#refuse(); }
+  async sell() { this.#refuse(); }
+  async placeStop() { this.#refuse(); }
+  async findStop() { return null; }
+  async fetchStop() { this.#refuse(); }
+  async cancelStop() { this.#refuse(); }
 }
 
 export class LiveBroker {
