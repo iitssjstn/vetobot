@@ -13,6 +13,7 @@ Laatste opdrachten (25–26 november 2026):
 - Opschonen (PR #16–#18, gemerged): klassieke strategie + AI-team verwijderd (keuze eigenaar; strategieën/bandit, strategie volgen en verkenner bewust behouden), dashboard in 4 groepen met tabs, CI-build-race opgelost.
 - Koopdrempel van de AI-trader zelf bijstellen (PR #20, gemerged).
 - Live nooit kopen onder het verkoopbare minimum (PR #22) en meeschuivende winstgrens bij uitschieters (PR #23), gemerged.
+- "Leert hij echt?" (PR #25), getypte waarden blijven staan + geen naam-autofill (PR #26), Bybit naast Bitvavo in drie fasen (PR #27 paper, #28 live op eigen risico, #29 leerserver per beurs), allemaal gemerged.
 
 De eigenaar handelt live (op eigen risico, met eigen inzet). Eerste echte trade via Bitvavo is gelukt (+€ 0,17).
 
@@ -26,10 +27,10 @@ De eigenaar handelt live (op eigen risico, met eigen inzet). Eerste echte trade 
 
 ## Staat van de code
 
-- `main` = `e688f07` "Merge pull request #23 from iitssjstn/claude/pump-trailing" (bevat PR #4 t/m #23). Image-build groen.
+- `main` = `64ae98d` "Merge pull request #29 from iitssjstn/claude/bybit-trainer" (bevat PR #4 t/m #29). Image-build groen.
 - CI draait `npm test` en **alle** Python-tests; images worden alleen gebouwd bij een push naar `main`. Sinds PR #18 stopt een nieuwere build een oudere (`concurrency`), anders kon een oude build `latest` overschrijven.
 - De eigenaar heeft de thuisserver bijgewerkt tot en met PR #17 (26 november) en ziet de nieuwe indeling; VPS t/m PR #11. Na elke update van de bot zet hij de recepten opnieuw live (Trainer → Live, bulkknop).
-- Tests op `main`: `npm test` 314/314 (minder door het weghalen van de klassieke strategie); `cd trainer && python -m unittest discover -p "test*.py"` 144 OK.
+- Tests op `main`: `npm test` 366/366 (minder door het weghalen van de klassieke strategie); `cd trainer && python -m unittest discover -p "test*.py"` 164 OK.
 - Eigenaar werkt via Termius (mobiel) op de thuisserver (`/opt/media-stack`). Claude Code draait daar niet (CPU zonder AVX: "Illegal instruction").
 
 ## Active files
@@ -71,6 +72,15 @@ De eigenaar handelt live (op eigen risico, met eigen inzet). Eerste echte trade 
 9. Verkoopbaar minimum (PR #22): Bitvavo weigert orders onder € 5 (errorCode 212). Een halve inzet (Risk Agent) of de kleinste start gaf posities van ~€ 5 die na een kleine daling niet meer te verkopen waren (en geen stop bij Bitvavo kregen). Nu `sellableStake(noodstop%)` = € 5 × 1,03 / (1 − stop) als ondergrens voor live kopen (€ 5,73 bij 10%); `belowMinimum(err)` geeft bij een geweigerde verkoop een duidelijke fout + één Discord-melding per positie (`pos.belowMinNotified`), positie blijft bewaakt.
 10. Uitschieter-winstgrens (PR #23, keuzes eigenaar): vanaf +3% topwinst `pos.pump`; niveau = min(instap × (1 + 0,70 × topwinst), top × 0,99), nooit omlaag; verkoop met market order (ook in `watchPositions`); model (`#agentExit`) verkoopt dan niet; live schuift de Bitvavo-stop mee (`#raisePumpStop`, ≥ 0,3% hoger, hooguit eens per 60 s, via `#releaseExchangeStop` + `#placeExchangeStop`). Instellingen `pumpTriggerPct` 3 (0 = uit), `pumpGivebackPct` 30, `pumpMinGapPct` 1 (Handel & risico). Alleen AI-trader-posities, niet de verkenner. Code in `src/safety.js` (`pumpRawLevel`, `pumpLevel`, `exchangeStopPrice` = max(noodstop, winstgrens)) en `test/pump.test.js`. Rest-risico: heel kort geen stop tijdens het vervangen; een afgegane winst-stop heet nog "Stop-loss bij Bitvavo".
 
+11. "Leert hij echt?" (PR #25): `src/learncheck.js` (zes checks: leerserver traint, leerstof komt aan, versies aantoonbaar beter, praktijk haalt belofte, resultaat beter 30 vs 30 d, voorspelling scherper; toetsen 95% via `src/stats.js`), `GET /api/learncheck`, leerserver `GET /learnstats` (`trainer/learnstats.py`). Blok bovenaan Learning + regel op Dashboard. Meldingsoort `learning` (alleen admin): ❌ één keer per overgang, weekoverzicht maandag; toestand in `settings.json` (`learnCheck`).
+12. Invulvelden (PR #26): `KEEP_INPUTS` in `public/index.html` behoudt zelf getypte waarden + focus in blokken die elke check opnieuw renderen (`ag-live`, `ag-body`, `ln-history`, `dash-summary`, `coin-list`). Bevestigings-wachtwoorden en geheime velden zijn tekstvelden met `-webkit-text-security` (geen inlog-autofill); echte inlog-/wachtwoordvelden blijven `type=password`.
+13. Bybit (PR #27–#29), keuze eigenaar: handelen in USDT-paren, alles tonen in euro.
+   - `src/venue.js`: `VENUES`, `toVenuePair`/`toBasePair`, `liveAllowedOnVenue`, `QuoteRate` (USDT/EUR). Instelling `settings.exchange` (standaard bitvavo), coins per beurs (`venuePairs`), eigen bestanden per beurs (`state-*-bybit.json`, `bandit-bybit.json`, `learning-bybit.db`). Wisselen alleen zonder open posities.
+   - Live op Bybit alleen op eigen risico: `settings.venueLive.bybit` (EIGEN RISICO + verliesgrens + wachtwoord); verliesgrens bereikt → geen nieuwe aankopen, melding, terug naar paper als posities dicht zijn.
+   - `src/bybit-broker.js` (ccxt 4.5.92): market-koop op kosten, stops als spot TP/SL (`orderFilter: 'tpslOrder'`, reserveert coins), uitvoering via status/orderLinkId; bij twijfel nooit zelf verkopen. Minimums per markt (`sellableStake(stop, minEur)`, `belowMinimum` met retCodes 170136/170140). Saldo/saldocontrole in USDT.
+   - Leerserver: Bybit-trades apart (`agent_trades-bybit.json`), livecheck/kosten/kalibratie per beurs, Bybit-candles (`trainer/venues.py`, `candles-bybit/`), `trainer/venue_eval.py` speelt actieve recepten na op Bybit (`venueStats.bybit`). Bot: `venueCostShift` op Bybit. Bitvavo-uitkomsten aantoonbaar identiek.
+   - NIET getest met een echt Bybit-account: TP/SL-statusverloop, foutcodes, minimums, fees, kline-antwoord. Eigenaar heeft Bybit live nog niet aangezet.
+
 ## Failed attempts
 
 - Limietorders "niet gevuld" was eigenlijk ccxt die zonder operatorId elke order weigerde (opgelost).
@@ -78,6 +88,7 @@ De eigenaar handelt live (op eigen risico, met eigen inzet). Eerste echte trade 
 - Rebasen van een branch met merge-commits speelt conflicten opnieuw af: niet rebasen als `main` al in de branch zit.
 - Dashboard-screenshots: niet via `file://`; serveer `public/` met een kleine HTTP-server en vang `/api/**` af.
 - Force-push (ook na `--amend` op een eigen branch) wordt door de auto-mode geblokkeerd: een commit met per ongeluk `[skip ci]` laten staan en "Create a merge commit" adviseren.
+- Agents kunnen stoppen op de 5-uurslimiet van het account; na de reset met SendMessage hervatten (werk blijft in de worktree).
 - Twee merges kort na elkaar: de oudere build was later klaar en overschreef `latest` (opgelost met PR #18; zo nodig de nieuwste run opnieuw starten).
 - Containerlogs zijn weg na een update (container opnieuw aangemaakt); daarom de uurlijkse AI-trader-regel. Diagnose stille AI-trader: Trainer → "Wordt hij beter?" → "Waarom koopt de AI-trader (niet)?" (alleen in geheugen, begint na herstart opnieuw).
 
@@ -86,9 +97,10 @@ De eigenaar handelt live (op eigen risico, met eigen inzet). Eerste echte trade 
 1. Bijwerken (alleen na merge, eigenaar doet het zelf):
    - VPS: `docker compose pull vetobot-trainer && docker compose up -d vetobot-trainer` (alleen als `trainer/` veranderde)
    - Thuisserver: `cd /opt/media-stack && docker compose pull vetobot && docker compose up -d vetobot`
-2. Live volgen: `docker logs -t --since 2h vetobot 2>&1 | grep "AI-trader afgelopen"`; AI-chat "ik gebruik recept …, dat deze coin wel handelt" = PR #14 werkt. Bij de eerstvolgende aankoop: Posities → Live-veiligheid "actief bij Bitvavo".
-3. Niet-gefixte vondsten uit de bugcontrole (alleen op verzoek, elk eigen PR): limiet-verkoop als `createOrder` zelf een time-out geeft (dan market van alles); maker-fee niet ingecalculeerd bij limiet-koop met bijna het hele saldo; `#fillOf` met lege `average`/`price` geeft NaN-fee; `#agentExit` geeft `true` bij BUSY; `posMaxPct` in training neemt instapcandle mee (bot niet); `config.json` lezen-aanpassen-schrijven zonder lock; procesbrede foutmeldingen gaan naar alle gebruikers; `uncleanRestart` blijft voor het hele proces gezet; `manager.stop` wacht niet op een lopende tick.
-4. Resterende risico's uit de audit, alleen op verzoek, elk als eigen PR:
+2. Bybit live: bij de eerste aankoop/verkoop screenshots laten sturen en controleren of de TP/SL-order bij Bybit staat en de uitvoering goed herkend wordt.
+3. Live volgen: `docker logs -t --since 2h vetobot 2>&1 | grep "AI-trader afgelopen"`; AI-chat "ik gebruik recept …, dat deze coin wel handelt" = PR #14 werkt. Bij de eerstvolgende aankoop: Posities → Live-veiligheid "actief bij Bitvavo".
+4. Niet-gefixte vondsten uit de bugcontrole (alleen op verzoek, elk eigen PR): limiet-verkoop als `createOrder` zelf een time-out geeft (dan market van alles); maker-fee niet ingecalculeerd bij limiet-koop met bijna het hele saldo; `#fillOf` met lege `average`/`price` geeft NaN-fee; `#agentExit` geeft `true` bij BUSY; `posMaxPct` in training neemt instapcandle mee (bot niet); `config.json` lezen-aanpassen-schrijven zonder lock; procesbrede foutmeldingen gaan naar alle gebruikers; `uncleanRestart` blijft voor het hele proces gezet; `manager.stop` wacht niet op een lopende tick.
+5. Resterende risico's uit de audit, alleen op verzoek, elk als eigen PR:
    - verkoop met verloren antwoord pas zichtbaar bij de volgende saldocontrole (orders opzoeken);
    - correlatie binnen één eindtest: trade-rendementen met tijd bewaren, dan clusteren per dag of block-bootstrap;
    - proefperiode zakt ook bij een goed model in ±11–19% (overwegen: 0,95 of vergelijken met 0);
@@ -97,4 +109,4 @@ De eigenaar handelt live (op eigen risico, met eigen inzet). Eerste echte trade 
    - `agent_extra`: echte trades ook op recept filteren;
    - `#settleJournal`: slippage twee keer rekenen (labels 0,1 pp te optimistisch);
    - `cleanup_files` onder `publish_lock`; terugzetten atomair over bestanden heen.
-5. Bekende, bewuste eigenschappen (geen bug): in live kost een aankoop inzet + fee; de Risk Agent halveert de inzet zonder plan per marktfase (nooit onder € 5); met de kleinste live-start (€ 5) geen stop bij Bitvavo (onder het minimum).
+6. Bekende, bewuste eigenschappen (geen bug): in live kost een aankoop inzet + fee; de Risk Agent halveert de inzet zonder plan per marktfase (nooit onder € 5); met de kleinste live-start (€ 5) geen stop bij Bitvavo (onder het minimum).
