@@ -1911,7 +1911,7 @@ function renderVenue(s) {
       : 'Bitvavo: paren in euro, paper en live.',
     'Live op Bybit kan alleen <b>op eigen risico</b>: bij "Overschakelen naar live" bevestig je met je wachtwoord, typ je EIGEN RISICO en kies je een verliesgrens in euro. Bybit is nieuw in vetobot en nog niet met echt geld getest.',
     `Kiest je Bybit en staat je fee nog op de standaard van Bitvavo, dan zet de bot hem op de standaard van Bybit (${bb ? fee(bb.fees) : '0,1%'}); een eigen fee blijft staan. Te wijzigen bij Risico.`,
-    'De AI-trader gebruikt op Bybit dezelfde recepten (relatieve kenmerken, BTC-context via BTC/USDT). De leerserver leert nog op Bitvavo-data, dus de verwachtingen kunnen op Bybit minder precies zijn. Trades op Bybit gaan niet als feedback naar de leerserver.',
+    'De AI-trader gebruikt op Bybit dezelfde recepten (relatieve kenmerken, BTC-context via BTC/USDT). De leerserver traint op Bitvavo-data en test de recepten ook op Bybit-koersen; je Bybit-trades gaan apart naar de leerserver (eigen kosten en eisen per beurs), en de bot rekent op Bybit met de Bybit-kosten.',
     'Paper-saldo, posities en trades worden per beurs apart bewaard: je Bitvavo-geschiedenis blijft staan.',
     open ? `<span class="down">Er staan ${open} positie(s) open. Sluit die eerst; daarna kun je van beurs wisselen.</span>` : '',
   ].filter(Boolean).map((t) => `<div style="margin-top:6px">${t}</div>`).join('');
@@ -2283,6 +2283,37 @@ function sizingHtml(z, sign, nl) {
   return `${head}<p class="muted" style="margin:0 0 6px;font-size:13.5px">Hij kiest per trade tussen € ${nl(z.baseEur, 2)} en € ${nl(z.maxEur, 2)}, naar vertrouwen. Uitkomsten in ${z.mode === 'live' ? 'live' : 'paper'}:</p>
     <div style="font-size:13.5px;line-height:1.7">${row('Groter ingezet', z.bigger)}${row('Jouw gewone inzet', z.normal)}</div>`;
 }
+// Op een andere beurs (Bybit): per recept de cijfers van de leerserver voor die beurs, naast Bitvavo.
+function venueRecipeHtml(v, nl) {
+  if (!v) return '';
+  const sg = (x) => (x == null ? '–' : `${x >= 0 ? '+' : '−'}${nl(Math.abs(x), 2)}%`);
+  const s = v.stats;
+  const bt = s?.backtest;
+  const pr = s?.practice;
+  const test = bt?.trades ? `eindtest op ${esc(v.label)}-koersen: <b>${bt.trades}</b> trades, gemiddeld <b class="${(bt.avgPct ?? 0) > 0 ? 'up' : 'down'}">${sg(bt.avgPct)}</b> per trade na ${esc(v.label)}-kosten (sinds ${esc(time(bt.since))})`
+    : bt?.reason ? `eindtest op ${esc(v.label)}: ${esc(bt.reason)}` : `nog niet getest op ${esc(v.label)}-koersen`;
+  const real = pr?.trades ? `echte trades op ${esc(v.label)}: <b>${pr.trades}</b>, gemiddeld ${sg(pr.avgPct)}` : `nog geen echte trades op ${esc(v.label)}`;
+  const cost = v.costPct != null ? `kosten ${nl(v.costPct, 2)}% per ronde (Bitvavo ${v.bitvavoCostPct == null ? '–' : `${nl(v.bitvavoCostPct, 2)}%`})` : '';
+  const checks = (v.checks ?? []).length ? `<details style="margin-top:4px"><summary>Eisen voor live met alleen ${esc(v.label)}-trades (ter info)</summary>${v.checks.map((c) => `<div>${c.ok ? '<span class="up">✓</span>' : '<span class="down">✗</span>'} ${esc(c.label)} <span class="muted">· nu: ${esc(c.now)}</span></div>`).join('')}</details>` : '';
+  return `<div class="muted" style="margin:0 0 6px;font-size:13px;line-height:1.6"><span class="badge soft">${esc(v.label)}</span> ${test} · ${real}${cost ? ` · ${cost}` : ''}${checks}</div>`;
+}
+
+// Trainer: cijfers van de leerserver voor de beurs waarop je nu handelt (alleen als dat niet Bitvavo is).
+function venueTrainerHtml(a, sign, nl) {
+  const id = state?.exchange ?? 'bitvavo';
+  const v = id !== 'bitvavo' ? a?.venues?.[id] : null;
+  if (!v) return id !== 'bitvavo' ? `<p class="muted" style="margin:12px 0 0;font-size:13.5px">Je handelt op ${esc(id)}. De leerserver geeft (nog) geen cijfers voor deze beurs: werk hem bij of zet het leren op deze beurs aan.</p>` : '';
+  const wk = v.paperTest?.weeks ?? [];
+  const cRows = Object.entries(v.costs?.perCoin ?? {});
+  return `<div class="sub-h" style="margin:16px 0 6px">${icon('list')}Op ${esc(v.label)}</div>
+    <p class="muted" style="margin:0 0 8px;font-size:13.5px">Je handelt op ${esc(v.label)}. De recepten worden op Bitvavo getraind en gekozen; de leerserver test ze ook op ${esc(v.label)}-koersen met ${esc(v.label)}-kosten (zie bij elk recept hierboven) en houdt je ${esc(v.label)}-trades apart (${v.trades} ontvangen). Kosten zonder metingen: ${nl(v.costs?.default, 2)}% per ronde (fee ${nl(v.costs?.feePct, 2)}% × 2 plus slippage).</p>
+    ${cRows.length ? `<div class="scroll">${table(cRows.map(([pair, x]) => ({ pair, ...x })), [['Coin', (x) => esc(x.pair)], ['Gemeten', (x) => `<span class="num">${nl(x.measured, 2)}%</span> <span class="muted">(${x.n} trades)</span>`], ['Gebruikt', (x) => `<span class="num">${nl(x.used, 2)}%</span>`, 'r']])}</div>` : ''}
+    <div class="scroll">${wk.length ? table(wk, [['Week', (w) => esc(w.week)], ['Trades', (w) => `<span class="num">${w.trades}</span>`, 'r'],
+      ['Gemiddeld na kosten', (w) => `<span class="${w.avg > 0 ? 'up' : 'down'}">${sign(w.avg)}</span>`, 'r'],
+      ['Beter dan de markt', (w) => w.edge == null ? '<span class="muted">nog niet gemeten</span>' : `<span class="${w.edge > 0 ? 'up' : 'down'}">${sign(w.edge)}</span>`, 'r']])
+      : `<p class="muted" style="margin:0">Nog geen paper-trades op ${esc(v.label)}.</p>`}</div>`;
+}
+
 function agentLiveHtml(a, bot, sign, nl) {
   const recs = [...(bot?.recipes ?? [])].sort((x, y) => Number(Boolean(y.approved || y.risky)) - Number(Boolean(x.approved || x.risky)));
   const live = state?.mode === 'live';
@@ -2314,7 +2345,7 @@ function agentLiveHtml(a, bot, sign, nl) {
     return `<div style="margin:0 0 12px;padding:10px 12px;border:1px solid ${on ? 'var(--up)' : 'var(--line)'};border-radius:10px;overflow-wrap:anywhere">
       ${pick}<div>${badge} <b>${esc(recipeName(a, r.recipe))}</b></div>
       <div class="muted" style="font-size:12.5px">${recipeName(a, r.recipe) !== r.recipe ? `${esc(r.recipe)} · ` : ''}${esc(r.stage ?? '')}${r.extra ? ' · extra recept: alleen in gebruik als je het live zet' : ''}${r.stale ? ' · <span class="warnc">de leerserver stuurt dit recept niet meer mee; de bot gebruikt zijn laatst bekende versie</span>' : ''}</div>
-      <div style="margin:4px 0 6px;font-size:13.5px;line-height:1.6">${checks}</div>${btn}</div>`;
+      <div style="margin:4px 0 6px;font-size:13.5px;line-height:1.6">${checks}</div>${venueRecipeHtml(r.venue, nl)}${btn}</div>`;
   }).join('');
   const pt = a.paperTest;
   const wk = pt?.weeks ?? [];
@@ -2356,7 +2387,7 @@ function agentLiveHtml(a, bot, sign, nl) {
     ]) : '<p class="muted" style="margin:0">Nog geen gesloten trades met een verwachting.</p>'}</div>
     <div class="sub-h" style="margin:16px 0 6px">${icon('list')}Lange paper-test per week</div>
     <p class="muted" style="margin:0 0 8px;font-size:13.5px">Sinds ${pt?.since ? esc(time(pt.since)) : '–'}. Goed genoeg om live te overwegen: alle eisen hierboven gehaald, en in minstens 4 van de laatste 6 weken beter dan de markt (nu ${beat} van ${Math.min(6, wk.length)}).</p>
-    <div class="scroll">${weeks}</div>`;
+    <div class="scroll">${weeks}</div>${venueTrainerHtml(a, sign, nl)}`;
 }
 document.addEventListener('click', async (e) => {
   const b = e.target.closest('[data-agent-live]');
@@ -2860,6 +2891,7 @@ function renderLearnCheck() {
     $('ln-check-hint').textContent = `bijgewerkt ${new Date(d.at).toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })} · toetsen met ${Math.round((t.confidence ?? 0.95) * 100)}% zekerheid`;
     body.innerHTML = `<div class="lc-verdict ${esc(v.level ?? '')}"><span class="lc-ico ${esc(v.level ?? '')}" aria-hidden="true">${LC[v.level]?.[1] ?? '?'}</span>
         <div>${esc(v.text ?? '')}<span class="d">${esc(v.detail ?? '')}</span></div></div>
+      ${d.venueNote ? `<p class="muted" style="margin:0 0 10px;font-size:13px">${esc(d.venueNote)}</p>` : ''}
       <div class="lc-list">${d.checks.map((c, i) => `<div class="lc-row ${esc(c.status)}">
         <span class="lc-ico ${esc(LC[c.status]?.[0] ?? '')}" aria-hidden="true">${LC[c.status]?.[1] ?? '?'}</span>
         <div><div class="lc-t">${i + 1}. ${esc(c.title)} <span class="badge ${LC_BADGE[c.status] ?? 'soft'}">${esc(label(c))}</span></div>

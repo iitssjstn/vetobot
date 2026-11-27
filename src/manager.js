@@ -21,6 +21,12 @@ import { evaluate as evaluateLearning, learnAlerts, weeklyDue, weeklyMessage, al
 
 const LEGACY_FILES = ['settings.json', 'state-paper.json', 'state-live.json'];
 
+// Feedback met de beurs erbij: Bitvavo onveranderd, een andere beurs met venue (en de coin zoals op die beurs).
+export function feedbackFor(trade, venue) {
+  const v = venueOf(venue);
+  return v === 'bitvavo' || !trade || typeof trade !== 'object' ? trade : { ...trade, venue: v };
+}
+
 export class BotManager {
   // shared: gedeelde marktdata van Bitvavo; sharedVenues: die van andere beurzen ({ bybit }), anders bij het
   // eerste gebruik aangemaakt. makePrivateExchange(secrets, venue): eigen verbinding (keys) per beurs.
@@ -209,16 +215,22 @@ export class BotManager {
   // ---------- "Leert hij echt?" (src/learncheck.js) ----------
   // Gegevens van de leerserver: de telling (/learnstats) en het modelregister (/registry). Vijf minuten
   // bewaard; fouten komen als reden terug (dan wordt een controle ⚠️), nooit als exceptie.
-  async #learnTrainerData() {
+  // Per beurs: Bitvavo /learnstats (zoals altijd), een andere beurs /learnstats?venue=… (alleen de trades die de
+  // leerserver van die beurs ontving). Een oudere leerserver zonder telling per beurs: geen telling (⚠️).
+  async #learnTrainerData(venue = 'bitvavo') {
     if (!this.trainerAccess()) return { configured: false };
+    const v = venueOf(venue);
     const c = this.learnCheckCache;
-    if (c && Date.now() - c.at < LEARN_CHECK.cacheMinutes * 60000) return c.data;
+    if (c && (c.venue ?? 'bitvavo') === v && Date.now() - c.at < LEARN_CHECK.cacheMinutes * 60000) return c.data;
     const [stats, registry] = await Promise.all([
-      this.trainerRequest('/learnstats').then((r) => ({ data: r.data })).catch((err) => ({ error: err.message })),
+      this.trainerRequest(v === 'bitvavo' ? '/learnstats' : `/learnstats?venue=${v}`).then((r) => {
+        if (v !== 'bitvavo' && r.data?.venue !== v) return { error: `de leerserver telt nog geen trades per beurs (werk hem bij)` };
+        return { data: r.data };
+      }).catch((err) => ({ error: err.message })),
       this.learningRegistry().then((data) => ({ data })).catch((err) => ({ error: err.message })),
     ]);
     const data = { configured: true, stats: stats.data ?? null, statsError: stats.error ?? null, registry: registry.data ?? null, registryError: registry.error ?? null };
-    this.learnCheckCache = { at: Date.now(), data };
+    this.learnCheckCache = { at: Date.now(), venue: v, data };
     return data;
   }
 
@@ -227,10 +239,14 @@ export class BotManager {
   async learnCheck(userId, now = Date.now()) {
     const ctx = this.contexts.get(userId);
     if (!ctx) throw new Error('Geen bot voor deze gebruiker');
-    const trainer = await this.#learnTrainerData();
-    const stores = Object.entries(ctx.stores ?? {}).filter(([, st]) => st?.state);
+    // Per actieve beurs: de trades van die beurs (Bitvavo: ctx.stores, zoals altijd) en wat de leerserver
+    // van die beurs ontving.
+    const venue = venueOf(ctx.bot?.venue ?? ctx.settings?.exchange);
+    const trainer = await this.#learnTrainerData(venue);
+    const src = venue === 'bitvavo' ? ctx.stores : ctx.venues?.[venue]?.stores ?? {};
+    const stores = Object.entries(src ?? {}).filter(([, st]) => st?.state);
     return evaluateLearning({
-      now, trainer,
+      now, trainer, venue,
       feedback: { queued: this.feedbackQueue.length, error: this.ml.feedbackError ?? null, errorSince: this.ml.feedbackErrorSince ?? null, sentAt: this.ml.feedbackSentAt ?? null },
       trades: stores.flatMap(([mode, st]) => (st.state.trades ?? []).map((t) => (t.mode ? t : { ...t, mode }))),
       virtualTrades: stores.flatMap(([, st]) => (st.state.explorationTrades ?? []).map((t) => ({ ...t, virtual: true }))),
@@ -429,7 +445,7 @@ export class BotManager {
     const settings = new Settings(dir, user.role === 'admin' ? this.config : { ...this.config, liveTrading: false });
     const secrets = new SecretStore(dir, { keyDir: this.root, scope: user.id });
     // Per beurs eigen verbinding, brokers en state-bestanden (ctx.venues). ctx.exchange/brokers/stores blijven
-    // die van Bitvavo (o.a. voor "Leert hij echt?": de leerserver kent alleen Bitvavo-trades); de bot gebruikt
+    // die van Bitvavo ("Leert hij echt?" kiest zelf de stores van de actieve beurs, zie learnCheck); de bot gebruikt
     // die van de gekozen beurs.
     const ctx0 = { dir, settings, secrets, venues: {} };
     const bv = this.#venueRuntime(ctx0, 'bitvavo');
@@ -464,11 +480,11 @@ export class BotManager {
       }
       return memo.agent;
     };
-    // Feedback naar de leerserver alleen van Bitvavo: de leerserver leert (fase 1) op Bitvavo-data, en trades
-    // van een andere beurs (andere kosten, andere koersen) zouden de livecheck en de kostenschatting vervuilen.
+    // Feedback naar de leerserver. Bitvavo precies als altijd (zonder 'venue'). Een andere beurs (fase 3) met
+    // venue: 'bybit': de leerserver bewaart die trades apart (eigen livecheck en kosten per beurs) en gebruikt
+    // ze niet voor de Bitvavo-training, -promotie of -proefperiode.
     bot.onFeedback = (trade) => {
-      if (bot.venue !== 'bitvavo') return;
-      this.queueFeedback(trade).catch(() => {});
+      this.queueFeedback(feedbackFor(trade, bot.venue)).catch(() => {});
     };
     const ctx = Object.assign(ctx0, { user, exchange, brokers, stores, notifier, bot, timer: null, watchTimer: null, privateEx: bv.privateEx });
     this.contexts.set(user.id, ctx);

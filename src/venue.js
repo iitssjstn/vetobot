@@ -178,3 +178,28 @@ export class QuoteRate {
     return { quote: this.quote, rate: this.value, at: this.at ? new Date(this.at).toISOString() : null, source: this.source, error: this.error };
   }
 }
+
+// ---------- Kosten per beurs in de verwachting van de AI-trader (fase 3) ----------
+// Het model van de leerserver verwacht een uitkomst NA de kosten waarmee het geleerd heeft (Bitvavo:
+// agent.costs[coin] of agent.costPct). Op een andere beurs gelden andere kosten: de leerserver stuurt die
+// per recept mee (agent.venueCosts.bybit = { costPct, costs: { X/EUR: % }, default }). Zonder die gegevens
+// (oudere leerserver): 2 × de fee van de beurs plus de eigen slippage. Bitvavo: altijd 0 (niets verandert).
+export function venueCostPct(agent, pair, venue, slippagePct = 0) {
+  const v = venueOf(venue);
+  if (v === DEFAULT_VENUE) return null;
+  const base = toBasePair(pair);
+  const vc = agent?.venueCosts?.[v];
+  const pick = [vc?.costs?.[base], vc?.default, vc?.costPct].find((x) => Number.isFinite(Number(x)) && x !== null);
+  if (pick != null) return Number(pick);
+  return 2 * VENUES[v].fees.feePct + Math.max(0, Number(slippagePct) || 0);
+}
+
+// Hoeveel %-punt de verwachting van het model op deze beurs anders is: geleerde kosten min de kosten hier.
+export function venueCostShift(agent, pair, venue, slippagePct = 0) {
+  const here = venueCostPct(agent, pair, venue, slippagePct);
+  if (here == null) return 0;
+  const base = toBasePair(pair);
+  const trained = [agent?.costs?.[base], agent?.costPct].find((x) => Number.isFinite(Number(x)) && x !== null);
+  if (trained == null) return 0;
+  return Number(trained) - here;
+}
