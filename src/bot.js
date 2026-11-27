@@ -1070,7 +1070,9 @@ export class Bot {
   // Wisselt van beurs (Bitvavo ↔ Bybit). Alleen zonder open posities (paper én live van de huidige beurs),
   // en live alleen naar een beurs waar live mag. Elke beurs heeft eigen state-bestanden, bandit en leerdagboek
   // (venueRuntime, van de manager), zodat de Bitvavo-geschiedenis intact blijft. Geeft { venue, notice }.
-  switchVenue(venue) {
+  async switchVenue(venue) {
+    // Eerst een lopende check laten afmaken: die rekent met de coins (X/EUR) en verbinding van de huidige beurs.
+    if (this.tickPromise) await this.tickPromise.catch(() => {});
     return this.#exclusive(async () => {
       const next = venueOf(venue);
       if (venue !== next) throw new Error(`Onbekende beurs "${venue}"`);
@@ -1104,6 +1106,7 @@ export class Bot {
       this.marketRegimes = {};
       this.lastArmTs = {};
       this.liveBalance = null;
+      this.lastError = null; // een fout van de vorige beurs hoort niet bij deze
       this.#event('warn', null, `Beurs gewisseld naar ${this.venueLabel}${next === 'bitvavo' ? '' : ` (${this.mode === 'live' ? 'live op eigen risico' : 'paper'}, paren in ${this.quote}, bedragen in euro)`}.${notice ? ` ${notice}` : ''}`);
       return { venue: next, notice };
     });
@@ -1156,11 +1159,14 @@ export class Bot {
       // Met de AI-trader aan: ook de coins die hij zelf gekozen heeft (hij zoekt uit waar hij het best handelt).
       const agentCoins = this.strategy.agentMode && !this.following ? allAgentCoins(this.getAgent?.()) : [];
       const pairs = [...new Set([...this.pairs, ...agentCoins, ...Object.keys(this.store.state.positions)])];
+      const venueAtStart = this.venue;
       await this.#prefetch(pairs);
       // Live: eerst de stand bij Bitvavo (saldo, stop-orders, zo nodig de saldocontrole), pas daarna de coins.
       // Zo beslist een aankoop nooit op een saldo of stop-stand van de vorige check.
       if (this.mode === 'live') errors += await this.#liveChecks();
       for (const pair of pairs) {
+        // Tijdens deze check van beurs gewisseld: de rest van de lijst hoort bij de vorige beurs, niet afmaken.
+        if (this.venue !== venueAtStart) break;
         try {
           await this.#exclusive(() => this.#handlePair(pair));
         } catch (err) {
