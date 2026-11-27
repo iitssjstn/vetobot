@@ -1,7 +1,7 @@
 // Beurzen (venues) waarop de bot kan handelen, en alles wat per beurs verschilt.
 //
 // - Bitvavo: paren in euro (BTC/EUR). Paper en live. Dit is het standaardgedrag en blijft precies gelijk.
-// - Bybit: paren in USDT (BTC/USDT). Fase 1: alleen paper. Inzet, winst, limieten en het dashboard blijven
+// - Bybit: paren in USDT (BTC/USDT). Paper, en live alleen op eigen risico (fase 2, zie liveAllowedOnVenue). Inzet, winst, limieten en het dashboard blijven
 //   in euro; de bot rekent om met de actuele USDT/EUR-koers van Bybit (QuoteRate hieronder).
 //
 // De leerserver levert coins als X/EUR (Bitvavo-namen). toVenuePair/toBasePair vertalen tussen de
@@ -37,17 +37,50 @@ export function toVenuePair(pair, venue) {
 export const toBasePair = (pair) => toVenuePair(pair, DEFAULT_VENUE);
 
 // ---------- Live per beurs ----------
-// Eén centrale plek die bepaalt of live op een beurs mag. Fase 1: alleen Bitvavo. Fase 2 vervangt de
-// Bybit-tak door een eigen-risico-akkoord (zoals bij de AI-trader: EIGEN RISICO + verliesgrens + wachtwoord),
-// bijv. door hier settings.venueLive?.bybit te controleren. Bot, server en dashboard gebruiken allemaal deze check.
+// Eén centrale plek die bepaalt of live op een beurs mag. Bot, server, instellingen en dashboard gebruiken
+// allemaal deze check (met de instellingen van de gebruiker erbij).
+// - Bitvavo: altijd (de bestaande eisen gelden daarnaast: wachtwoord, LIVE typen, werkende keys).
+// - Bybit (fase 2): alleen op eigen risico. De eigenaar gaf een akkoord met wachtwoord, "EIGEN RISICO" en een
+//   verliesgrens in euro (settings.venueLive.bybit = { maxLossEur, at }). Bereikt het live-resultaat op Bybit
+//   sinds het akkoord die grens, dan zet de bot stoppedAt: vanaf dan geen nieuwe aankopen meer (open posities
+//   blijven bewaakt en beschermd) en daarna terug naar paper. Een nieuw akkoord begint opnieuw te tellen.
+export const ACCORD_VENUES = new Set(['bybit']);
+export const ACCORD_WORD = 'EIGEN RISICO';
 export const LIVE_BLOCKED_TEXT = {
-  bybit: 'Live op Bybit (op eigen risico) komt in de volgende stap; Bybit werkt nu alleen in paper.',
+  bybit: 'Live op Bybit kan alleen op eigen risico: bevestig met je wachtwoord, typ EIGEN RISICO en kies een verliesgrens in euro.',
 };
 
-export function liveAllowedOnVenue(venue /* , settings */) {
+// Akkoord voor live op een beurs (of null). Werkt met een Settings-object of met een kaal { venueLive }.
+export function venueAccord(venue, settings) {
+  const v = venueOf(venue);
+  const a = settings?.venueLive?.[v] ?? settings?.data?.venueLive?.[v] ?? null;
+  return a && Number(a.maxLossEur) > 0 && a.at ? a : null;
+}
+
+// { ok, reason, accord? }. accord: true = op deze beurs kan live met een eigen-risico-akkoord (dashboard: dialoog).
+// stopped: het akkoord is beëindigd door de verliesgrens (alleen nog afbouwen: bewaken en verkopen).
+export function liveAllowedOnVenue(venue, settings = null) {
   const v = venueOf(venue);
   if (v === 'bitvavo') return { ok: true, reason: null };
-  return { ok: false, reason: LIVE_BLOCKED_TEXT[v] ?? `Live op ${venueLabel(v)} is nog niet mogelijk` };
+  if (!ACCORD_VENUES.has(v)) return { ok: false, reason: `Live op ${venueLabel(v)} is nog niet mogelijk` };
+  const a = venueAccord(v, settings);
+  if (!a) return { ok: false, reason: LIVE_BLOCKED_TEXT[v], accord: true };
+  if (a.stoppedAt) {
+    return { ok: false, accord: true, stopped: true, maxLossEur: a.maxLossEur, since: a.at,
+      reason: `Live op ${venueLabel(v)} is gestopt: ${a.stopReason ?? 'de verliesgrens is bereikt'}. Geen nieuwe aankopen; open posities worden nog bewaakt. Opnieuw live kan alleen met een nieuw akkoord op eigen risico.` };
+  }
+  return { ok: true, reason: null, accord: true, maxLossEur: a.maxLossEur, since: a.at };
+}
+
+// Controleert de invoer van een akkoord (server én bot). Geeft de verliesgrens als getal, of gooit.
+export function checkAccordInput(venue, { confirmText, maxLossEur } = {}) {
+  const v = venueOf(venue);
+  if (!ACCORD_VENUES.has(v)) throw new Error(`Op ${venueLabel(v)} hoort geen eigen-risico-akkoord`);
+  if (String(confirmText ?? '').trim().toUpperCase() !== ACCORD_WORD) throw new Error(`Typ ${ACCORD_WORD} om live op ${venueLabel(v)} te bevestigen`);
+  const n = Number(maxLossEur);
+  if (maxLossEur === '' || maxLossEur == null || !Number.isFinite(n) || n < 1) throw new Error(`Kies een verliesgrens voor live op ${venueLabel(v)} van minstens € 1`);
+  if (n > 100000000) throw new Error('Verliesgrens moet tussen € 1 en € 100.000.000 liggen');
+  return Math.round(n * 100) / 100;
 }
 
 // ---------- AI-trader: coins van de leerserver naar de beurs ----------

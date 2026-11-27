@@ -130,10 +130,13 @@ export class Settings {
     const saved = fs.existsSync(this.file) ? JSON.parse(fs.readFileSync(this.file, 'utf8')) : {};
     // Beurs: Bitvavo, tenzij de gebruiker zelf Bybit koos (oude settings.json zonder dit veld: Bitvavo).
     const exchange = venueOf(saved.exchange);
-    // Live alleen op een beurs waar live mag (fase 1: Bybit alleen paper), ook als het bestand iets anders zegt.
+    // Live alleen op een beurs waar live mag (Bybit: alleen met een eigen-risico-akkoord), ook als het bestand iets
+    // anders zegt. Een akkoord dat door de verliesgrens gestopt is houdt live aan (afbouwen: open live posities
+    // blijven bewaakt; de bot gaat zelf naar paper zodra ze dicht zijn), maar zonder nieuwe aankopen.
     const wantMode = saved.mode ?? (defaults.liveTrading ? 'live' : 'paper');
+    const liveOk = liveAllowedOnVenue(exchange, { venueLive: saved.venueLive });
     this.data = {
-      mode: wantMode === 'live' && !liveAllowedOnVenue(exchange).ok ? 'paper' : wantMode,
+      mode: wantMode === 'live' && !liveOk.ok && !liveOk.stopped ? 'paper' : wantMode,
       ai: {
         provider: saved.ai?.provider ?? defaults.ai.provider,
         model: saved.ai?.model ?? defaults.ai.model,
@@ -165,6 +168,38 @@ export class Settings {
     // Alleen opslaan als het bestand ze al had, zodat een Bitvavo-settings.json er precies hetzelfde uit blijft zien.
     if (saved.exchange !== undefined) this.data.exchange = exchange;
     if (saved.venuePairs && typeof saved.venuePairs === 'object') this.data.venuePairs = saved.venuePairs;
+    if (saved.venueLive && typeof saved.venueLive === 'object') this.data.venueLive = saved.venueLive;
+  }
+
+  // ---------- Live op eigen risico per beurs (Bybit) ----------
+  // { bybit: { maxLossEur, at, stoppedAt?, stopReason? } }. Zie liveAllowedOnVenue in venue.js.
+  get venueLive() {
+    return this.data.venueLive ?? {};
+  }
+
+  // Akkoord geven (maxLossEur) of intrekken (null). Een nieuw akkoord begint opnieuw te tellen vanaf nu.
+  setVenueLive(venue, maxLossEur) {
+    const v = venueOf(venue);
+    const next = { ...this.venueLive };
+    if (maxLossEur == null) delete next[v];
+    else {
+      const n = Number(maxLossEur);
+      if (!Number.isFinite(n) || n < 1 || n > 100000000) throw new Error('Verliesgrens moet tussen € 1 en € 100.000.000 liggen');
+      next[v] = { maxLossEur: Math.round(n * 100) / 100, at: new Date().toISOString() };
+    }
+    if (Object.keys(next).length) this.data.venueLive = next;
+    else delete this.data.venueLive;
+    this.#save();
+  }
+
+  // Verliesgrens bereikt: het akkoord is beëindigd (geen nieuwe aankopen), maar blijft bewaard tot de laatste
+  // live positie dicht is, zodat een herstart de open posities niet in de steek laat.
+  stopVenueLive(venue, reason) {
+    const v = venueOf(venue);
+    const cur = this.venueLive[v];
+    if (!cur || cur.stoppedAt) return;
+    this.data.venueLive = { ...this.venueLive, [v]: { ...cur, stoppedAt: new Date().toISOString(), stopReason: String(reason ?? '').slice(0, 300) } };
+    this.#save();
   }
 
   // ---------- Beurs ----------
@@ -188,7 +223,7 @@ export class Settings {
     if (venue !== next && venue !== undefined) throw new Error(`Onbekende beurs "${venue}"`);
     const prev = this.exchange;
     if (next === prev) return null;
-    if (this.data.mode === 'live' && !liveAllowedOnVenue(next).ok) throw new Error(liveAllowedOnVenue(next).reason);
+    if (this.data.mode === 'live' && !liveAllowedOnVenue(next, this).ok) throw new Error(liveAllowedOnVenue(next, this).reason);
     const oldF = VENUES[prev].fees;
     const newF = VENUES[next].fees;
     const r = this.data.risk;
@@ -342,7 +377,14 @@ export class Settings {
 
   setMode(mode) {
     if (!['paper', 'live'].includes(mode)) throw new Error(`Ongeldige modus "${mode}"`);
-    if (mode === 'live' && !liveAllowedOnVenue(this.exchange).ok) throw new Error(liveAllowedOnVenue(this.exchange).reason);
+    if (mode === 'live' && !liveAllowedOnVenue(this.exchange, this).ok) throw new Error(liveAllowedOnVenue(this.exchange, this).reason);
+    // Terug naar paper: een eigen-risico-akkoord voor deze beurs vervalt (opnieuw live = nieuw akkoord).
+    if (mode === 'paper' && this.data.venueLive?.[this.exchange]) {
+      const next = { ...this.data.venueLive };
+      delete next[this.exchange];
+      if (Object.keys(next).length) this.data.venueLive = next;
+      else delete this.data.venueLive;
+    }
     this.data.mode = mode;
     this.data.modeChangedAt = new Date().toISOString();
     this.#save();

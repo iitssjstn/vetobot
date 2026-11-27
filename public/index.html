@@ -804,7 +804,7 @@
             <div><label for="vn-select">Beurs</label>
               <select id="vn-select">
                 <option value="bitvavo">Bitvavo (paper en live, paren in EUR)</option>
-                <option value="bybit">Bybit (paper, paren in USDT)</option>
+                <option value="bybit">Bybit (paper, en live op eigen risico; paren in USDT)</option>
               </select></div>
             <div style="display:flex;align-items:flex-end"><button class="btn primary" type="submit" id="vn-save">Beurs wisselen</button></div>
           </div>
@@ -1106,10 +1106,16 @@
     </div>
     <div class="d-b">
       <ul id="md-list"></ul>
+      <div id="md-risk-wrap" hidden>
+        <div class="alert err" id="md-risk-warn" style="margin:0 0 10px"></div>
+        <label for="md-maxloss">Verliesgrens voor live op <span class="md-vn">Bybit</span> (€)</label>
+        <input id="md-maxloss" type="number" min="1" step="1" inputmode="decimal" placeholder="bijv. 20" autocomplete="off">
+        <div class="help" style="margin:4px 0 10px">Haalt het live-resultaat op <span class="md-vn">Bybit</span> sinds dit akkoord (gesloten én open trades, na kosten) deze grens, dan koopt de bot daar niets meer, bewaakt hij de open posities tot ze dicht zijn en gaat hij terug naar paper. Je krijgt een melding.</div>
+      </div>
       <label for="md-pass">Je wachtwoord</label>
       <input id="md-pass" type="password" autocomplete="current-password">
       <div id="md-confirm-wrap">
-        <label for="md-confirm">Typ <b>LIVE</b> ter bevestiging</label>
+        <label for="md-confirm">Typ <b id="md-word">LIVE</b> ter bevestiging</label>
         <input id="md-confirm" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false">
       </div>
       <div class="msg err" id="md-error" style="margin-top:10px"></div>
@@ -1480,7 +1486,14 @@ function render() {
 
   const alerts = [];
   if (s.halted) alerts.push(['', `Nieuwe trades gepauzeerd: ${esc(s.halted.reason)}. Open posities worden nog bewaakt.`]);
-  if (live && !s.bitvavoKeysSet) alerts.push(['err', 'Live-modus, maar de Bitvavo-keys ontbreken. Vul ze in bij Instellingen.']);
+  if (live && !(s.exchange === 'bybit' ? s.bybitKeysSet : s.bitvavoKeysSet)) alerts.push(['err', `Live-modus, maar de ${esc(xname())}-keys ontbreken. Vul ze in bij Instellingen.`]);
+  // Bybit live op eigen risico: verliesgrens en resultaat sinds het akkoord (en of hij gestopt is).
+  if (s.venueRisk) {
+    const vr = s.venueRisk;
+    alerts.push([vr.stopped ? 'err' : '', vr.stopped
+      ? `<b>Live op ${esc(vr.label)} is gestopt</b>: ${esc(vr.stopReason ?? 'verliesgrens bereikt')}. Geen nieuwe aankopen; open posities worden nog bewaakt${vr.open ? ` (${vr.open})` : ''}, daarna terug naar paper.`
+      : `<b>Live op ${esc(vr.label)} op eigen risico</b>: resultaat sinds je akkoord ${signEur(vr.lossEur)} van je verliesgrens −${eur2(vr.maxLossEur)} (nog ${eur2(Math.max(0, vr.left))} ruimte, ${vr.trades} gesloten trade${vr.trades === 1 ? '' : 's'}${vr.open ? `, ${vr.open} open` : ''}).`]);
+  }
   if (s.ai.provider !== 'none' && !s.aiKeySet) alerts.push(['', `AI-provider "${esc(s.ai.provider)}" is gekozen, maar er is geen AI-key. Koopsignalen worden afgewezen.`]);
   if (s.risk.stopLossPct === 0) alerts.push(['', 'Stop-loss staat uit. Posities zonder eigen noodstop worden alleen verkocht bij take-profit, trailing stop, tijdslimiet, de AI-winstcheck of handmatig.']);
   if (s.heartbeatSet && s.lastHeartbeat?.error) alerts.push(['', `De heartbeat kon niet worden verstuurd: ${esc(s.lastHeartbeat.error)}. Je krijgt dan mogelijk een onterechte offline-melding.`]);
@@ -1488,7 +1501,7 @@ function render() {
   const stakeNow = s.stake?.effective ?? s.risk.stakeEur;
   const freeEur = live ? s.liveBalance?.eurFree : s.balanceEur;
   if (freeEur != null && freeEur < stakeNow) {
-    alerts.push(['err', `${live ? 'Je vrije EUR-saldo bij Bitvavo' : 'Je paper-saldo'} (${eur2(freeEur)}) is lager dan je inzet per trade (${eur2(stakeNow)}). `
+    alerts.push(['err', `${live ? `Je vrije ${s.liveBalance?.quote ? `${esc(s.liveBalance.quote)}-saldo (omgerekend)` : 'EUR-saldo'} bij ${esc(xname())}` : 'Je paper-saldo'} (${eur2(freeEur)}) is lager dan je inzet per trade (${eur2(stakeNow)}). `
       + `De bot kan daardoor niets kopen en slaat alle koopsignalen over.`
       + (s.positions.length ? ` Zodra een van je ${s.positions.length} open posities sluit, komt er weer ruimte.` : '')
       + (live ? ' Stort geld bij of verlaag je inzet.' : ' Begin paper opnieuw (Instellingen → Paper opnieuw beginnen) of verlaag je inzet.')]);
@@ -1790,7 +1803,7 @@ document.addEventListener('click', async (e) => {
   const p = state?.positions.find(x => x.pair === pair);
   const trade = await ask({
     title: `${pair} verkopen`,
-    sub: live ? 'Dit is een echte order op Bitvavo, tegen de marktprijs.' : 'Paper: tegen de huidige marktprijs.',
+    sub: live ? `Dit is een echte order op ${xname()}, tegen de marktprijs.` : 'Paper: tegen de huidige marktprijs.',
     body: p ? askRows([
       ['Instapkoers', px(p.entryPrice, p.quote ?? state?.quote)], ['Huidige koers', px(p.currentPrice, p.quote ?? state?.quote)], ['Inzet', eur2(p.costEur)],
       ['Verwacht resultaat', `${signEur(p.pnlEur)} <span class="${cls(p.pnlPct)}">(${pct(p.pnlPct)})</span>`],
@@ -1808,12 +1821,14 @@ function renderSettings() {
   const s = state; if (!s) return;
   const live = s.mode === 'live';
   $('mc-title').innerHTML = live
-    ? '<span class="badge live">LIVE</span> Echte orders op Bitvavo'
+    ? `<span class="badge live">LIVE</span> Echte orders op ${esc(xname())}${s.venueRisk ? ' <span class="badge wait">eigen risico</span>' : ''}`
     : `<span class="badge paper">PAPER</span> Oefenen met nepgeld op ${esc(xname())}`;
   $('mc-text').textContent = live
-    ? `De bot plaatst echte orders met je Bitvavo-saldo: ${eur2(s.risk.stakeEur)} per trade, maximaal ${s.risk.maxOpenTrades} tegelijk.`
+    ? `De bot plaatst echte orders met je ${xname()}-saldo: ${eur2(s.risk.stakeEur)} per trade, maximaal ${s.risk.maxOpenTrades} tegelijk.`
+      + (s.venueRisk ? ` Op eigen risico: verliesgrens −${eur2(s.venueRisk.maxLossEur)}, resultaat sinds het akkoord ${s.venueRisk.lossEur >= 0 ? '+' : '−'}${eur2(Math.abs(s.venueRisk.lossEur))}.${s.venueRisk.stopped ? ' Gestopt: de verliesgrens is bereikt.' : ''}` : '')
     : `De bot gebruikt echte koersen van ${xname()}${s.quote && s.quote !== 'EUR' ? ` (paren in ${s.quote}, omgerekend naar euro)` : ''}, maar handelt met een nep-saldo van ${eur2(s.startBalanceEur)}. Er gaat geen echt geld om.`
-      + (s.liveAllowed && !s.liveAllowed.ok ? ` ${s.liveAllowed.reason}` : '');
+      + (s.liveAllowed && !s.liveAllowed.ok && !s.liveAllowed.accord ? ` ${s.liveAllowed.reason}` : '')
+      + (s.liveAllowed?.accord ? ` Live op ${xname()} kan alleen op eigen risico, met een eigen verliesgrens.` : '');
   if (document.activeElement !== $('paper-start') && !$('paper-start').dataset.touched) $('paper-start').value = s.startBalanceEur ?? 500;
   $('mc-switch').className = live ? 'btn' : 'btn live';
   $('mc-switch').innerHTML = live ? `${icon('shield')}Terug naar paper` : `${icon('bolt')}Overschakelen naar live`;
@@ -1880,13 +1895,13 @@ function renderSettings() {
 }
 
 // ---------- Instellingen: beurs ----------
-// Bitvavo (paper en live) of Bybit (fase 1 alleen paper). Wisselen kan alleen zonder open posities; de
+// Bitvavo (paper en live) of Bybit (paper, en live alleen op eigen risico). Wisselen kan alleen zonder open posities; de
 // paper-gegevens per beurs blijven apart bewaard.
 let venueDirty = false;
 function renderVenue(s) {
   const open = (s.positions ?? []).length;
   if (!venueDirty && document.activeElement !== $('vn-select')) $('vn-select').value = s.exchange ?? 'bitvavo';
-  $('vn-state').textContent = `Nu: ${xname()}${s.exchange === 'bybit' ? ' (paper)' : ''}`;
+  $('vn-state').textContent = `Nu: ${xname()}${s.exchange === 'bybit' ? (s.mode === 'live' ? ' (live, eigen risico)' : ' (paper)') : ''}`;
   const rate = s.fx?.rate ? `1 ${s.quote} = ${eur(s.fx.rate, 4)}` : s.fx ? `<span class="down">koers ${esc(s.quote)}/EUR nog onbekend${s.fx.error ? `: ${esc(s.fx.error)}` : ''}</span>` : '';
   const bb = (s.venues ?? []).find((v) => v.id === 'bybit');
   const fee = (f) => `${String(f.feePct).replace('.', ',')}% taker / ${String(f.makerFeePct).replace('.', ',')}% maker`;
@@ -1894,7 +1909,7 @@ function renderVenue(s) {
     s.exchange === 'bybit'
       ? `De bot handelt op Bybit in <b>USDT-paren</b> (bijv. BTC/USDT). Inzet, winst, limieten en het dashboard blijven in <b>euro</b>, omgerekend met de actuele USDT/EUR-koers van Bybit${rate ? ` (${rate})` : ''}. Koersen staan in USDT.`
       : 'Bitvavo: paren in euro, paper en live.',
-    esc(bb?.live?.reason ?? "Live op Bybit (op eigen risico) komt in de volgende stap."),
+    'Live op Bybit kan alleen <b>op eigen risico</b>: bij "Overschakelen naar live" bevestig je met je wachtwoord, typ je EIGEN RISICO en kies je een verliesgrens in euro. Bybit is nieuw in vetobot en nog niet met echt geld getest.',
     `Kiest je Bybit en staat je fee nog op de standaard van Bitvavo, dan zet de bot hem op de standaard van Bybit (${bb ? fee(bb.fees) : '0,1%'}); een eigen fee blijft staan. Te wijzigen bij Risico.`,
     'De AI-trader gebruikt op Bybit dezelfde recepten (relatieve kenmerken, BTC-context via BTC/USDT). De leerserver leert nog op Bitvavo-data, dus de verwachtingen kunnen op Bybit minder precies zijn. Trades op Bybit gaan niet als feedback naar de leerserver.',
     'Paper-saldo, posities en trades worden per beurs apart bewaard: je Bitvavo-geschiedenis blijft staan.',
@@ -1907,9 +1922,9 @@ $('venue-form').onsubmit = async (e) => {
   const to = $('vn-select').value;
   const msg = (t, c) => { $('vn-msg').className = `msg ${c ?? ''}`; $('vn-msg').innerHTML = t; };
   if (to === (state?.exchange ?? 'bitvavo')) return msg(`Je handelt al op ${esc(xname())}.`);
-  if (state?.mode === 'live' && to !== 'bitvavo') {
+  if (state?.mode === 'live') {
     const v = (state.venues ?? []).find((x) => x.id === to);
-    return msg(esc(v?.live?.reason ?? 'Live op Bybit (op eigen risico) komt in de volgende stap.'), 'err');
+    if (!v?.live?.ok) return msg(`${esc(v?.live?.reason ?? 'Live op deze beurs kan nu niet.')} Ga eerst terug naar paper, wissel van beurs en zet daarna live aan.`, 'err');
   }
   if ((state?.positions ?? []).length) return msg('Sluit eerst je open posities; daarna kun je van beurs wisselen.', 'err');
   $('vn-save').disabled = true; msg('Wisselen…');
@@ -1927,18 +1942,29 @@ $('mc-switch').onclick = () => {
   const s = state;
   const toLive = s.mode !== 'live';
   // Live op een beurs waar dat (nog) niet mag: duidelijke melding, geen dialoog (de server weigert het ook).
-  if (toLive && s.liveAllowed && !s.liveAllowed.ok) {
+  // Bybit (accord): live kan alleen op eigen risico, dan dezelfde dialoog met EIGEN RISICO en een verliesgrens.
+  const risky = toLive && Boolean(s.liveAllowed?.accord);
+  if (toLive && s.liveAllowed && !s.liveAllowed.ok && !risky) {
     toast(esc(s.liveAllowed.reason), "err");
     $('mc-text').textContent = s.liveAllowed.reason;
     return;
   }
+  $('md-risk-wrap').hidden = !risky;
+  $('md-word').textContent = risky ? 'EIGEN RISICO' : 'LIVE';
+  for (const e of document.querySelectorAll('.md-vn')) e.textContent = xname();
+  $('md-risk-warn').innerHTML = risky ? `${icon('alert')}<div><b>Op eigen risico.</b> ${esc(xname())} is nieuw in vetobot en is <b>nog niet in de praktijk met echt geld getest</b> (alleen met een nagebootste beurs). `
+    + `De leerserver leert nog op Bitvavo-data, dus de verwachtingen van de AI-trader kunnen op ${esc(xname())} minder kloppen. Orders gaan in ${esc(s.quote ?? 'USDT')} en worden omgerekend naar euro. `
+    + 'Zet er alleen geld op dat je kunt missen.</div>' : '';
+  if (!risky) $('md-maxloss').value = '';
   $('md-head').className = toLive ? 'd-h' : 'd-h safe';
-  $('md-title').textContent = toLive ? 'Overschakelen naar live trading' : 'Terug naar paper trading';
+  $('md-title').textContent = toLive ? (risky ? `Live op ${xname()}, op eigen risico` : 'Overschakelen naar live trading') : 'Terug naar paper trading';
   $('md-sub').textContent = toLive ? 'Hierna plaatst de bot echte orders met echt geld.' : 'De bot stopt met echte orders.';
   const items = toLive ? [
     `${eur2(s.risk.stakeEur)} per trade, maximaal ${s.risk.maxOpenTrades} posities tegelijk`,
     `Stop-loss ${s.risk.stopLossPct ? `−${s.risk.stopLossPct}%` : 'uit'}, take-profit ${s.risk.takeProfitPct ? `+${s.risk.takeProfitPct}%` : 'uit'}, daglimiet ${s.risk.maxDailyLossEur ? `−${eur2(s.risk.maxDailyLossEur)}` : 'uit'}`,
-    s.bitvavoKeysSet ? 'Je Bitvavo-keys worden eerst getest' : '<span class="down">Je Bitvavo-keys zijn nog niet ingesteld</span>',
+    (s.exchange === 'bybit' ? s.bybitKeysSet : s.bitvavoKeysSet) ? `Je ${esc(xname())}-keys worden eerst getest` : `<span class="down">Je ${esc(xname())}-keys zijn nog niet ingesteld</span>`,
+    ...(risky ? [`Orders op ${esc(xname())} in ${esc(s.quote ?? 'USDT')}; je inzet blijft in euro en wordt omgerekend met de actuele koers`,
+      `Stop-loss bij ${esc(xname())} zelf (TP/SL-order) en de dagelijkse saldocontrole, net als bij Bitvavo`] : []),
     'Je paper-resultaten blijven apart bewaard',
   ] : ['Live-trades en -historie blijven bewaard', 'Alleen mogelijk als er geen live posities open staan'];
   $('md-list').innerHTML = items.map(i => `<li>${i}</li>`).join('');
@@ -1946,7 +1972,7 @@ $('mc-switch').onclick = () => {
   $('md-pass').value = $('md-confirm').value = '';
   $('md-error').textContent = '';
   $('md-go').className = toLive ? 'btn live' : 'btn primary';
-  $('md-go').textContent = toLive ? 'Live zetten' : 'Naar paper';
+  $('md-go').textContent = toLive ? (risky ? 'Live op eigen risico' : 'Live zetten') : 'Naar paper';
   $('mode-dialog').showModal();
   $('md-pass').focus();
 };
@@ -1956,10 +1982,14 @@ $('mode-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const toLive = state.mode !== 'live';
   if (!$('md-pass').value) { $('md-error').textContent = 'Vul je wachtwoord in'; return; }
-  if (toLive && $('md-confirm').value.trim() !== 'LIVE') { $('md-error').textContent = 'Typ LIVE ter bevestiging'; return; }
+  const risky = toLive && !$('md-risk-wrap').hidden;
+  const word = risky ? 'EIGEN RISICO' : 'LIVE';
+  if (toLive && $('md-confirm').value.trim().toUpperCase() !== word) { $('md-error').textContent = `Typ ${word} ter bevestiging`; return; }
+  if (risky && !(Number($('md-maxloss').value) >= 1)) { $('md-error').textContent = 'Kies een verliesgrens van minstens € 1'; return; }
   $('md-go').disabled = true; $('md-error').textContent = toLive ? 'Keys testen…' : '';
   try {
-    await api('api/settings/mode', { mode: toLive ? 'live' : 'paper', password: $('md-pass').value, confirm: $('md-confirm').value });
+    await api('api/settings/mode', { mode: toLive ? 'live' : 'paper', password: $('md-pass').value, confirm: $('md-confirm').value,
+      ...(risky ? { confirmText: $('md-confirm').value, maxLossEur: Number($('md-maxloss').value) } : {}) });
     $('mode-dialog').close();
     await load();
   } catch (err) { $('md-error').textContent = err.message; }
@@ -3025,45 +3055,51 @@ document.addEventListener('click', async (e) => {
 function pumpNote(p) {
   const z = p?.pump;
   if (!z || !(Number(z.level) > 0)) return '';
-  const sp = Number(p.exchangeStop?.stopPrice) > 0 && p.exchangeStop?.orderId ? ` · stop bij Bitvavo ${eur(p.exchangeStop.stopPrice)}` : '';
+  const sp = Number(p.exchangeStop?.stopPrice) > 0 && p.exchangeStop?.orderId ? ` · stop bij ${esc(xname())} ${px(p.exchangeStop.stopPrice)}` : '';
   return `<div class="muted" style="font-size:12.5px;white-space:normal"><span class="badge ok">Uitschieter</span> winst vast vanaf ` +
     `<span class="num">${pct(z.levelPct)}</span> (top <span class="num">${pct(z.topPct)}</span>, ${eur(z.level)})${sp}</div>`;
 }
 
 // ---------- Live-veiligheid (pagina Posities) ----------
-// Stop-orders bij Bitvavo (blijven werken als de bot offline is) en de dagelijkse saldocontrole.
+// Stop-orders bij de beurs (blijven werken als de bot offline is) en de dagelijkse saldocontrole.
 function safetyRender(z, mode) {
   const panel = $('safety-panel');
   if (!panel) return;
   panel.hidden = mode !== 'live' || !z;
   if (panel.hidden) return;
+  const vn = esc(z.venueLabel ?? xname());
+  const vr = z.venueRisk;
   const when = (iso) => iso ? esc(String(iso).replace('T', ' ').slice(0, 16)) : '–';
-  const ST = { actief: ['ok', 'actief bij Bitvavo'], mislukt: ['bad', 'mislukt'], geen: ['soft', 'geen stop'], 'n.v.t.': ['soft', 'n.v.t.'] };
+  const ST = { actief: ['ok', `actief bij ${z.venueLabel ?? xname()}`], mislukt: ['bad', 'mislukt'], geen: ['soft', 'geen stop'], 'n.v.t.': ['soft', 'n.v.t.'] };
   const es = z.exchangeStop ?? {};
   const rows = es.positions ?? [];
   const rc = z.reconcile;
-  const KIND = { mist: 'minder op Bitvavo dan de bot denkt', extra: 'coins op Bitvavo zonder positie in de bot', 'stop-mist': 'positie zonder stop bij Bitvavo' };
+  const KIND = { mist: `minder op ${vn} dan de bot denkt`, extra: `coins op ${vn} zonder positie in de bot`, 'stop-mist': `positie zonder stop bij ${vn}` };
   $('safety-hint').textContent = rc?.at ? `laatste controle ${String(rc.at).replace('T', ' ').slice(0, 16)}` : '';
   const bb = z.buyBlock;
   $('safety').innerHTML = `
+    ${vr ? `<div class="alert ${vr.stopped ? 'err' : ''}" style="margin:0 0 10px">${icon(vr.stopped ? 'alert' : 'shield')}<div><b>Live op ${esc(vr.label)} op eigen risico${vr.stopped ? ': gestopt' : ''}</b>.
+      Verliesgrens −${eur2(vr.maxLossEur)}, resultaat sinds je akkoord (${when(vr.since)}) ${signEur(vr.lossEur)}
+      (${vr.trades} gesloten trade${vr.trades === 1 ? '' : 's'}${vr.open ? `, ${vr.open} open` : ''}; nog ${eur2(Math.max(0, vr.left))} ruimte).
+      ${vr.stopped ? `${esc(vr.stopReason ?? '')}. Geen nieuwe aankopen; open posities worden bewaakt tot ze dicht zijn, daarna terug naar paper.` : 'Bij die grens stopt live op deze beurs vanzelf (geen nieuwe aankopen) en krijg je een melding.'}</div></div>` : ''}
     ${bb?.blocked ? `<div class="alert err" style="margin:0 0 10px">${icon('alert')}<div><b>Nieuwe aankopen staan stil</b> tot dit is opgelost. Bewaken, verkopen en stop-orders gaan gewoon door.
       <ul style="margin:6px 0 0;padding-left:18px">${(bb.reasons ?? []).map((r) => `<li>${esc(r)}</li>`).join('')}</ul></div></div>` : ''}
     <p class="muted" style="margin:0 0 8px;font-size:13.5px">${es.enabled
-      ? 'Bij elke live aankoop zet de bot ook een <b>stop-loss bij Bitvavo</b> op de noodstop. Die werkt ook als je server of internet uitvalt. Verkoopt de bot zelf, dan haalt hij die stop eerst weg.'
-      : 'De stop-loss bij Bitvavo staat uit (Instellingen → Risico). De bot bewaakt de noodstop dan alleen zelf, zolang hij draait.'}</p>
+      ? `Bij elke live aankoop zet de bot ook een <b>stop-loss bij ${vn}</b> op de noodstop. Die werkt ook als je server of internet uitvalt. Verkoopt de bot zelf, dan haalt hij die stop eerst weg.`
+      : `De stop-loss bij ${vn} staat uit (Instellingen → Risico). De bot bewaakt de noodstop dan alleen zelf, zolang hij draait.`}</p>
     <div class="scroll">${table(rows, [
       ['Coin', (x) => esc(x.pair)],
-      ['Stop bij Bitvavo', (x) => { const b = ST[x.status] ?? ['soft', x.status ?? '–']; return `<span class="badge ${b[0]}">${esc(b[1])}</span>${x.error ? ` <span class="muted" style="font-size:12.5px">${esc(x.error)}</span>` : ''}`; }],
+      [`Stop bij ${vn}`, (x) => { const b = ST[x.status] ?? ['soft', x.status ?? '–']; return `<span class="badge ${b[0]}">${esc(b[1])}</span>${x.error ? ` <span class="muted" style="font-size:12.5px">${esc(x.error)}</span>` : ''}`; }],
       ['Stopkoers', (x) => (x.stopPrice != null ? `<span class="num">${esc(String(x.stopPrice))}</span>` : '–') + (x.pump?.level > 0
         ? `<div class="muted" style="font-size:12.5px">Uitschieter: winst vast vanaf ${pct(x.pump.levelPct)} (top ${pct(x.pump.topPct)})</div>` : ''), 'r'],
       ['Geplaatst', (x) => when(x.placedAt)],
     ], 'Geen open live posities.', 'shield')}</div>
-    <div class="sub-h" style="margin:14px 0 6px">${icon('list')}Saldocontrole met Bitvavo</div>
+    <div class="sub-h" style="margin:14px 0 6px">${icon('list')}Saldocontrole met ${vn}</div>
     ${rc?.error ? `<div class="alert err" style="margin:0 0 8px">${icon('alert')}<div>De laatste controle lukte niet: ${esc(rc.error)}</div></div>` : ''}
-    ${rc?.closed?.length ? `<div class="alert" style="margin:0 0 8px">${icon('shield')}<div>Afgesloten omdat de stop bij Bitvavo was uitgevoerd: ${esc(rc.closed.join(', '))}.</div></div>` : ''}
-    ${rc ? (rc.ok ? `<div class="alert ok" style="margin:0">${icon('shield')}<div>Klopt: wat de bot denkt te bezitten staat ook echt op je Bitvavo-account (${when(rc.at)}).</div></div>`
-      : `<div class="alert err" style="margin:0">${icon('alert')}<div><b>Afwijkingen gevonden</b> (${when(rc.at)}). De bot handelt hier niet zelf op; kijk het na op Bitvavo.
-          <ul style="margin:6px 0 0;padding-left:18px">${(rc.issues ?? []).map((i) => `<li>${esc(i.pair)}: ${esc(KIND[i.kind] ?? i.kind)}${i.botAmount != null || i.exchangeAmount != null ? ` (bot ${esc(String(i.botAmount ?? '–'))}, Bitvavo ${esc(String(i.exchangeAmount ?? '–'))})` : ''}${i.note ? ` · ${esc(i.note)}` : ''}</li>`).join('')}</ul></div></div>`)
+    ${rc?.closed?.length ? `<div class="alert" style="margin:0 0 8px">${icon('shield')}<div>Afgesloten omdat de stop bij ${vn} was uitgevoerd: ${esc(rc.closed.join(', '))}.</div></div>` : ''}
+    ${rc ? (rc.ok ? `<div class="alert ok" style="margin:0">${icon('shield')}<div>Klopt: wat de bot denkt te bezitten staat ook echt op je ${vn}-account (${when(rc.at)}).</div></div>`
+      : `<div class="alert err" style="margin:0">${icon('alert')}<div><b>Afwijkingen gevonden</b> (${when(rc.at)}). De bot handelt hier niet zelf op; kijk het na op ${vn}.
+          <ul style="margin:6px 0 0;padding-left:18px">${(rc.issues ?? []).map((i) => `<li>${esc(i.pair)}: ${esc(KIND[i.kind] ?? i.kind)}${i.botAmount != null || i.exchangeAmount != null ? ` (bot ${esc(String(i.botAmount ?? '–'))}, ${vn} ${esc(String(i.exchangeAmount ?? '–'))})` : ''}${i.note ? ` · ${esc(i.note)}` : ''}</li>`).join('')}</ul></div></div>`)
       : '<p class="muted" style="margin:0">Nog niet gecontroleerd.</p>'}
     <div class="row-actions"><button class="btn sm" type="button" id="safety-check">Nu controleren</button><span class="msg" id="safety-msg"></span>
       ${z.nextReconcileAt ? `<span class="muted" style="font-size:12.5px">volgende: ${when(z.nextReconcileAt)}</span>` : ''}</div>`;
@@ -3539,7 +3575,7 @@ function riskHelp() {
   if (daily === 0) parts.push('<span class="warnc">De dagelijkse verlieslimiet staat uit.</span>');
   const bal = state?.mode === 'live' ? state.liveBalance?.eurFree : state?.balanceEur;
   if (state?.mode !== 'live' && stake < 5) parts.push('<span class="muted">Onder de € 5 kan alleen in paper; voor live moet je de inzet eerst verhogen.</span>');
-  if (bal != null && total > bal) parts.push(`<span class="warnc">Dat is meer dan je ${state.mode === 'live' ? 'Bitvavo-' : 'paper-'}saldo van ${eur2(bal)}; de bot slaat trades over als het saldo op is.</span>`);
+  if (bal != null && total > bal) parts.push(`<span class="warnc">Dat is meer dan je ${state.mode === 'live' ? `${esc(xname())}-` : 'paper-'}saldo van ${eur2(bal)}; de bot slaat trades over als het saldo op is.</span>`);
   if (state?.pairs && max > state.pairs.length) parts.push(`<span class="muted">Je volgt ${state.pairs.length} coins, dus meer dan ${state.pairs.length} open trades kan niet.</span>`);
   $('risk-help').innerHTML = parts.join(' ');
 }

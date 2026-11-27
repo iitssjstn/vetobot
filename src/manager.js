@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createExchange, createSharedMarket, PaperBroker, LiveBroker, BlockedLiveBroker, SharedMarket, userExchange } from './exchange.js';
-import { EUR_RATE, QuoteRate, venueOf, venueLabel, venueAgent } from './venue.js';
+import { BybitLiveBroker } from './bybit-broker.js';
+import { EUR_RATE, QuoteRate, venueOf, venueLabel, venueAgent, liveAllowedOnVenue } from './venue.js';
 import { Store } from './store.js';
 import { SecretStore } from './secrets.js';
 import { Settings } from './settings.js';
@@ -355,7 +356,7 @@ export class BotManager {
 
   // Alles van één gebruiker op één beurs: verbinding, brokers en eigen state-bestanden. Bitvavo precies zoals
   // altijd (state-paper.json, state-live.json, LiveBroker). Bybit: paper in USDT met omrekenen naar euro,
-  // eigen bestanden (state-paper-bybit.json) en live geblokkeerd (fase 1).
+  // eigen bestanden (state-paper-bybit.json, state-live-bybit.json) en live alleen op eigen risico (fase 2).
   #venueRuntime(ctx, venue) {
     const v = venueOf(venue);
     if (ctx.venues[v]) return ctx.venues[v];
@@ -365,7 +366,9 @@ export class BotManager {
     const fx = this.rateFor(v);
     const brokers = {
       paper: new PaperBroker(exchange, () => settings.risk.feePct, () => settings.risk.slippagePct, () => settings.risk.makerFeePct, v === 'bitvavo' ? null : fx),
-      live: v === 'bitvavo' ? new LiveBroker(exchange) : new BlockedLiveBroker(v),
+      // Bybit live: echte orders in USDT, maar alleen als liveAllowedOnVenue het toestaat (eigen-risico-akkoord);
+      // de bot schakelt zonder akkoord nooit naar live, en zonder live gebruikt hij deze broker niet.
+      live: v === 'bitvavo' ? new LiveBroker(exchange) : v === 'bybit' ? new BybitLiveBroker(exchange, fx, { allowed: () => liveAllowedOnVenue(v, settings) }) : new BlockedLiveBroker(v),
     };
     const stores = {
       paper: new Store(dir, 'paper', this.config.paper.startBalanceEur, v),

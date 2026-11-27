@@ -108,6 +108,8 @@ export class Health {
   // ctx: { mode, intervalMs, watchSeconds, running, scheduled, halted, openPositions: [{pair, live, stop}],
   //        buyBlock, uncleanRestart }
   assess(ctx) {
+    // Naam van de actieve beurs in de teksten (Bitvavo of Bybit).
+    const vn = this.venueName?.() ?? 'Bitvavo';
     const now = this.now();
     const s = this.s;
     const problems = [];
@@ -153,22 +155,22 @@ export class Health {
       const protectedCount = liveOnes.filter((p) => p.stop === 'actief').length;
       add('positions', liveOnes.length ? 'critical' : 'degraded', 'Open posities worden niet bewaakt',
         `${unwatched.map((p) => p.pair).join(', ')}: al meer dan ${ago(posStale)} geen geslaagde koerscontrole.` +
-        (liveOnes.length ? ` Stop bij Bitvavo actief voor ${protectedCount} van ${liveOnes.length} live positie(s).` : '') +
+        (liveOnes.length ? ` Stop bij ${vn} actief voor ${protectedCount} van ${liveOnes.length} live positie(s).` : '') +
         (unwatched.map((p) => s.positions[p.pair]?.error).filter(Boolean)[0] ? ` Laatste fout: ${unwatched.map((p) => s.positions[p.pair]?.error).filter(Boolean)[0]}.` : ''),
         { affected: 'positiebewaking (stop-loss, take-profit, trailing stop door de bot)', auto: 'Elke check en elke bewakingsronde probeert het opnieuw.',
           manual: liveOnes.length > protectedCount });
     }
     // 5. Contact met Bitvavo (live).
     if (live && s.consecutiveExchangeErrors > 0 && now - (s.exchangeOkAt ?? this.startedAt) > HEALTH.exchangeStaleMs) {
-      add('exchange', openLive.length ? 'critical' : 'degraded', 'Bitvavo niet bereikbaar',
-        `Al ${ago(now - (s.exchangeOkAt ?? this.startedAt))} geen geslaagd contact met Bitvavo (${s.consecutiveExchangeErrors} fouten op rij).`,
+      add('exchange', openLive.length ? 'critical' : 'degraded', `${vn} niet bereikbaar`,
+        `Al ${ago(now - (s.exchangeOkAt ?? this.startedAt))} geen geslaagd contact met ${vn} (${s.consecutiveExchangeErrors} fouten op rij).`,
         { affected: 'saldo, orders, koersen', auto: 'Nieuwe aankopen staan stil; elke check en bewakingsronde probeert opnieuw.', manual: false });
     }
     // 6. Live posities zonder bevestigde stop bij Bitvavo.
     const noStop = openLive.filter((p) => p.stop === 'mislukt');
     if (noStop.length) {
-      add('stops', 'critical', 'Stop-loss bij Bitvavo niet bevestigd',
-        `${noStop.map((p) => p.pair).join(', ')}: de stop-order bij Bitvavo is mislukt of onbekend. De bot bewaakt de noodstop zelf, maar alleen zolang hij draait.`,
+      add('stops', 'critical', `Stop-loss bij ${vn} niet bevestigd`,
+        `${noStop.map((p) => p.pair).join(', ')}: de stop-order bij ${vn} is mislukt of onbekend. De bot bewaakt de noodstop zelf, maar alleen zolang hij draait.`,
         { affected: 'bescherming bij uitval', auto: 'De bot zet de stop elke 10 minuten opnieuw; nieuwe aankopen staan stil.', manual: false });
     }
     // 7. Nieuwe aankopen geblokkeerd (veilige toestand), meldingen die niet aankomen, gepauzeerd.

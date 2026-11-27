@@ -11,7 +11,7 @@ import { aiLabel } from './ai.js';
 import { allAgentParts } from './agents.js';
 import { analyzeTrades } from './analysis.js';
 import { AI_PROVIDERS, MAX_PAIRS, TIMEFRAMES, RISK_LIMITS, STRATEGY_LIMITS } from './settings.js';
-import { VENUES, VENUE_IDS, liveAllowedOnVenue } from './venue.js';
+import { VENUES, VENUE_IDS, liveAllowedOnVenue, checkAccordInput } from './venue.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -257,13 +257,15 @@ export function createApp({ users, manager, log = console }) {
       },
       mode: bot.mode,
       modeChangedAt: settings.data.modeChangedAt,
-      // Beurs: Bitvavo (euro) of Bybit (USDT-paren, fase 1 alleen paper). Bedragen altijd in euro.
+      // Beurs: Bitvavo (euro) of Bybit (USDT-paren; live alleen op eigen risico). Bedragen altijd in euro.
       exchange: bot.venue,
       exchangeLabel: bot.venueLabel,
       quote: bot.quote,
       fx: bot.venue === 'bitvavo' ? null : bot.fx?.info?.() ?? null,
-      liveAllowed: liveAllowedOnVenue(bot.venue),
-      venues: VENUE_IDS.map((v) => ({ id: v, label: VENUES[v].label, quote: VENUES[v].quote, fees: VENUES[v].fees, live: liveAllowedOnVenue(v) })),
+      liveAllowed: liveAllowedOnVenue(bot.venue, settings),
+      venues: VENUE_IDS.map((v) => ({ id: v, label: VENUES[v].label, quote: VENUES[v].quote, fees: VENUES[v].fees, live: liveAllowedOnVenue(v, settings) })),
+      // Bybit live op eigen risico: verliesgrens en resultaat sinds het akkoord (null zonder akkoord).
+      venueRisk: bot.venueRiskStatus?.() ?? null,
       bybitKeysSet: Boolean(keys.bybitApiKey?.set && keys.bybitApiSecret?.set),
       pairs: bot.pairs,
       ownPairs: settings.pairs,
@@ -483,11 +485,22 @@ export function createApp({ users, manager, log = console }) {
   }));
 
   // Overschakelen tussen paper en live. Live vereist het wachtwoord en het woord LIVE.
-  app.post('/api/settings/mode', wrap(async (req, { bot }) => {
-    const { mode, password, confirm: word } = req.body ?? {};
+  // Bybit (beurs met eigen-risico-akkoord): live vereist het wachtwoord, letterlijk EIGEN RISICO (confirmText)
+  // en een verliesgrens in euro (maxLossEur); het akkoord geldt vanaf nu. De bestaande eisen (keys, inzet,
+  // geen open posities) controleert de bot daarna; mislukt dat, dan vervalt het akkoord weer.
+  app.post('/api/settings/mode', wrap(async (req, { bot, settings }) => {
+    const { mode, password, confirm: word, confirmText, maxLossEur } = req.body ?? {};
     confirm(req, password);
-    // Centrale check per beurs (fase 1: Bybit alleen paper), vóór alles en los van wat het dashboard doet.
-    if (mode === 'live' && !liveAllowedOnVenue(bot.venue).ok) throw new Error(liveAllowedOnVenue(bot.venue).reason);
+    // Centrale check per beurs, vóór alles en los van wat het dashboard doet.
+    const allowed = liveAllowedOnVenue(bot.venue, settings);
+    if (mode === 'live' && allowed.accord) {
+      const accord = { confirmText: confirmText ?? word, maxLossEur };
+      const n = checkAccordInput(bot.venue, accord);
+      await bot.switchMode('live', { accord });
+      log.warn(`Modus gewijzigd naar live op ${bot.venueLabel}, op eigen risico (verliesgrens € ${n.toFixed(2)}) door ${req.user.username}`);
+      return { ok: true, mode: bot.mode, liveBalance: bot.liveBalance, venueRisk: bot.venueRiskStatus() };
+    }
+    if (mode === 'live' && !allowed.ok) throw new Error(allowed.reason);
     if (mode === 'live' && String(word ?? '').trim() !== 'LIVE') {
       throw new Error('Typ LIVE ter bevestiging');
     }

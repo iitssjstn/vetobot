@@ -1,6 +1,6 @@
 // Harde risicoregels voor nieuwe posities. Geeft een reden terug als het niet mag, anders null.
 
-// extra: { pair, openPnlEur }. openPnlEur telt mee voor de daglimiet, zodat open
+// extra: { pair, openPnlEur, venueLabel } (venueLabel: naam van de beurs in de teksten, standaard Bitvavo). openPnlEur telt mee voor de daglimiet, zodat open
 // verliezen niet ongemerkt boven de limiet uitkomen.
 export function checkEntry(store, config, mode, exchange, liveBalance, extra = {}) {
   const { risk } = config;
@@ -8,7 +8,7 @@ export function checkEntry(store, config, mode, exchange, liveBalance, extra = {
 
   if (s.halted) return `Handel gepauzeerd: ${s.halted.reason}`;
   if (mode === 'live' && !(exchange?.apiKey && exchange?.secret)) {
-    return 'Bitvavo-keys ontbreken, vul ze in via het dashboard';
+    return `${extra.venueLabel ?? 'Bitvavo'}-keys ontbreken, vul ze in via het dashboard`;
   }
 
   // Posities van de verkenner (alleen paper) hebben een eigen plek naast de gewone trades.
@@ -38,7 +38,7 @@ export function checkEntry(store, config, mode, exchange, liveBalance, extra = {
     }
   }
   if (mode === 'live' && liveBalance && liveBalance.eurFree < risk.stakeEur) {
-    return `Bitvavo-saldo ${liveBalance.eurFree.toFixed(2)} EUR is lager dan de inzet`;
+    return `${extra.venueLabel ?? 'Bitvavo'}-saldo ${liveBalance.eurFree.toFixed(2)} EUR${liveBalance.quote ? ` (${Number(liveBalance.quoteFree ?? 0).toFixed(2)} ${liveBalance.quote})` : ''} is lager dan de inzet`;
   }
   if (mode === 'paper' && s.balanceEur < risk.stakeEur) {
     return `Paper-saldo ${s.balanceEur.toFixed(2)} EUR is lager dan de inzet`;
