@@ -13,9 +13,11 @@ export const OPERATOR_ID = Number(process.env.BITVAVO_OPERATOR_ID) > 0 ? Math.fl
 
 // venue: 'bitvavo' (standaard) of 'bybit'. Elke beurs zijn eigen keys uit de SecretStore.
 // Bybit wordt in fase 1 alleen gebruikt om de keys te testen (saldo ophalen), nooit voor orders.
-export function createExchange(secrets, venue = 'bitvavo') {
+// hostname: functie die de Bybit-website geeft (bybit.com, bybit.eu, bybit.nl); ccxt leest die bij elk verzoek.
+export function createExchange(secrets, venue = 'bitvavo', { hostname = null } = {}) {
   if (venueOf(venue) === 'bybit') {
     const bx = new ccxt.bybit({ enableRateLimit: true, options: { defaultType: 'spot' } });
+    if (typeof hostname === 'function') Object.defineProperty(bx, 'hostname', { configurable: true, get: () => hostname() || 'bybit.com', set() {} });
     const applyBybit = () => {
       bx.apiKey = secrets.get('bybitApiKey') || undefined;
       bx.secret = secrets.get('bybitApiSecret') || undefined;
@@ -131,18 +133,21 @@ export class SharedMarket {
 }
 
 // Gedeelde publieke verbinding voor een beurs (zonder keys). Bybit: alleen spot.
-export function createSharedMarket(venue = 'bitvavo') {
+export function createSharedMarket(venue = 'bitvavo', host = null) {
   const v = venueOf(venue);
   const Ex = ccxt[VENUES[v].ccxt];
-  return new SharedMarket(new Ex({ enableRateLimit: true, ...(v === 'bybit' ? { options: { defaultType: 'spot' } } : {}) }));
+  return new SharedMarket(new Ex({ enableRateLimit: true, ...(v === 'bybit' ? { options: { defaultType: 'spot' }, ...(host ? { hostname: host } : {}) } : {}) }));
 }
 
 // Verbinding voor één gebruiker: marktdata uit de gedeelde cache, al het andere (orders,
 // saldo, keys) via de eigen ccxt-instantie van de gebruiker.
-export function userExchange(shared, privateEx) {
+// shared mag ook een functie zijn (bijv. Bybit: de gedeelde verbinding van de gekozen website).
+export function userExchange(sharedOrFn, privateEx) {
+  const S = () => (typeof sharedOrFn === 'function' ? sharedOrFn() : sharedOrFn);
   const viaShared = new Set(['fetchOHLCV', 'fetchTicker', 'fetchTickers', 'fetchOrderBook', 'parseTimeframe']);
   return new Proxy(privateEx, {
     get(target, prop) {
+      const shared = S();
       if (viaShared.has(prop)) return shared[prop].bind(shared);
       if (prop === 'markets') return shared.markets ?? target.markets;
       // Beide laden: de gedeelde voor marktlijsten, de eigen voor orders (afronding per markt).

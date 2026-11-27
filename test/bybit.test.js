@@ -452,3 +452,26 @@ test('wisselen tijdens een lopende check: de check maakt eerst af op de oude beu
   assert.deepEqual(bybit.calls.filter((c) => /\/EUR$/.test(c[1]) && c[1] !== 'USDT/EUR'), [], 'geen Bitvavo-coin naar Bybit');
   assert.equal(bot.lastError, null);
 });
+
+test('Bybit-website: keys van Bybit EU gaan naar api.bybit.eu; wisselen alleen zonder posities en niet live', async () => {
+  const { createExchange } = await import('../src/exchange.js');
+  const { BYBIT_HOSTS } = await import('../src/settings.js');
+  assert.deepEqual(BYBIT_HOSTS, ['bybit.com', 'bybit.eu', 'bybit.nl']);
+  let host = 'bybit.com';
+  const fakeSecrets = { get: () => '', onChange() {} };
+  const bx = createExchange(fakeSecrets, 'bybit', { hostname: () => host });
+  assert.equal(bx.implodeHostname('https://api.{hostname}'), 'https://api.bybit.com');
+  host = 'bybit.eu';
+  assert.equal(bx.implodeHostname('https://api.{hostname}'), 'https://api.bybit.eu', 'volgt de instelling bij elk verzoek');
+
+  const { admin, manager } = setup();
+  const ctx = manager.ensure(admin);
+  assert.equal(ctx.settings.bybitHost, 'bybit.com');
+  assert.throws(() => manager.setBybitHost(admin.id, 'bybit.xyz'), /Onbekende Bybit-website/);
+  assert.equal(manager.setBybitHost(admin.id, 'bybit.eu'), 'bybit.eu');
+  assert.equal(new Settings(ctx.dir, config(ctx.dir)).bybitHost, 'bybit.eu', 'bewaard');
+  // Met een open Bybit-positie niet wisselen.
+  await ctx.bot.switchVenue('bybit');
+  ctx.bot.store.state.positions['SOL/USDT'] = { pair: 'SOL/USDT', amount: 1, entryPrice: 200, costEur: 180, openedAt: new Date().toISOString() };
+  assert.throws(() => manager.setBybitHost(admin.id, 'bybit.nl'), /posities open op Bybit/);
+});

@@ -45,6 +45,8 @@ export const RISK_LIMITS = {
   pumpMinGapPct: [0.2, 10],
 };
 export const LIVE_MIN_STAKE_EUR = 5;
+// Bybit-websites met eigen accounts en API-adres (api.<site>).
+export const BYBIT_HOSTS = ['bybit.com', 'bybit.eu', 'bybit.nl'];
 export const STRATEGY_LIMITS = {
   mlBandit: [0, 1],
   mlTrialPaper: [0, 1],
@@ -168,6 +170,7 @@ export class Settings {
     // Alleen opslaan als het bestand ze al had, zodat een Bitvavo-settings.json er precies hetzelfde uit blijft zien.
     if (saved.exchange !== undefined) this.data.exchange = exchange;
     if (saved.venuePairs && typeof saved.venuePairs === 'object') this.data.venuePairs = saved.venuePairs;
+    if (BYBIT_HOSTS.includes(saved.bybitHost)) this.data.bybitHost = saved.bybitHost;
     if (saved.venueLive && typeof saved.venueLive === 'object') this.data.venueLive = saved.venueLive;
   }
 
@@ -203,6 +206,18 @@ export class Settings {
   }
 
   // ---------- Beurs ----------
+  // Welke Bybit-website: elke site heeft eigen accounts en API-keys (bybit.com, Bybit EU, Bybit NL).
+  get bybitHost() {
+    const h = this.data.bybitHost ?? process.env.BYBIT_HOSTNAME;
+    return BYBIT_HOSTS.includes(h) ? h : 'bybit.com';
+  }
+
+  setBybitHost(host) {
+    if (!BYBIT_HOSTS.includes(host)) throw new Error(`Onbekende Bybit-website "${host}"; kies ${BYBIT_HOSTS.join(', ')}`);
+    this.data.bybitHost = host;
+    this.#save();
+  }
+
   get exchange() {
     return venueOf(this.data.exchange);
   }

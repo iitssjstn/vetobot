@@ -1065,7 +1065,11 @@
             <div><label for="k-bbs">Bybit API-secret <span class="kstate" id="st-bybitApiSecret"></span></label>
               <input id="k-bbs" data-name="bybitApiSecret" type="password" autocomplete="off" placeholder="leeg = niet wijzigen"></div>
           </div>
-          <div class="help">Bybit: nu alleen om de keys te testen (saldo ophalen); de bot plaatst nog geen orders op Bybit (alleen paper). Maak een key met alleen lees- en spot-handelsrechten, zonder opnamerechten, gekoppeld aan het IP van je server.</div>
+          <div class="fields" style="margin-top:8px">
+            <div><label for="k-bbhost">Bybit-website (waar je account en keys zijn)</label>
+              <select id="k-bbhost"><option value="bybit.com">bybit.com (wereldwijd)</option><option value="bybit.eu">bybit.eu (Bybit EU)</option><option value="bybit.nl">bybit.nl (Bybit NL)</option></select></div>
+          </div>
+          <div class="help">Bybit: elke website heeft eigen accounts en API-keys. Een key van Bybit EU werkt alleen als hier bybit.eu staat (anders: "API key is invalid"). Paper op Bybit gebruikt de keys niet; live op Bybit alleen op eigen risico. Maak een key met alleen lees- en spot-handelsrechten, zonder opnamerechten, gekoppeld aan het IP van je server.</div>
           <div class="row-actions">
             <button class="btn primary" type="submit">Opslaan</button>
             <button class="btn" type="button" id="keys-test">Bitvavo-keys testen</button>
@@ -1439,6 +1443,8 @@ async function load() {
   state = await api('api/state');
   state._offset = new Date(state.serverTime).getTime() - Date.now();
   render();
+  const bh = $('k-bbhost');
+  if (bh && document.activeElement !== bh) bh.value = state.bybitHost ?? 'bybit.com';
 }
 
 // Grote blokken (tabellen, logs, coinlijst) alleen opnieuw opbouwen als de inhoud echt
@@ -4054,6 +4060,12 @@ $('keys-test').onclick = async () => {
   keyMsg('Testen…');
   try { const r = await api('api/settings/keys/test', {}); keyMsg(`Werkt. Beschikbaar saldo: ${eur2(r.liveBalance.eurFree)}`, 'ok'); }
   catch (err) { keyMsg(err.message, 'err'); }
+};
+$('k-bbhost').onchange = async (e) => {
+  const host = e.target.value;
+  keyMsg('Bybit-website opslaan…');
+  try { await api('api/settings/bybit-host', { host }); keyMsg(`Bybit-website: ${host}. Test je keys opnieuw.`, 'ok'); load(); }
+  catch (err) { keyMsg(err.message, 'err'); if (state?.bybitHost) e.target.value = state.bybitHost; }
 };
 $('keys-test-bybit').onclick = async () => {
   keyMsg('Bybit-keys testen…');
