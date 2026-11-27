@@ -412,6 +412,10 @@ export function createApp({ users, manager, log = console }) {
     return { mode, days, isAdmin: req.user.role === 'admin', journal, registry };
   }));
 
+  // "Leert hij echt?": zes controles en een totaaloordeel (zie src/learncheck.js). Alleen ingelogd; de
+  // leerserver is gedeeld, de trades zijn van deze gebruiker. Geen secrets in het antwoord.
+  app.get('/api/learncheck', wrap(async (req) => manager.learnCheck(req.user.id)));
+
   // Terug naar een eerder goedgekeurde modelversie (vastzetten), of het vastzetten opheffen.
   // Dit raakt alleen paper/het gepubliceerde model; live blijft altijd jouw eigen akkoord per recept.
   app.post('/api/admin/learning/rollback', adminOnly, wrap(async (req) => {
@@ -420,6 +424,7 @@ export function createApp({ users, manager, log = console }) {
     if (!Number.isInteger(version) || version < 1) throw new Error('Ongeldige versie');
     const r = await manager.trainerRequest('/registry/rollback', { method: 'POST', body: { version } });
     manager.learningCache = null;
+    manager.learnCheckCache = null;
     await manager.refreshAgent().catch(() => {});
     log.warn(`Modelversie v${version} teruggezet en vastgezet door ${req.user.username}`);
     return { ok: true, ...r.data };
@@ -436,6 +441,7 @@ export function createApp({ users, manager, log = console }) {
   app.post('/api/admin/learning/unpin', adminOnly, wrap(async (req) => {
     const r = await manager.trainerRequest('/registry/unpin', { method: 'POST', body: {} });
     manager.learningCache = null;
+    manager.learnCheckCache = null;
     log.info(`Vastzetten van de modelversie opgeheven door ${req.user.username}`);
     return { ok: true, ...r.data };
   }));

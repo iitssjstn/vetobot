@@ -61,8 +61,8 @@ export const AI_FAIL_MODES = ['reject', 'approve'];
 const DEFAULT_ON = new Set(['agentLiveSmallStart', 'agentSizing', 'agentVolGuard', 'exchangeStop']);
 const NOTIFY_DEFAULTS = {
   discordUserId: '',
-  events: { startup: true, trades: true, stoploss: true, errors: true, dailyLimit: true, mode: true, aiVeto: false, dailySummary: true, aiFallback: true, aiFailed: true, strategy: true, health: true },
-  mentions: { startup: true, trades: false, stoploss: true, errors: true, dailyLimit: true, mode: true, aiVeto: false, dailySummary: false, aiFallback: false, aiFailed: true, strategy: true, health: true },
+  events: { startup: true, trades: true, stoploss: true, errors: true, dailyLimit: true, mode: true, aiVeto: false, dailySummary: true, aiFallback: true, aiFailed: true, strategy: true, health: true, learning: true },
+  mentions: { startup: true, trades: false, stoploss: true, errors: true, dailyLimit: true, mode: true, aiVeto: false, dailySummary: false, aiFallback: false, aiFailed: true, strategy: true, health: true, learning: false },
   summaryTime: '08:00',
 };
 const RISK_LABELS = {
@@ -152,6 +152,8 @@ export class Settings {
         summaryTime: saved.notify?.summaryTime ?? NOTIFY_DEFAULTS.summaryTime,
       },
       summaryLastSent: saved.summaryLastSent ?? null,
+      // "Leert hij echt?": laatst verzonden weekoverzicht (ISO-week) en de toestand per controle (meldingen).
+      learnCheck: { weekSent: saved.learnCheck?.weekSent ?? null, alerts: saved.learnCheck?.alerts && typeof saved.learnCheck.alerts === 'object' ? saved.learnCheck.alerts : {} },
       modeChangedAt: saved.modeChangedAt ?? null,
       follow: { enabled: Boolean(saved.follow?.enabled), since: saved.follow?.since ?? null },
     };
@@ -210,6 +212,16 @@ export class Settings {
   // Datum (JJJJ-MM-DD, lokale tijd) waarop het laatste dagoverzicht is verstuurd.
   markSummarySent(date) {
     this.data.summaryLastSent = date;
+    this.#save();
+  }
+
+  get learnCheck() {
+    return this.data.learnCheck;
+  }
+
+  // Toestand van "Leert hij echt?" bewaren (weekSent en/of alerts), zodat een herstart niet dubbel meldt.
+  setLearnCheck(patch) {
+    this.data.learnCheck = { ...this.data.learnCheck, ...patch };
     this.#save();
   }
 

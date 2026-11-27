@@ -409,7 +409,18 @@ Van elke gepromote versie wordt een kopie bewaard (`agents/versions/v<n>.json`) 
 
 ### 5. De pagina Learning
 
-Voor iedere gebruiker, kies modus (paper/live) en periode:
+Bovenaan staat **Leert hij echt?** (ook als regel op het Dashboard): zes controles, elk ✅ / ⚠️ / ❌ of "nog te weinig data (x van y)", met de getallen, wat je kunt doen en een totaaloordeel ("Hij leert en wordt beter", "Hij leert, nog geen bewijs dat hij beter wordt" of "Er is iets mis met het leren"). Drempels staan in `LEARN_CHECK` in `src/learncheck.js`; toetsen eenzijdig met 95% zekerheid (`src/stats.js`, zelfde t-verdeling als `trainer/stats.py`).
+
+1. **Leerserver traint**: leerrondes in de laatste 24 uur (❌ als er geen waren terwijl leren aan staat; uit = ⚠️).
+2. **Nieuwe leerstof komt aan**: had je bot de laatste 3 dagen trades van de AI-trader, dan moet de leerserver ook iets ontvangen hebben (❌ als niet, of als versturen al 6 uur mislukt).
+3. **Nieuwe versies zijn aantoonbaar beter**: de actieve versie is gekozen met de statistische toets op de eindtest (❌ zonder toets, als de proef mislukte of als hij de laatste 7 dagen automatisch teruggezet werd; ⚠️ eerste model, zelf vastgezet of 30 dagen geen nieuwe versie).
+4. **Praktijk haalt de belofte**: echte trades van de actieve versie (paper en live samen, en live apart vanaf 30) tegenover de eindtest; ❌ als ze aantoonbaar slechter zijn (minstens 30 trades).
+5. **Resultaat wordt beter**: gemiddelde winst per trade, laatste 30 dagen tegenover de 30 daarvoor (Welch, minstens 20 trades per periode).
+6. **Voorspelling wordt scherper**: gemiddelde afwijking tussen verwachting en uitkomst, idem.
+
+Meldingen (Instellingen → Meldingen → "Leert hij echt?", standaard aan zonder tag, alleen voor het admin-account): direct bij een controle die ❌ wordt (één keer; opnieuw na herstel of na 7 dagen) en elke maandag vanaf de tijd van het dagoverzicht een weekoverzicht (één keer per week, ook na een herstart). Leerrondes en ontvangen trades komen van `GET /learnstats` van de leerserver; een oudere leerserver zonder dat adres geeft ⚠️ (werk hem bij).
+
+Verder, kies modus (paper/live) en periode:
 
 - **Overzicht**: huidige modelversie, laatste training, aantal sessies, datapunten, geaccepteerd/afgewezen, laatste evaluatie.
 - **Modelprestaties**: de gepromote versies naast elkaar (rendement, winrate, profit factor, Sharpe, terugval, trades, gemiddelde winst/verlies, per marktomstandigheid).

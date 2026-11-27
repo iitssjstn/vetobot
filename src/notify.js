@@ -21,6 +21,7 @@ export const NOTIFY_EVENTS = {
   dailySummary: 'Dagelijks overzicht',
   strategy: 'Automatisch overgestapt op een nieuwe strategie (trainer)',
   health: 'Gezondheid: bot hangt, posities niet bewaakt, Bitvavo onbereikbaar, onverwacht herstart (en opgelost)',
+  learning: 'Leert hij echt? Weekoverzicht (maandag) en direct bij een ❌ (alleen het admin-account)',
 };
 
 const COLORS = { info: 0x5aa9f0, ok: 0x3ccf8e, warn: 0xf0b24a, error: 0xf26d6d, live: 0xf26d6d };

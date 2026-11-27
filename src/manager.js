@@ -8,6 +8,7 @@ import { Bot } from './bot.js';
 import { Notifier } from './notify.js';
 import { validateModel, validateAgent } from './mlmodel.js';
 import { activeAgent } from './agents.js';
+import { evaluate as evaluateLearning, learnAlerts, weeklyDue, weeklyMessage, alertMessage, LEARN_CHECK } from './learncheck.js';
 
 // Beheert één bot per gebruiker.
 //
@@ -84,8 +85,10 @@ export class BotManager {
         this.ml.feedbackSentAt = new Date().toISOString();
       }
       this.ml.feedbackError = null;
+      this.ml.feedbackErrorSince = null;
     } catch (err) {
       this.ml.feedbackError = err.message; // volgende keer opnieuw
+      this.ml.feedbackErrorSince ??= new Date().toISOString(); // voor "Leert hij echt?": hoe lang al
     } finally {
       this._flushing = false;
     }
@@ -195,6 +198,69 @@ export class BotManager {
     const data = { available: true, ...r.data };
     this.learningCache = { at: Date.now(), data };
     return data;
+  }
+
+  // ---------- "Leert hij echt?" (src/learncheck.js) ----------
+  // Gegevens van de leerserver: de telling (/learnstats) en het modelregister (/registry). Vijf minuten
+  // bewaard; fouten komen als reden terug (dan wordt een controle ⚠️), nooit als exceptie.
+  async #learnTrainerData() {
+    if (!this.trainerAccess()) return { configured: false };
+    const c = this.learnCheckCache;
+    if (c && Date.now() - c.at < LEARN_CHECK.cacheMinutes * 60000) return c.data;
+    const [stats, registry] = await Promise.all([
+      this.trainerRequest('/learnstats').then((r) => ({ data: r.data })).catch((err) => ({ error: err.message })),
+      this.learningRegistry().then((data) => ({ data })).catch((err) => ({ error: err.message })),
+    ]);
+    const data = { configured: true, stats: stats.data ?? null, statsError: stats.error ?? null, registry: registry.data ?? null, registryError: registry.error ?? null };
+    this.learnCheckCache = { at: Date.now(), data };
+    return data;
+  }
+
+  // Alle zes controles voor één gebruiker: de leerserver is gedeeld, de trades zijn van die gebruiker
+  // (paper en live samen). Geen secrets in het antwoord.
+  async learnCheck(userId, now = Date.now()) {
+    const ctx = this.contexts.get(userId);
+    if (!ctx) throw new Error('Geen bot voor deze gebruiker');
+    const trainer = await this.#learnTrainerData();
+    const stores = Object.entries(ctx.stores ?? {}).filter(([, st]) => st?.state);
+    return evaluateLearning({
+      now, trainer,
+      feedback: { queued: this.feedbackQueue.length, error: this.ml.feedbackError ?? null, errorSince: this.ml.feedbackErrorSince ?? null, sentAt: this.ml.feedbackSentAt ?? null },
+      trades: stores.flatMap(([mode, st]) => (st.state.trades ?? []).map((t) => (t.mode ? t : { ...t, mode }))),
+      virtualTrades: stores.flatMap(([, st]) => (st.state.explorationTrades ?? []).map((t) => ({ ...t, virtual: true }))),
+    });
+  }
+
+  // Meldingen (alleen het admin-account: de leerserver is van de admin en alleen die kan er iets aan doen):
+  // direct bij een controle die ❌ wordt (één keer per overgang, opnieuw na herstel of na 7 dagen) en een
+  // weekoverzicht op maandag vanaf de tijd van het dagoverzicht. Toestand in de instellingen, dus een herstart
+  // stuurt niets dubbel. Loopt los van de handel; fouten alleen in het log.
+  async checkLearning(now = new Date()) {
+    if (this._learnBusy) return null;
+    const admin = this.users.admin;
+    const ctx = admin && this.contexts.get(admin.id);
+    if (!ctx) return null;
+    const s = ctx.settings;
+    if (!s.notify.events.learning) return null;
+    this._learnBusy = true;
+    try {
+      const result = await this.learnCheck(admin.id, now.getTime());
+      const lc = s.learnCheck ?? { alerts: {} };
+      const { send, state } = learnAlerts(lc.alerts, result.checks, now.getTime());
+      const week = weeklyDue(now, s.notify.summaryTime, lc.weekSent);
+      s.setLearnCheck({ alerts: state, ...(week ? { weekSent: week } : {}) });
+      for (const c of send) {
+        this.log.warn(`Leert hij echt? ${c.title}: ${c.text}`);
+        await ctx.notifier?.send('learning', alertMessage(c)).catch(() => {});
+      }
+      if (week) await ctx.notifier?.send('learning', weeklyMessage(result)).catch(() => {});
+      return { result, sent: send.map((c) => c.key), weekly: week };
+    } catch (err) {
+      this.log.error(`Leercontrole mislukt: ${err.message}`);
+      return null;
+    } finally {
+      this._learnBusy = false;
+    }
   }
 
   async refreshMicro() {
@@ -446,6 +512,9 @@ export class BotManager {
     this.summaryTimer = setInterval(() => this.checkSummaries(), 60 * 1000);
     clearInterval(this.healthTimer);
     this.healthTimer = setInterval(() => { this.checkHealth().catch(() => {}); }, 30 * 1000);
+    // "Leert hij echt?": meldingen en het weekoverzicht, elke 5 minuten (los van de handel).
+    clearInterval(this.learnTimer);
+    this.learnTimer = setInterval(() => { this.checkLearning().catch(() => {}); }, LEARN_CHECK.cacheMinutes * 60 * 1000);
     // Eigen model: bij de start en daarna elk half uur kijken of er een nieuwe is.
     clearInterval(this.modelTimer);
     clearInterval(this.microTimer);
@@ -501,6 +570,7 @@ export class BotManager {
   stopAll() {
     clearInterval(this.summaryTimer);
     clearInterval(this.healthTimer);
+    clearInterval(this.learnTimer);
     clearInterval(this.modelTimer);
     clearInterval(this.microTimer);
     clearInterval(this.armsTimer);
