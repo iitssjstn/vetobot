@@ -191,6 +191,33 @@
   .tk-src { font-weight: 600; }
   .tk-text { font-size: 14px; line-height: 1.45; }
   .alert.ok { border-color: color-mix(in srgb, var(--up) 40%, transparent); background: var(--up-soft); }
+  /* "Leert hij echt?" (Learning en een regel op het Dashboard) */
+  .lc-verdict { display: flex; gap: 12px; align-items: center; padding: 12px 14px; border-radius: 12px; margin: 0 0 12px;
+    border: 1px solid var(--line); background: var(--panel-2); font-size: 15px; font-weight: 650; }
+  .lc-verdict.ok { border-color: color-mix(in srgb, var(--up) 40%, transparent); background: var(--up-soft); }
+  .lc-verdict.warn { border-color: color-mix(in srgb, var(--warn) 40%, transparent); background: var(--warn-soft); }
+  .lc-verdict.bad { border-color: color-mix(in srgb, var(--down) 40%, transparent); background: var(--down-soft); }
+  .lc-verdict .d { display: block; font-size: 13px; font-weight: 400; color: var(--muted); margin-top: 2px; }
+  .lc-list { display: grid; gap: 8px; }
+  .lc-row { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; padding: 10px 12px; border: 1px solid var(--line);
+    border-left: 3px solid var(--line); border-radius: 10px; }
+  .lc-row.ok { border-left-color: var(--up); }
+  .lc-row.warn { border-left-color: var(--warn); }
+  .lc-row.bad { border-left-color: var(--down); }
+  .lc-ico { flex: none; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-weight: 800; font-size: 15px;
+    color: var(--muted); background: var(--panel-2); border: 1px solid var(--line); }
+  .lc-ico.ok { color: var(--up); background: var(--up-soft); border-color: transparent; }
+  .lc-ico.warn { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
+  .lc-ico.bad { color: var(--down); background: var(--down-soft); border-color: transparent; }
+  .lc-t { font-weight: 650; font-size: 14px; display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
+  .lc-x { font-size: 13.5px; line-height: 1.45; margin-top: 3px; overflow-wrap: anywhere; }
+  .lc-a { font-size: 13px; color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
+  .lc-dash { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 11px 16px; cursor: pointer; width: 100%;
+    text-align: left; font: inherit; color: inherit; }
+  .lc-dash:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+  .lc-dash .k { font-size: 13px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; }
+  .lc-dash .n { font-size: 13px; color: var(--muted); }
+  .lc-dash .go { margin-left: auto; font-size: 13px; color: var(--accent); white-space: nowrap; }
   .alert.ok svg { color: var(--up); }
   #alerts { display: grid; gap: 8px; margin-bottom: 16px; }
   #alerts:empty { display: none; }
@@ -497,6 +524,7 @@
         <div class="progress" title="Tijd tot de volgende check"><div id="st-bar"></div></div>
       </div>
       <div class="panel gap" id="dash-health"></div>
+      <button type="button" class="panel gap lc-dash" id="dash-learn" data-goto="learning" data-anchor="ln-check" hidden></button>
       <div id="dash-alerts"></div>
       <div class="grid tiles gap" id="tiles"></div>
       <div class="panel gap">
@@ -550,6 +578,8 @@
     </section>
 
     <section data-section="learning" hidden>
+      <div class="panel" id="ln-check" style="margin-bottom:16px"><div class="panel-h"><h2><svg class="i"><use href="#i-check"/></svg>Leert hij echt?</h2><span class="hint" id="ln-check-hint"></span></div>
+        <div class="panel-b" id="ln-check-body"><p class="muted" style="margin:0">Laden…</p></div></div>
       <div class="row-actions" style="margin:0 0 14px;flex-wrap:wrap">
         <select id="ln-mode" aria-label="Modus" style="width:auto"><option value="">Huidige modus</option><option value="paper">Paper</option><option value="live">Live</option></select>
         <select id="ln-days" aria-label="Periode" style="width:auto"><option value="7">7 dagen</option><option value="30" selected>30 dagen</option><option value="90">90 dagen</option><option value="365">1 jaar</option></select>
@@ -1421,6 +1451,7 @@ function render() {
   renderStatus();
   renderDashAlerts(s);
   renderHealth(s.health);
+  loadLearnCheck();
 
   const trend = (p) => p.trend === 'up' ? '<span class="up">▲ omhoog</span>' : p.trend === 'down' ? '<span class="down">▼ omlaag</span>' : '<span class="muted">–</span>';
   const judgement = (p) => p.error ? `<span class="down">Fout: ${esc(p.error)}</span>`
@@ -2633,7 +2664,52 @@ document.addEventListener('click', (e) => {
 // Wat leert de bot? Modelversies van de leerserver (alleen aantoonbaar betere worden gebruikt) en het
 // beslissingsdagboek: goede en slechte beslissingen, gemiste kansen en onterechte afwijzingen.
 let lnData = null;
+// "Leert hij echt?": zes controles met een totaaloordeel (src/learncheck.js). Voor de regel op het Dashboard
+// hooguit eens per 5 minuten opgehaald; op Learning bij elke keer openen of vernieuwen.
+let lcData = null, lcAt = 0, lcBusy = false;
+async function loadLearnCheck(force = false) {
+  if (lcBusy || (!force && Date.now() - lcAt < 5 * 60000)) return;
+  lcBusy = true;
+  lcAt = Date.now();
+  try { lcData = await api('api/learncheck'); } catch (err) { lcData = { error: err.message }; } finally { lcBusy = false; }
+  renderLearnCheck();
+}
+// Per status: klasse, teken in het rondje, woord in de badge.
+const LC = { ok: ['ok', '✓', 'in orde'], warn: ['warn', '!', 'let op'], bad: ['bad', '✕', 'fout'], nodata: ['', '…', 'nog te weinig data'] };
+const LC_BADGE = { ok: 'ok', warn: 'wait', bad: 'bad' };
+function renderLearnCheck() {
+  const d = lcData;
+  const body = $('ln-check-body'), dash = $('dash-learn');
+  if (!d) return;
+  if (d.error || !Array.isArray(d.checks)) {
+    if (body) body.innerHTML = `<p class="muted" style="margin:0">Niet op te halen: ${esc(d.error ?? 'onbekend antwoord')}</p>`;
+    if (dash) dash.hidden = true;
+    return;
+  }
+  const v = d.verdict ?? {};
+  const label = (c) => (c.status === 'nodata' && c.progress ? `nog te weinig data (${c.progress.have} van ${c.progress.need})` : LC[c.status]?.[2] ?? c.status);
+  if (body) {
+    const t = d.thresholds ?? {};
+    $('ln-check-hint').textContent = `bijgewerkt ${new Date(d.at).toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })} · toetsen met ${Math.round((t.confidence ?? 0.95) * 100)}% zekerheid`;
+    body.innerHTML = `<div class="lc-verdict ${esc(v.level ?? '')}"><span class="lc-ico ${esc(v.level ?? '')}" aria-hidden="true">${LC[v.level]?.[1] ?? '?'}</span>
+        <div>${esc(v.text ?? '')}<span class="d">${esc(v.detail ?? '')}</span></div></div>
+      <div class="lc-list">${d.checks.map((c, i) => `<div class="lc-row ${esc(c.status)}">
+        <span class="lc-ico ${esc(LC[c.status]?.[0] ?? '')}" aria-hidden="true">${LC[c.status]?.[1] ?? '?'}</span>
+        <div><div class="lc-t">${i + 1}. ${esc(c.title)} <span class="badge ${LC_BADGE[c.status] ?? 'soft'}">${esc(label(c))}</span></div>
+          <div class="lc-x">${esc(c.text)}</div>
+          ${c.action ? `<div class="lc-a"><b>Wat je kunt doen:</b> ${esc(c.action)}</div>` : ''}</div></div>`).join('')}</div>
+      <p class="muted" style="margin:10px 0 0;font-size:12.5px">Paper en live samen; bij 4–6 alleen echte trades van de AI-trader (geen verkenner, geen handmatige verkoop). Gaat een controle op fout, dan meldt de bot dat direct via Discord, en elke maandag komt een weekoverzicht (Instellingen → Meldingen, alleen het admin-account).</p>`;
+  }
+  if (dash) {
+    const n = (st) => d.checks.filter((c) => c.status === st).length;
+    const parts = [[n('ok'), 'in orde'], [n('warn'), 'let op'], [n('bad'), 'fout'], [n('nodata'), 'wachten op data']].filter(([x]) => x).map(([x, l]) => `${x} ${l}`);
+    dash.hidden = false;
+    dash.innerHTML = `<span class="k">Leert hij echt?</span><span class="badge ${LC_BADGE[v.level] ?? 'soft'}">${esc(v.text ?? '')}</span><span class="n">${esc(parts.join(' · '))}</span><span class="go">Bekijken →</span>`;
+  }
+}
+
 async function loadLearning() {
+  loadLearnCheck(true);
   const q = new URLSearchParams({ days: $('ln-days').value, ...($('ln-mode').value ? { mode: $('ln-mode').value } : {}) });
   $('ln-msg').textContent = 'laden…';
   try {
