@@ -385,6 +385,7 @@
     .modecard { grid-template-columns: 1fr; }
     th, td { padding: 9px 12px; }
   }
+  input.masked { -webkit-text-security: disc; text-security: disc; }
 </style>
 </head>
 <body>
@@ -1118,6 +1119,62 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+
+// Blokken die na elke check opnieuw worden opgebouwd, met invulvelden erin. Wat je daar al typte (verliesgrens,
+// "EIGEN RISICO", wachtwoord, vinkjes) blijft staan, en de cursor blijft in het veld waar je zat.
+const KEEP_INPUTS = new Set(['dash-summary', 'ag-body', 'ag-live', 'ln-history', 'coin-list']);
+const fieldKey = (f) => f.id ? `#${f.id}` : `${f.tagName}|${f.type}|${[...f.attributes].filter((a) => a.name.startsWith('data-') && a.name !== 'data-edited').map((a) => `${a.name}=${a.value}`).join('|')}`;
+document.addEventListener('input', (e) => { if (e.target?.matches?.('input,select,textarea')) e.target.dataset.edited = '1'; }, true);
+document.addEventListener('change', (e) => { if (e.target?.matches?.('input,select,textarea')) e.target.dataset.edited = '1'; }, true);
+{
+  const desc = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
+  Object.defineProperty(Element.prototype, 'innerHTML', {
+    configurable: true, enumerable: desc.enumerable, get() { return desc.get.call(this); },
+    set(html) {
+      if (!KEEP_INPUTS.has(this.id)) return desc.set.call(this, html);
+      const saved = new Map();
+      let focus = null;
+      for (const f of this.querySelectorAll('input[data-edited],select[data-edited],textarea[data-edited]')) {
+        saved.set(fieldKey(f), { value: f.value, checked: f.checked });
+        if (f === document.activeElement) focus = { key: fieldKey(f), start: f.selectionStart, end: f.selectionEnd };
+      }
+      desc.set.call(this, html);
+      if (!saved.size) return;
+      for (const f of this.querySelectorAll('input,select,textarea')) {
+        const v = saved.get(fieldKey(f));
+        if (!v) continue;
+        if (f.type === 'checkbox' || f.type === 'radio') f.checked = v.checked; else f.value = v.value;
+        f.dataset.edited = '1';
+        if (focus?.key === fieldKey(f)) {
+          f.focus({ preventScroll: true });
+          try { if (focus.start != null) f.setSelectionRange(focus.start, focus.end); } catch { /* niet bij elk veld */ }
+        }
+      }
+    },
+  });
+}
+
+// Wachtwoord ter bevestiging en geheime sleutels: niet als echt wachtwoordveld, anders denkt de browser dat
+// het een inlogformulier is en vult hij je naam in andere velden in (of wil hij steeds iets opslaan).
+// Ze blijven onleesbaar (gemaskeerd). Alleen als de browser dat maskeren kan; anders blijft het een wachtwoordveld.
+const CAN_MASK = (() => { try { return CSS.supports('-webkit-text-security', 'disc'); } catch { return false; } })();
+const LOGIN_FIELDS = new Set(['s-pass', 's-pass2', 'l-pass', 'g-pass', 'g-pass2', 'u-pass', 'p-cur', 'p-new']);
+function softenPasswords(root = document) {
+  if (!CAN_MASK) return;
+  for (const f of root.querySelectorAll('input[type="password"]')) {
+    if (LOGIN_FIELDS.has(f.id)) continue;
+    f.type = 'text';
+    f.classList.add('masked');
+    f.autocomplete = 'off';
+    f.setAttribute('autocapitalize', 'off');
+    f.setAttribute('spellcheck', 'false');
+    f.setAttribute('data-lpignore', 'true');
+    f.setAttribute('data-1p-ignore', '');
+  }
+}
+new MutationObserver(() => softenPasswords()).observe(document.documentElement, { childList: true, subtree: true });
+document.addEventListener('DOMContentLoaded', () => softenPasswords());
+softenPasswords();
 const eur = (n, d) => n == null ? '–' : new Intl.NumberFormat('nl-NL', { style: 'currency', currency: 'EUR',
   maximumFractionDigits: d ?? (Math.abs(n) < 1 ? 6 : Math.abs(n) < 100 ? 4 : 2) }).format(n);
 const eur2 = (n) => eur(n, 2);
