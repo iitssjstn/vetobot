@@ -74,8 +74,14 @@ class Endpoint(unittest.TestCase):
         self.assertEqual(self.get('fout')[0], 401)
 
     def test_counts_received_agent_trades(self):
+        # De map van de leerserver is gedeeld met andere testbestanden: achteraf alles terugzetten.
+        saved = {f: self.s.read_json(f, None) for f in ('agent_trades.json', 'agents.json')}
+        self.addCleanup(lambda: [self.s.write_json(f, v) if v is not None else os.path.exists(self.s.path(f)) and os.remove(self.s.path(f))
+                                 for f, v in saved.items()])
+        self.s.write_json('agent_trades.json', [])
         before = self.get(self.s.token())[1]['agentTrades']['recent']
-        self.s.add_agent_trades([{'timeframe': '15m', 'recipe': 'r1', 'pct': 0.4, 'mode': 'paper', 'pair': 'BTC/EUR'}])
+        self.assertEqual(before, 0)
+        self.s.add_agent_trades([{'timeframe': 'test', 'recipe': 'r1', 'pct': 0.4, 'mode': 'paper', 'pair': 'BTC/EUR'}])
         code, body = self.get(self.s.token())
         self.assertEqual(code, 200)
         self.assertEqual(body['agentTrades']['recent'], before + 1)
