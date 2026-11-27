@@ -12,7 +12,7 @@ import { MARKET_TF, RISK, LEARN, EXPLORE, explorationOutcome, rewardSummary, onl
 import { SAFETY, PUMP, exchangeStopPrice, pumpLevel, stopStatus, compareBalances, issueKey } from './safety.js';
 import path from 'node:path';
 import { Health, alertMessage } from './health.js';
-import { EUR_RATE, venueOf, venueLabel, quoteOf, toVenuePair, liveAllowedOnVenue } from './venue.js';
+import { EUR_RATE, venueOf, venueLabel, quoteOf, toVenuePair, liveAllowedOnVenue, venueAccord, checkAccordInput, ACCORD_VENUES } from './venue.js';
 
 // Bedragen en koersen in Nederlandse notatie voor meldingen (€ 81,31 / € 0,3455 / −€ 0,36).
 const nl = (n, digits, min = digits) => new Intl.NumberFormat('nl-NL', { minimumFractionDigits: min, maximumFractionDigits: digits }).format(n);
@@ -26,7 +26,10 @@ const fmtAmount = (n) => nl(n, Math.abs(n) >= 100 ? 2 : Math.abs(n) >= 1 ? 4 : 8
 const combineFills = (a, b) => {
   const amount = (a?.amount ?? 0) + (b?.amount ?? 0);
   return { amount, price: amount > 0 ? ((a?.amount ?? 0) * (a?.price ?? 0) + (b?.amount ?? 0) * (b?.price ?? 0)) / amount : b?.price ?? a?.price,
-    costEur: (a?.costEur ?? 0) + (b?.costEur ?? 0), feeEur: (a?.feeEur ?? 0) + (b?.feeEur ?? 0) };
+    costEur: (a?.costEur ?? 0) + (b?.costEur ?? 0), feeEur: (a?.feeEur ?? 0) + (b?.feeEur ?? 0),
+    // Beurs in USDT (Bybit): ook de bedragen in de quote-munt optellen (Bitvavo: geen extra velden).
+    ...(a?.quote || b?.quote ? { quote: b?.quote ?? a?.quote, eurRate: b?.eurRate ?? a?.eurRate,
+      costQuote: (a?.costQuote ?? 0) + (b?.costQuote ?? 0), feeQuote: (a?.feeQuote ?? 0) + (b?.feeQuote ?? 0) } : {}) };
 };
 const VOL_LABEL = { hoog: 'hoge volatiliteit', normaal: 'normale volatiliteit', laag: 'lage volatiliteit' };
 
@@ -44,14 +47,20 @@ const BUSY = 'busy';
 // AI-trader en strategieën staan allebei uit: dan koopt de bot niets nieuws (bewaken en verkopen gaan door).
 export const NO_BUYER_TEXT = 'Koopt niets: de AI-trader en de strategieën staan uit (bewaken en verkopen gaan door)';
 
-// Bitvavo weigert een order onder het minimum (errorCode 212, "less than the minimum").
-export const belowMinimum = (err) => /errorCode"?\s*:\s*212|less than the minimum|minOrderIn/i.test(String(err?.message ?? err ?? ''));
+// Een order onder het minimum van de beurs. Bitvavo: errorCode 212, "less than the minimum". Bybit (ccxt zet de
+// hele JSON in de foutmelding): retCode 170136 "Order quantity lower than the minimum", 170140 "Order value
+// exceeded lower limit" / "Transaction amount lower than the minimum"; plus onze eigen controle vooraf in de
+// Bybit-broker (err.belowMinimum).
+export const belowMinimum = (err) => Boolean(err?.belowMinimum)
+  || /errorCode"?\s*:\s*212|less than the minimum|minOrderIn|"retCode"\s*:\s*1701(36|40)\b|quantity lower than the minimum|value exceeded lower limit|amount lower than the minimum/i.test(String(err?.message ?? err ?? ''));
 
 // Kleinste live inzet waarbij de positie bij een daling tot de noodstop (plus fees en wat speling) nog
-// minstens het Bitvavo-minimum waard is, zodat verkopen en de stop-order bij Bitvavo altijd kunnen.
-export function sellableStake(stopPct) {
+// minstens het minimum van de beurs waard is, zodat verkopen en de stop-order bij de beurs altijd kunnen.
+// minEur: het minimum per order in euro (Bitvavo € 5; Bybit per markt, uit limits van de markt, omgerekend).
+export function sellableStake(stopPct, minEur = LIVE_MIN_STAKE_EUR) {
   const stop = Math.min(50, Math.max(0, Number(stopPct) || 10));
-  return Math.ceil((LIVE_MIN_STAKE_EUR * 1.03) / (1 - stop / 100) * 100) / 100;
+  const min = Number(minEur) > 0 ? Number(minEur) : LIVE_MIN_STAKE_EUR;
+  return Math.ceil((min * 1.03) / (1 - stop / 100) * 100) / 100;
 }
 
 export class Bot {
@@ -117,6 +126,93 @@ export class Bot {
   // Koers in de munt van de beurs: "€ 81,31" op Bitvavo, "95.000,12 USDT" op Bybit.
   fmtQ(n) {
     return this.quote === 'EUR' ? fmtPrice(n) : `${nl(n, priceDigits(n), 2)} ${this.quote}`;
+  }
+
+  // Kleinste order op deze markt in de quote-munt van de beurs (bij deze koers). Bitvavo: limits.cost.min van de
+  // markt, anders € 5 (zoals altijd). Bybit: het hoogste van limits.cost.min (USDT, anders 5) en limits.amount.min × koers.
+  minOrderQuote(pair, price = null) {
+    const l = this.ex?.markets?.[pair]?.limits ?? {};
+    const cost = Number(l.cost?.min) > 0 ? Number(l.cost.min) : LIVE_MIN_STAKE_EUR;
+    if (this.venue === 'bitvavo') return cost;
+    const amt = Number(l.amount?.min) > 0 && Number(price) > 0 ? Number(l.amount.min) * Number(price) : 0;
+    return Math.max(cost, amt);
+  }
+
+  // Zelfde in euro (Bybit: omgerekend met de laatst bekende koers; onbekend: het bedrag zelf, dus voorzichtig hoog).
+  minOrderEur(pair, price = null) {
+    const q = this.minOrderQuote(pair, price);
+    return this.venue === 'bitvavo' ? q : q * (this.eurRate() ?? 1);
+  }
+
+  // "€ 5" op Bitvavo, "5 USDT (± € 4,30)" op Bybit.
+  #fmtMin(pair, price = null) {
+    const q = this.minOrderQuote(pair, price);
+    if (this.venue === 'bitvavo') return `€ ${nl(q, 2, 0)}`;
+    const r = this.eurRate();
+    return `${nl(q, 2, 0)} ${this.quote}${r ? ` (± ${fmtEur(q * r)})` : ''}`;
+  }
+
+  // ---------- Live per beurs (centrale check: liveAllowedOnVenue) ----------
+  liveAllowed(venue = this.venue) {
+    return liveAllowedOnVenue(venue, this.settings);
+  }
+
+  // Bybit live op eigen risico: resultaat (na kosten) van alle live trades op deze beurs sinds het akkoord,
+  // gesloten + open (open: tegen de laatst bekende koers, na de geschatte verkoopfee). { pnlEur, trades, open }.
+  venueRiskLoss(venue = this.venue) {
+    const a = venueAccord(venue, this.settings);
+    const st = venue === this.venue ? this.stores?.live?.state : null;
+    if (!a || !st) return { pnlEur: 0, trades: 0, open: 0 };
+    const since = Date.parse(a.at);
+    const closed = (st.trades ?? []).filter((t) => Date.parse(t.closedAt) >= since);
+    let pnl = closed.reduce((x, t) => x + (t.pnlEur ?? 0), 0);
+    const fee = (this.risk.feePct ?? 0) / 100;
+    const rate = this.eurRate();
+    let open = 0;
+    for (const p of Object.values(st.positions ?? {})) {
+      if (!p || Date.parse(p.openedAt) < since) continue;
+      open++;
+      const price = this.livePrices?.[p.pair]?.price ?? this.pairStatus?.[p.pair]?.price;
+      if (price != null && rate != null) pnl += p.amount * price * rate * (1 - fee) + (p.stopFill?.costEur ?? 0) - p.costEur;
+    }
+    return { pnlEur: pnl, trades: closed.length, open };
+  }
+
+  // Voor dashboard en dagoverzicht: het akkoord op deze beurs met het resultaat sindsdien (of null).
+  venueRiskStatus(venue = this.venue) {
+    const a = venueAccord(venue, this.settings);
+    if (!a) return null;
+    const l = this.venueRiskLoss(venue);
+    return { venue, label: venueLabel(venue), maxLossEur: a.maxLossEur, since: a.at, lossEur: +l.pnlEur.toFixed(2), trades: l.trades, open: l.open,
+      left: +(a.maxLossEur + l.pnlEur).toFixed(2), stopped: Boolean(a.stoppedAt), stoppedAt: a.stoppedAt ?? null, stopReason: a.stopReason ?? null };
+  }
+
+  // Elke check (live, beurs met akkoord): verliesgrens bereikt → akkoord beëindigen (geen nieuwe aankopen), melden;
+  // open posities blijven bewaakt en beschermd. Zijn alle live posities dicht, dan terug naar paper.
+  #venueLiveWatch() {
+    if (this.mode !== 'live' || !ACCORD_VENUES.has(this.venue)) return;
+    const a = venueAccord(this.venue, this.settings);
+    if (!a) return;
+    if (!a.stoppedAt) {
+      const { pnlEur, trades } = this.venueRiskLoss();
+      if (pnlEur > -a.maxLossEur) return;
+      const why = `de verliesgrens van ${fmtEur(a.maxLossEur)} is bereikt (nu ${fmtSigned(pnlEur)} na ${trades} gesloten trade${trades === 1 ? '' : 's'} plus de open posities)`;
+      this.settings.stopVenueLive(this.venue, why);
+      const open = Object.keys(this.store.state.positions);
+      this.#event('warn', null, `Live op ${this.venueLabel} (eigen risico) gestopt: ${why}. Geen nieuwe aankopen; ` +
+        (open.length ? `${open.length} open positie(s) worden nog bewaakt en beschermd (${open.join(', ')}); daarna terug naar paper.` : 'terug naar paper.'));
+      this.#notify('mode', {
+        title: `Live op ${this.venueLabel} gestopt: verliesgrens bereikt`, level: 'warn',
+        message: `Live handelen op ${this.venueLabel} op eigen risico is gestopt: ${why}.\n\nJe akkoord is ingetrokken. De bot koopt op ${this.venueLabel} niets meer` +
+          (open.length ? `; de open posities (${open.join(', ')}) worden nog gewoon bewaakt en verkocht volgens de regels, daarna gaat hij terug naar paper.` : ' en staat weer op paper.') +
+          ` Opnieuw live op ${this.venueLabel} kan alleen met een nieuw akkoord (EIGEN RISICO, nieuwe verliesgrens, wachtwoord).`,
+      });
+    }
+    if (Object.keys(this.store.state.positions).length || this.ordering.size) return;
+    this.settings.setMode('paper');
+    this.liveBalance = null;
+    this.#event('warn', null, `Live op ${this.venueLabel} beëindigd (verliesgrens): geen live posities meer open, terug naar paper.`);
+    this.#notify('mode', { title: 'vetobot staat nu op paper', message: `Live op ${this.venueLabel} is beëindigd door de verliesgrens; er worden geen echte orders meer geplaatst.`, level: 'info' });
   }
 
   // Logt een gebeurtenis én bewaart hem voor het activiteitenlog in het dashboard.
@@ -255,7 +351,7 @@ export class Bot {
       try {
         if (type === 'open' && !pos) {
           const blocked = this.#buyBlockText() ?? checkEntry(this.store, { risk: this.entryRisk() }, this.broker.mode, this.ex, this.liveBalance,
-            { pair, openPnlEur: this.openPositionsValue().pnlEur });
+            { pair, openPnlEur: this.openPositionsValue().pnlEur, venueLabel: this.venueLabel });
           if (blocked) {
             this.store.addDecision({ pair, signal: 'buy', outcome: 'blocked', reason: `Volgen: ${blocked}`, indicators });
             await this.#journalDecision(pair, { outcome: 'rejected', stage: 'risicoregels', reason: `Volgen: ${blocked}`, indicators, features: null });
@@ -786,7 +882,7 @@ export class Bot {
     return this.#exclusive(async () => {
       const stake = Number(values?.stakeEur ?? this.settings.risk.stakeEur);
       if (this.mode === 'live' && stake < LIVE_MIN_STAKE_EUR) {
-        throw new Error(`In live is de inzet minimaal € ${LIVE_MIN_STAKE_EUR}; Bitvavo weigert kleinere orders`);
+        throw new Error(`In live is de inzet minimaal € ${LIVE_MIN_STAKE_EUR}; ${this.venueLabel} weigert kleinere orders`);
       }
       this.settings.setRisk(values);
       const r = this.risk;
@@ -879,55 +975,96 @@ export class Bot {
   }
 
   // Haalt het echte EUR-saldo op bij Bitvavo. Gooit als de keys niet werken.
+  // Op Bybit: het USDT-saldo, omgerekend naar euro (eurFree/eurTotal, zodat inzet en controles in euro blijven),
+  // met de bedragen in USDT en de koers erbij.
   async refreshLiveBalance() {
-    const allowed = liveAllowedOnVenue(this.venue);
-    if (!allowed.ok) throw new Error(allowed.reason);
+    const allowed = this.liveAllowed();
+    // Na de verliesgrens (gestopt) blijft het saldo nodig zolang er nog live posities afgebouwd worden.
+    if (!allowed.ok && !(allowed.stopped && this.mode === 'live')) throw new Error(allowed.reason);
     if (!hasTradingKeys(this.ex)) {
       this.liveBalance = null;
-      throw new Error('Bitvavo-keys ontbreken, vul ze in bij Instellingen');
+      throw new Error(`${this.venueLabel}-keys ontbreken, vul ze in bij Instellingen`);
     }
     const bal = await this.ex.fetchBalance();
-    this.liveBalance = { eurFree: bal.EUR?.free ?? 0, eurTotal: bal.EUR?.total ?? 0, at: new Date().toISOString() };
+    if (this.quote === 'EUR') {
+      this.liveBalance = { eurFree: bal.EUR?.free ?? 0, eurTotal: bal.EUR?.total ?? 0, at: new Date().toISOString() };
+      return this.liveBalance;
+    }
+    const q = this.quote;
+    const rate = await this.fx.eurPerQuote({ allowStale: true });
+    const free = Number(bal?.[q]?.free) || 0;
+    const total = Number(bal?.[q]?.total) || 0;
+    this.liveBalance = { eurFree: free * rate, eurTotal: total * rate, quote: q, quoteFree: free, quoteTotal: total, eurRate: rate, at: new Date().toISOString() };
     return this.liveBalance;
   }
 
   // Wisselt tussen paper en live. Weigert als er in de huidige modus nog posities open
   // staan, zodat een echte positie nooit onbewaakt achterblijft.
-  switchMode(mode) {
+  // Bybit: live alleen met een eigen-risico-akkoord: opts.accord = { confirmText: 'EIGEN RISICO', maxLossEur }
+  // (de server controleert ook het wachtwoord). Zonder (geldig) akkoord geweigerd; mislukt de overstap daarna
+  // (bijv. keys), dan wordt het akkoord weer ingetrokken. Staat live na de verliesgrens nog aan (afbouwen), dan
+  // vervangt een nieuw akkoord het oude.
+  switchMode(mode, opts = {}) {
     return this.#exclusive(async () => {
       if (!['paper', 'live'].includes(mode)) throw new Error(`Ongeldige modus "${mode}"`);
-      if (mode === this.mode) return;
-      // Live alleen op een beurs waar live mag (centrale check; fase 1: Bybit alleen paper).
+      const renew = Boolean(mode === 'live' && this.mode === 'live' && this.liveAllowed().stopped && opts.accord);
+      if (mode === this.mode && !renew) return;
+      let newAccord = false;
+      // Live alleen op een beurs waar live mag (centrale check; Bybit: met akkoord op eigen risico).
       if (mode === 'live') {
-        const allowed = liveAllowedOnVenue(this.venue);
+        let allowed = this.liveAllowed();
+        // Beurs met akkoord: elke overstap naar live (en een vernieuwing na de verliesgrens) is een nieuw akkoord.
+        if (allowed.accord && (this.mode !== 'live' || renew)) {
+          if (!opts.accord) throw new Error(liveAllowedOnVenue(this.venue).reason);
+          const maxLossEur = checkAccordInput(this.venue, opts.accord);
+          this.settings.setVenueLive(this.venue, maxLossEur);
+          newAccord = true;
+          allowed = this.liveAllowed();
+        }
         if (!allowed.ok) throw new Error(allowed.reason);
       }
-      const open = Object.keys(this.store.state.positions);
-      if (open.length) {
-        throw new Error(`Er staan nog ${open.length} positie(s) open in ${this.mode} (${open.join(', ')}). Sluit die eerst.`);
+      if (renew) {
+        this.#event('warn', null, `Nieuw akkoord voor live op ${this.venueLabel} op eigen risico (verliesgrens ${fmtEur(this.liveAllowed().maxLossEur)}).`);
+        return;
       }
-      if (mode === 'live' && this.risk.stakeEur < LIVE_MIN_STAKE_EUR) {
-        throw new Error(`Je inzet per trade is € ${this.risk.stakeEur}. Live is minimaal € ${LIVE_MIN_STAKE_EUR} nodig (minimum van Bitvavo); verhoog eerst je inzet.`);
+      try {
+        await this.#switchModeChecked(mode);
+      } catch (err) {
+        if (newAccord) this.settings.setVenueLive(this.venue, null);
+        throw err;
       }
-      if (mode === 'live') {
-        this.#step('Bitvavo-keys testen');
-        try {
-          await this.refreshLiveBalance();
-        } catch (err) {
-          throw new Error(`Bitvavo-keys werken niet: ${err.message}`);
-        } finally {
-          this.#step(null);
-        }
-      }
-      this.settings.setMode(mode);
-      this.#event('warn', null, mode === 'live'
-        ? 'Overgeschakeld naar LIVE trading. Er worden nu echte orders geplaatst.'
-        : 'Overgeschakeld naar paper trading.');
-      this.#notify('mode', mode === 'live'
-        ? { title: 'vetobot staat nu op LIVE', message: 'Er worden echte orders geplaatst op Bitvavo.', level: 'live',
-            fields: this.liveBalance ? [{ name: 'Beschikbaar saldo', value: fmtEur(this.liveBalance.eurFree) }] : [] }
-        : { title: 'vetobot staat nu op paper', message: 'Er worden geen echte orders meer geplaatst.', level: 'info' });
     });
+  }
+
+  // De bestaande eisen voor live (geen open posities, minimale inzet, werkende keys), daarna wisselen.
+  async #switchModeChecked(mode) {
+    const open = Object.keys(this.store.state.positions);
+    if (open.length) {
+      throw new Error(`Er staan nog ${open.length} positie(s) open in ${this.mode} (${open.join(', ')}). Sluit die eerst.`);
+    }
+    if (mode === 'live' && this.risk.stakeEur < LIVE_MIN_STAKE_EUR) {
+      throw new Error(`Je inzet per trade is € ${this.risk.stakeEur}. Live is minimaal € ${LIVE_MIN_STAKE_EUR} nodig (minimum van ${this.venueLabel}); verhoog eerst je inzet.`);
+    }
+    if (mode === 'live') {
+      this.#step(`${this.venueLabel}-keys testen`);
+      try {
+        await this.refreshLiveBalance();
+      } catch (err) {
+        throw new Error(`${this.venueLabel}-keys werken niet: ${err.message}`);
+      } finally {
+        this.#step(null);
+      }
+    }
+    this.settings.setMode(mode);
+    this.#event('warn', null, mode === 'live'
+      ? `Overgeschakeld naar LIVE trading${this.venue === 'bitvavo' ? '' : ` op ${this.venueLabel} (op eigen risico)`}. Er worden nu echte orders geplaatst.`
+      : 'Overgeschakeld naar paper trading.');
+    const acc = mode === 'live' ? venueAccord(this.venue, this.settings) : null;
+    this.#notify('mode', mode === 'live'
+      ? { title: 'vetobot staat nu op LIVE', message: `Er worden echte orders geplaatst op ${this.venueLabel}.` +
+            (acc ? ` Op eigen risico, met een verliesgrens van ${fmtEur(acc.maxLossEur)}: daarna stopt live op ${this.venueLabel} vanzelf.` : ''), level: 'live',
+          fields: this.liveBalance ? [{ name: 'Beschikbaar saldo', value: `${fmtEur(this.liveBalance.eurFree)}${this.liveBalance.quote ? ` (${nl(this.liveBalance.quoteFree, 2)} ${this.liveBalance.quote})` : ''}` }] : [] }
+      : { title: 'vetobot staat nu op paper', message: 'Er worden geen echte orders meer geplaatst.', level: 'info' });
   }
 
   // Wisselt van beurs (Bitvavo ↔ Bybit). Alleen zonder open posities (paper én live van de huidige beurs),
@@ -939,7 +1076,7 @@ export class Bot {
       if (venue !== next) throw new Error(`Onbekende beurs "${venue}"`);
       if (next === this.venue) return { venue: next, notice: null };
       if (this.mode === 'live') {
-        const allowed = liveAllowedOnVenue(next);
+        const allowed = this.liveAllowed(next);
         if (!allowed.ok) throw new Error(allowed.reason);
       }
       const open = Object.entries(this.stores ?? {}).flatMap(([m, st]) => Object.keys(st?.state?.positions ?? {}).map((p) => `${p} (${m})`));
@@ -967,7 +1104,7 @@ export class Bot {
       this.marketRegimes = {};
       this.lastArmTs = {};
       this.liveBalance = null;
-      this.#event('warn', null, `Beurs gewisseld naar ${this.venueLabel}${next === 'bitvavo' ? '' : ` (paper, paren in ${this.quote}, bedragen in euro)`}.${notice ? ` ${notice}` : ''}`);
+      this.#event('warn', null, `Beurs gewisseld naar ${this.venueLabel}${next === 'bitvavo' ? '' : ` (${this.mode === 'live' ? 'live op eigen risico' : 'paper'}, paren in ${this.quote}, bedragen in euro)`}.${notice ? ` ${notice}` : ''}`);
       return { venue: next, notice };
     });
   }
@@ -1047,6 +1184,7 @@ export class Bot {
         this.#agentSummary();
         this.agentHourlyLog();
         this.#agentLiveWatch();
+        this.#venueLiveWatch();
         this.lastTickAt = new Date().toISOString();
         if (!errors) this.lastError = null;
         this.store.save();
@@ -1083,13 +1221,13 @@ export class Bot {
     let errors = 0;
     let recovered = false;
     await this.#exclusive(async () => {
-      this.#step('Saldo ophalen bij Bitvavo');
+      this.#step(`Saldo ophalen bij ${this.venueLabel}`);
       // Bitvavo geeft af en toe een losse storing (bijv. 's nachts "errorCode 101"). Pas melden als het
       // 10 minuten aanhoudt, en één keer melden als het weer werkt. Zolang koopt de bot niets nieuws.
       await this.refreshLiveBalance().then(() => {
         this.health.exchangeOk();
         if (this.balanceFail?.notified) {
-          this.#notify('errors', { title: 'Saldo ophalen bij Bitvavo werkt weer', message: `Na ${Math.round((Date.now() - this.balanceFail.since) / 60000)} minuten storing.`, level: 'info' });
+          this.#notify('errors', { title: `Saldo ophalen bij ${this.venueLabel} werkt weer`, message: `Na ${Math.round((Date.now() - this.balanceFail.since) / 60000)} minuten storing.`, level: 'info' });
         }
         recovered = Boolean(this.balanceFail);
         this.balanceFail = null;
@@ -1101,7 +1239,7 @@ export class Bot {
         this.balanceFail.error = String(err?.message ?? err).slice(0, 200);
         if (!this.balanceFail.notified && Date.now() - this.balanceFail.since >= 10 * 60000) {
           this.balanceFail.notified = true;
-          this.#notify('errors', { title: 'Saldo ophalen bij Bitvavo mislukt', message: `${err.message}\n\nAl ${Math.round((Date.now() - this.balanceFail.since) / 60000)} minuten. De bot koopt zolang niets nieuws; bewaken en verkopen gaan door.`, level: 'error' });
+          this.#notify('errors', { title: `Saldo ophalen bij ${this.venueLabel} mislukt`, message: `${err.message}\n\nAl ${Math.round((Date.now() - this.balanceFail.since) / 60000)} minuten. De bot koopt zolang niets nieuws; bewaken en verkopen gaan door.`, level: 'error' });
         }
       });
       // Stop-orders bij Bitvavo controleren (uitgevoerd? opnieuw zetten?) en de saldocontrole als die aan de beurt is.
@@ -1130,19 +1268,25 @@ export class Bot {
   buyBlockReasons() {
     if (this.mode !== 'live') return [];
     const reasons = [];
-    if (this.balanceFail) reasons.push(`saldo ophalen bij Bitvavo mislukt (${this.balanceFail.error ?? 'onbekende fout'})`);
+    // Beurs met eigen-risico-akkoord (Bybit): geen akkoord, gestopt, of de verliesgrens nu al bereikt.
+    if (ACCORD_VENUES.has(this.venue)) {
+      const allowed = this.liveAllowed();
+      if (!allowed.ok) reasons.push(allowed.stopped ? `live op ${this.venueLabel} is gestopt (verliesgrens bereikt)` : `geen akkoord voor live op ${this.venueLabel} op eigen risico`);
+      else if (this.venueRiskLoss().pnlEur <= -allowed.maxLossEur) reasons.push(`verliesgrens van ${fmtEur(allowed.maxLossEur)} voor live op ${this.venueLabel} bereikt`);
+    }
+    if (this.balanceFail) reasons.push(`saldo ophalen bij ${this.venueLabel} mislukt (${this.balanceFail.error ?? 'onbekende fout'})`);
     if (this.buyUncertain) reasons.push(`aankoop van ${this.buyUncertain.pair} onzeker (${this.buyUncertain.error}); eerst de saldocontrole`);
     const r = this.store.state.reconcile;
-    if (r?.error) reasons.push(`saldocontrole bij Bitvavo mislukt (${r.error})`);
+    if (r?.error) reasons.push(`saldocontrole bij ${this.venueLabel} mislukt (${r.error})`);
     for (const i of r?.issues ?? []) {
-      if (i.kind === 'mist' && this.store.state.positions[i.pair]) reasons.push(`saldocontrole: ${i.pair} mist op Bitvavo (bot ${i.botAmount}, Bitvavo ${i.exchangeAmount})`);
+      if (i.kind === 'mist' && this.store.state.positions[i.pair]) reasons.push(`saldocontrole: ${i.pair} mist op ${this.venueLabel} (bot ${i.botAmount}, ${this.venueLabel} ${i.exchangeAmount})`);
     }
     // Een positie die een stop-order bij Bitvavo hoort te hebben maar er geen heeft (plaatsen mislukt,
     // geannuleerd, deels uitgevoerd). Onder het minimum van Bitvavo ('overgeslagen') telt niet.
     if (this.exchangeStopEnabled && typeof this.broker.placeStop === 'function') {
       for (const [pair, pos] of Object.entries(this.store.state.positions)) {
         if (!pos || pos.exchangeStop?.orderId || pos.exchangeStop?.skipped || this.ordering.has(pair) || !exchangeStopPrice(pos, this.risk)) continue;
-        reasons.push(`${pair} heeft geen werkende stop-order bij Bitvavo${pos.exchangeStop?.error ? ` (${pos.exchangeStop.error})` : ''}`);
+        reasons.push(`${pair} heeft geen werkende stop-order bij ${this.venueLabel}${pos.exchangeStop?.error ? ` (${pos.exchangeStop.error})` : ''}`);
       }
     }
     return reasons;
@@ -1319,7 +1463,7 @@ export class Bot {
 
     const liveBlock = this.#buyBlockText();
     const blocked = liveBlock ?? checkEntry(this.store, { risk: this.entryRisk() }, this.broker.mode, this.ex, this.liveBalance,
-      { pair, openPnlEur: this.openPositionsValue().pnlEur, explore: exploring });
+      { pair, openPnlEur: this.openPositionsValue().pnlEur, explore: exploring, venueLabel: this.venueLabel });
     if (liveBlock) this.pairStatus[pair] = { ...this.pairStatus[pair], reason: `Koopsignaal, maar: ${liveBlock}` };
     // Volatiliteitsregime uit de candles die er al zijn (voor het leerdagboek).
     const volRegime = result.indicators?.agent?.volRegime ?? volRegimeOf(candles);
@@ -2350,9 +2494,12 @@ export class Bot {
     // (€ 5 per order) zakt. Anders kan hij niet meer verkocht worden en krijgt hij ook geen stop bij Bitvavo.
     let sellableNote = '';
     if (this.broker.mode === 'live') {
-      const floor = sellableStake(Number(indicators?.agent?.safetyStopPct) > 0 ? indicators.agent.safetyStopPct : this.risk.stopLossPct);
+      const stopPct = Number(indicators?.agent?.safetyStopPct) > 0 ? indicators.agent.safetyStopPct : this.risk.stopLossPct;
+      // Bitvavo: € 5 (zoals altijd). Andere beurs: het minimum van deze markt (limits.cost.min / limits.amount.min) in euro.
+      const px = this.venue === 'bitvavo' ? null : await fetchPrice(this.ex, pair).catch(() => null);
+      const floor = this.venue === 'bitvavo' ? sellableStake(stopPct) : sellableStake(stopPct, this.minOrderEur(pair, px));
       if (stake < floor) {
-        sellableNote = `, inzet verhoogd van ${fmtEur(stake)} naar ${fmtEur(floor)} zodat hij bij de noodstop nog boven het minimum van Bitvavo blijft`;
+        sellableNote = `, inzet verhoogd van ${fmtEur(stake)} naar ${fmtEur(floor)} zodat hij bij de noodstop nog boven het minimum van ${this.venueLabel} blijft`;
         stake = floor;
       }
     }
@@ -2369,7 +2516,10 @@ export class Bot {
     if (this.broker.mode === 'paper') this.store.state.balanceEur -= fill.costEur;
     // Live: het saldo pas aan het eind van de ronde opnieuw ophalen; tot dan zelf bijhouden, anders
     // denkt een tweede aankoop in dezelfde ronde dat het geld er nog is (en weigert Bitvavo de order).
-    else if (this.liveBalance) this.liveBalance.eurFree = Math.max(0, this.liveBalance.eurFree - fill.costEur);
+    else if (this.liveBalance) {
+      this.liveBalance.eurFree = Math.max(0, this.liveBalance.eurFree - fill.costEur);
+      if (this.liveBalance.quote && Number.isFinite(fill.costQuote)) this.liveBalance.quoteFree = Math.max(0, this.liveBalance.quoteFree - fill.costQuote);
+    }
     this.store.state.positions[pair] = {
       pair,
       openedAt: new Date().toISOString(),
@@ -2644,7 +2794,7 @@ export class Bot {
     const prev = pos.exchangeStop ?? {};
     const now = new Date().toISOString();
     try {
-      this.#step(`${pair}: stop-order bij Bitvavo zetten`);
+      this.#step(`${pair}: stop-order bij ${this.venueLabel} zetten`);
       // Gaf de vorige poging een fout, dan kan de order toch bij Bitvavo staan (time-out, antwoord verloren).
       // Eerst zoeken en die overnemen: een tweede stop-order zou dezelfde coins nog eens reserveren.
       // Ook op de vorige stopprijs zoeken: de winstgrens (uitschieter) kan intussen hoger liggen dan de verloren order.
@@ -2654,20 +2804,20 @@ export class Bot {
       const r = found ?? await this.broker.placeStop(pair, pos.amount, stopPrice);
       if (r?.skipped) {
         pos.exchangeStop = { orderId: null, stopPrice, placedAt: null, skipped: r.skipped, attemptAt: now };
-        this.#event('warn', pair, `Geen stop-order bij Bitvavo gezet: ${r.skipped}. De bot bewaakt de noodstop zelf.`);
+        this.#event('warn', pair, `Geen stop-order bij ${this.venueLabel} gezet: ${r.skipped}. De bot bewaakt de noodstop zelf.`);
         return;
       }
       pos.exchangeStop = { orderId: r.orderId, stopPrice: r.stopPrice ?? stopPrice, amount: r.amount ?? pos.amount, placedAt: now };
-      this.#event(found ? 'warn' : 'info', pair, found ? `Bestaande stop-order bij Bitvavo teruggevonden en overgenomen (order ${r.orderId}, ${this.fmtQ(pos.exchangeStop.stopPrice)}); geen tweede gezet`
-        : raisedFrom ? `Uitschieter: stop bij Bitvavo omhoog geschoven van ${this.fmtQ(raisedFrom)} naar ${this.fmtQ(pos.exchangeStop.stopPrice)} (order ${r.orderId})`
-        : `Stop-order bij Bitvavo gezet op ${this.fmtQ(pos.exchangeStop.stopPrice)} (order ${r.orderId})`);
+      this.#event(found ? 'warn' : 'info', pair, found ? `Bestaande stop-order bij ${this.venueLabel} teruggevonden en overgenomen (order ${r.orderId}, ${this.fmtQ(pos.exchangeStop.stopPrice)}); geen tweede gezet`
+        : raisedFrom ? `Uitschieter: stop bij ${this.venueLabel} omhoog geschoven van ${this.fmtQ(raisedFrom)} naar ${this.fmtQ(pos.exchangeStop.stopPrice)} (order ${r.orderId})`
+        : `Stop-order bij ${this.venueLabel} gezet op ${this.fmtQ(pos.exchangeStop.stopPrice)} (order ${r.orderId})`);
     } catch (err) {
       const msg = String(err?.message ?? err).slice(0, 300);
       pos.exchangeStop = { orderId: null, stopPrice, placedAt: null, error: msg, attemptAt: now, attempts: (prev.attempts ?? 0) + 1, notified: Boolean(prev.notified) };
-      this.#event('error', pair, `Stop-order bij Bitvavo zetten mislukt: ${msg}. De bot bewaakt de noodstop zelf en probeert het over 10 minuten opnieuw.`);
+      this.#event('error', pair, `Stop-order bij ${this.venueLabel} zetten mislukt: ${msg}. De bot bewaakt de noodstop zelf en probeert het over 10 minuten opnieuw.`);
       if (!prev.notified) {
         pos.exchangeStop.notified = true;
-        this.#notify('errors', { title: `Stop-order bij Bitvavo mislukt: ${pair}`, level: 'error',
+        this.#notify('errors', { title: `Stop-order bij ${this.venueLabel} mislukt: ${pair}`, level: 'error',
           message: `${msg}\n\nDe positie blijft open en wordt door de bot zelf bewaakt (noodstop op ${this.fmtQ(stopPrice)}). ` +
             'Hij probeert de stop-order elke 10 minuten opnieuw te zetten; je krijgt hier voor deze positie geen nieuwe melding van.' });
       }
@@ -2679,12 +2829,12 @@ export class Bot {
   async #releaseExchangeStop(pair, pos) {
     const id = pos.exchangeStop?.orderId;
     if (!id || typeof this.broker.cancelStop !== 'function') return null;
-    this.#step(`${pair}: stop-order bij Bitvavo annuleren`);
+    this.#step(`${pair}: stop-order bij ${this.venueLabel} annuleren`);
     let st;
     try {
       st = await this.broker.cancelStop(pair, id);
     } catch (err) {
-      throw new Error(`Niet verkocht: de stop-order bij Bitvavo kon niet geannuleerd worden (${err.message}). Hij blijft de positie beschermen.`);
+      throw new Error(`Niet verkocht: de stop-order bij ${this.venueLabel} kon niet geannuleerd worden (${err.message}). Hij blijft de positie beschermen.`);
     }
     // Geannuleerd: mislukt de verkoop hierna, dan zet de volgende check meteen een nieuwe stop-order.
     pos.exchangeStop = { ...pos.exchangeStop, orderId: null, canceledAt: new Date().toISOString(), lastOrderId: id, attemptAt: null, error: null };
@@ -2716,7 +2866,7 @@ export class Bot {
     const cur = Number(s.stopPrice) || 0;
     if (cur > 0 && level < cur * (1 + PUMP.stopStepPct / 100)) return false;
     // Onder het minimum van Bitvavo zou de nieuwe stop niet geplaatst worden: dan de huidige laten staan.
-    const minCost = Number(this.ex.markets?.[pair]?.limits?.cost?.min) > 0 ? Number(this.ex.markets[pair].limits.cost.min) : LIVE_MIN_STAKE_EUR;
+    const minCost = this.minOrderQuote(pair, level);
     if (pos.amount * level < minCost) return false;
     pos.pump.stopAt = new Date(now).toISOString();
     const stopAmt = s.amount ?? pos.amount;
@@ -2727,21 +2877,21 @@ export class Bot {
         done = await this.#releaseExchangeStop(pair, pos);
       } catch (err) {
         // Annuleren niet zeker gelukt: de oude stop blijft staan en beschermt; over een minuut opnieuw.
-        this.#event('warn', pair, `Uitschieter: stop bij Bitvavo niet omhoog geschoven (${err.message}). De bot bewaakt de winstgrens zelf.`);
+        this.#event('warn', pair, `Uitschieter: stop bij ${this.venueLabel} niet omhoog geschoven (${err.message}). De bot bewaakt de winstgrens zelf.`);
         return false;
       }
       if (done?.fill && done.filled >= stopAmt * SAFETY.filledShare) {
         // De oude stop ging af vlak voor het annuleren: de positie is al verkocht. Afsluiten met die uitvoering.
-        this.#event('warn', pair, 'De stop-order bij Bitvavo was al uitgevoerd tijdens het omhoog schuiven; de positie wordt afgesloten met die verkoop');
-        await this.#placeSell(pair, 'Stop-loss bij Bitvavo', pos, { fill: done.fill, expected: cur || null });
-        this.pairStatus[pair] = { ...this.pairStatus[pair], at: new Date().toISOString(), price, signal: 'sell', reason: 'Stop-loss bij Bitvavo', inPosition: false, positionChangePct: null, error: null };
+        this.#event('warn', pair, `De stop-order bij ${this.venueLabel} was al uitgevoerd tijdens het omhoog schuiven; de positie wordt afgesloten met die verkoop`);
+        await this.#placeSell(pair, `Stop-loss bij ${this.venueLabel}`, pos, { fill: done.fill, expected: cur || null });
+        this.pairStatus[pair] = { ...this.pairStatus[pair], at: new Date().toISOString(), price, signal: 'sell', reason: `Stop-loss bij ${this.venueLabel}`, inPosition: false, positionChangePct: null, error: null };
         return true;
       }
       if (done?.fill) {
         // Deels uitgevoerd: die coins zijn echt verkocht (zoals bij #onStopState); de nieuwe stop dekt de rest.
         pos.stopFill = combineFills(pos.stopFill, done.fill);
         pos.amount = Math.max(0, pos.amount - done.filled);
-        this.#event('warn', pair, `De stop-order bij Bitvavo was deels uitgevoerd (${fmtAmount(done.filled)}); de bot rekent verder met de rest (${fmtAmount(pos.amount)})`);
+        this.#event('warn', pair, `De stop-order bij ${this.venueLabel} was deels uitgevoerd (${fmtAmount(done.filled)}); de bot rekent verder met de rest (${fmtAmount(pos.amount)})`);
       }
       await this.#placeExchangeStop(pair, pos, { raisedFrom: cur || null });
       return false;
@@ -2756,9 +2906,9 @@ export class Bot {
     if (!pos || this.ordering.has(pair)) return BUSY;
     this.ordering.add(pair);
     try {
-      this.#event('warn', pair, 'De stop-order bij Bitvavo is uitgevoerd; de positie wordt afgesloten met die verkoop');
-      await this.#placeSell(pair, 'Stop-loss bij Bitvavo', pos, { fill, expected: pos.exchangeStop?.stopPrice ?? null });
-      if (this.pairStatus[pair]) this.pairStatus[pair] = { ...this.pairStatus[pair], inPosition: false, signal: 'sell', reason: 'Stop-loss bij Bitvavo', positionChangePct: null };
+      this.#event('warn', pair, `De stop-order bij ${this.venueLabel} is uitgevoerd; de positie wordt afgesloten met die verkoop`);
+      await this.#placeSell(pair, `Stop-loss bij ${this.venueLabel}`, pos, { fill, expected: pos.exchangeStop?.stopPrice ?? null });
+      if (this.pairStatus[pair]) this.pairStatus[pair] = { ...this.pairStatus[pair], inPosition: false, signal: 'sell', reason: `Stop-loss bij ${this.venueLabel}`, positionChangePct: null };
       return true;
     } finally {
       this.ordering.delete(pair);
@@ -2774,8 +2924,8 @@ export class Bot {
     if (st.state === 'open') return false;
     // Weg zonder (volledige) uitvoering: geannuleerd of verlopen bij Bitvavo, of maar deels uitgevoerd.
     const partial = st.filled > 0;
-    const why = partial ? `de stop-order ${s.orderId} is bij Bitvavo maar deels uitgevoerd (${fmtAmount(st.filled)} van ${fmtAmount(s.amount ?? pos.amount)})`
-      : `de stop-order ${s.orderId} staat niet meer open bij Bitvavo (geannuleerd of verlopen)`;
+    const why = partial ? `de stop-order ${s.orderId} is bij ${this.venueLabel} maar deels uitgevoerd (${fmtAmount(st.filled)} van ${fmtAmount(s.amount ?? pos.amount)})`
+      : `de stop-order ${s.orderId} staat niet meer open bij ${this.venueLabel} (geannuleerd of verlopen)`;
     const Why = `${why.charAt(0).toUpperCase()}${why.slice(1)}`;
     // Deels uitgevoerd (bijv. Bitvavo annuleerde de rest door marktbescherming): die coins zijn echt verkocht.
     // De positie houdt alleen de rest, de opbrengst gaat mee in de trade bij het sluiten. Zonder dit verkocht de bot
@@ -2788,9 +2938,9 @@ export class Bot {
     pos.exchangeStop = { orderId: null, stopPrice: s.stopPrice, placedAt: null, lastOrderId: s.orderId, attemptAt: new Date().toISOString(),
       error: partial ? `${why}; de rest (${fmtAmount(pos.amount)}) heeft nog geen stop-order` : why, notified: true };
     this.#event('warn', pair, Why);
-    this.#notify('errors', { title: `Stop-order bij Bitvavo: ${pair}`, level: 'warn',
+    this.#notify('errors', { title: `Stop-order bij ${this.venueLabel}: ${pair}`, level: 'warn',
       message: `${Why}. De positie staat nog open in de bot en wordt door de bot zelf bewaakt.` +
-        (partial ? ` De bot rekent verder met de rest (${fmtAmount(pos.amount)}) en zet daar over 10 minuten een nieuwe stop-order voor; controleer het bij Bitvavo.`
+        (partial ? ` De bot rekent verder met de rest (${fmtAmount(pos.amount)}) en zet daar over 10 minuten een nieuwe stop-order voor; controleer het bij ${this.venueLabel}.`
           : ' Hij probeert over 10 minuten een nieuwe stop-order te zetten.') });
     return false;
   }
@@ -2813,7 +2963,7 @@ export class Bot {
           await this.#placeExchangeStop(pair, pos);
         }
       } catch (err) {
-        this.#event('warn', pair, `Stop-order bij Bitvavo controleren mislukt: ${err.message}`);
+        this.#event('warn', pair, `Stop-order bij ${this.venueLabel} controleren mislukt: ${err.message}`);
       }
     }
   }
@@ -2833,11 +2983,18 @@ export class Bot {
     const prev = this.store.state.reconcile ?? null;
     let result;
     try {
-      if (!hasTradingKeys(this.ex)) throw new Error('Bitvavo-keys ontbreken');
-      this.#step('Saldocontrole bij Bitvavo');
+      if (!hasTradingKeys(this.ex)) throw new Error(`${this.venueLabel}-keys ontbreken`);
+      this.#step(`Saldocontrole bij ${this.venueLabel}`);
       const balance = await this.ex.fetchBalance();
       let openStops = null;
-      if (typeof this.ex.fetchOpenOrders === 'function') {
+      // Bybit: de stop-orders (TP/SL) staan niet in de gewone lijst met open orders; de broker vraagt beide op.
+      if (typeof this.broker.openOrderIds === 'function') {
+        try {
+          openStops = await this.broker.openOrderIds();
+        } catch {
+          openStops = null;
+        }
+      } else if (typeof this.ex.fetchOpenOrders === 'function') {
         try {
           openStops = new Set((await this.ex.fetchOpenOrders()).map((o) => String(o.id)));
         } catch {
@@ -2845,8 +3002,10 @@ export class Bot {
         }
       }
       const markets = this.ex.markets ?? {};
-      // Koersen in euro: van coins zonder positie (voor hun waarde) en van de posities zelf.
-      const curs = Object.entries(balance?.total ?? {}).filter(([c, v]) => c !== 'EUR' && Number(v) > 0).map(([c]) => `${c}/EUR`);
+      // Koersen in de quote-munt van de beurs (Bitvavo: euro, Bybit: USDT): van coins zonder positie (voor hun
+      // waarde) en van de posities zelf.
+      const q = this.quote;
+      const curs = Object.entries(balance?.total ?? {}).filter(([c, v]) => c !== 'EUR' && c !== q && Number(v) > 0).map(([c]) => `${c}/${q}`);
       const want = [...new Set([...curs.filter((p) => !Object.keys(markets).length || markets[p]), ...Object.keys(this.store.state.positions)])].slice(0, 60);
       const prices = {};
       if (want.length) {
@@ -2858,7 +3017,7 @@ export class Bot {
         }
       }
       let issues = compareBalances({ positions: this.store.state.positions, balance, prices, markets, precisionMode: this.ex.precisionMode,
-        openStops, stopOn: this.exchangeStopEnabled });
+        openStops, stopOn: this.exchangeStopEnabled, ...(this.venue === 'bitvavo' ? {} : { quote: q, label: this.venueLabel, eurRate: this.eurRate() ?? 0 }) });
       // De uitzondering: coin helemaal weg en de stop-order aantoonbaar uitgevoerd → afsluiten.
       const closed = [];
       for (const i of issues.filter((x) => x.kind === 'mist' && x.gone)) {
@@ -2885,17 +3044,17 @@ export class Bot {
     // Alleen melden wat nieuw mis is.
     const seen = new Set((prev?.issues ?? []).map(issueKey));
     const fresh = result.issues.filter((i) => !seen.has(issueKey(i)));
-    const label = { mist: 'mist op Bitvavo', extra: 'extra op Bitvavo', 'stop-mist': 'geen stop-order' };
+    const label = { mist: `mist op ${this.venueLabel}`, extra: `extra op ${this.venueLabel}`, 'stop-mist': 'geen stop-order' };
     if (fresh.length) {
       this.#event('warn', null, `Saldocontrole: ${fresh.map((i) => `${i.pair} ${label[i.kind] ?? i.kind}`).join(', ')}`);
-      this.#notify('errors', { title: 'Saldocontrole: afwijking bij Bitvavo', level: 'warn',
-        message: `${fresh.map((i) => `**${i.pair}** (${label[i.kind] ?? i.kind}): ${i.note} Bot: ${i.botAmount}, Bitvavo: ${i.exchangeAmount}.`).join('\n')}\n\n` +
-          'De bot koopt of verkoopt hier niets voor; controleer het zelf bij Bitvavo.' });
+      this.#notify('errors', { title: `Saldocontrole: afwijking bij ${this.venueLabel}`, level: 'warn',
+        message: `${fresh.map((i) => `**${i.pair}** (${label[i.kind] ?? i.kind}): ${i.note} Bot: ${i.botAmount}, ${this.venueLabel}: ${i.exchangeAmount}.`).join('\n')}\n\n` +
+          `De bot koopt of verkoopt hier niets voor; controleer het zelf bij ${this.venueLabel}.` });
     } else if (result.error && result.error !== prev?.error) {
       this.#event('warn', null, `Saldocontrole mislukt: ${result.error}`);
-      this.#notify('errors', { title: 'Saldocontrole bij Bitvavo mislukt', message: result.error, level: 'warn' });
+      this.#notify('errors', { title: `Saldocontrole bij ${this.venueLabel} mislukt`, message: result.error, level: 'warn' });
     }
-    if (result.closed?.length) this.#event('info', null, `Saldocontrole: ${result.closed.join(', ')} afgesloten (de stop-order bij Bitvavo was uitgevoerd)`);
+    if (result.closed?.length) this.#event('info', null, `Saldocontrole: ${result.closed.join(', ')} afgesloten (de stop-order bij ${this.venueLabel} was uitgevoerd)`);
     return result;
   }
 
@@ -2907,6 +3066,11 @@ export class Bot {
     const reasons = this.buyBlockReasons();
     return {
       mode: this.mode,
+      venue: this.venue,
+      venueLabel: this.venueLabel,
+      quote: this.quote,
+      // Bybit live op eigen risico: verliesgrens en resultaat sinds het akkoord (anders null).
+      venueRisk: this.venueRiskStatus(),
       exchangeStop: { enabled, positions: Object.values(this.store.state.positions).filter(Boolean).map((p) => stopStatus(p, { live, enabled })) },
       reconcile: this.store.state.reconcile ?? null,
       nextReconcileAt: next,
@@ -2942,10 +3106,10 @@ export class Bot {
       const stopPx = pos.exchangeStop?.stopPrice ?? null;
       const done = await this.#releaseExchangeStop(pair, pos);
       if (done?.fill && done.filled >= stopAmt * SAFETY.filledShare) {
-        this.#event('warn', pair, `De stop-order bij Bitvavo was al uitgevoerd; niet nog eens verkocht (bedoeld: ${reason})`);
+        this.#event('warn', pair, `De stop-order bij ${this.venueLabel} was al uitgevoerd; niet nog eens verkocht (bedoeld: ${reason})`);
         fill = done.fill;
         expected = stopPx;
-        reason = 'Stop-loss bij Bitvavo';
+        reason = `Stop-loss bij ${this.venueLabel}`;
       } else {
         const opts = this.#orderOpts(reason);
         if (opts.limit) this.#step(`${pair}: limietorder verkopen, wacht max. ${opts.waitSec} sec`);
@@ -2964,9 +3128,11 @@ export class Bot {
           // verkopen. Duidelijk melden (één keer per positie) en blijven bewaken; zodra de waarde weer boven
           // het minimum komt, lukt het verkopen bij de volgende poging.
           if (this.broker.mode === 'live' && belowMinimum(err)) {
-            const value = expected ? pos.amount * expected : null;
-            const msg = `Kan ${pair} niet verkopen: de positie is ${value != null ? fmtEur(value) : 'te weinig'} waard, onder het minimum van Bitvavo (€ ${LIVE_MIN_STAKE_EUR}). ` +
-              'De bot blijft hem bewaken en verkoopt zodra de waarde weer boven het minimum komt; je kunt ook in de Bitvavo-app bijkopen en daarna verkopen.';
+            const rate = this.eurRate();
+            const value = expected && rate ? pos.amount * expected * rate : null;
+            const minText = this.venue === 'bitvavo' ? `€ ${LIVE_MIN_STAKE_EUR}` : this.#fmtMin(pair, expected);
+            const msg = `Kan ${pair} niet verkopen: de positie is ${value != null ? fmtEur(value) : 'te weinig'} waard, onder het minimum van ${this.venueLabel} (${minText}). ` +
+              `De bot blijft hem bewaken en verkoopt zodra de waarde weer boven het minimum komt; je kunt ook in de ${this.venueLabel}-app bijkopen en daarna verkopen.`;
             if (!pos.belowMinNotified) {
               pos.belowMinNotified = new Date().toISOString();
               this.#saveNow(pair);
@@ -2979,12 +3145,12 @@ export class Bot {
         // Live maar deels uitgevoerd (bijv. Bitvavo annuleerde de rest door marktbescherming): de positie houdt
         // de rest, zodat die bewaakt blijft en een nieuwe stop-order krijgt. Te weinig over om te verkopen: dicht.
         const left = pos.amount - (Number(sold?.amount) || 0);
-        const minCost = Number(this.ex.markets?.[pair]?.limits?.cost?.min) > 0 ? Number(this.ex.markets[pair].limits.cost.min) : 5;
+        const minCost = this.minOrderQuote(pair, sold?.price || expected || 0);
         if (this.broker.mode === 'live' && left > pos.amount * (1 - SAFETY.filledShare) && left * (sold?.price || expected || 0) >= minCost) {
           pos.stopFill = combineFills(pos.stopFill, sold);
           pos.amount = left;
           this.#saveNow(pair);
-          throw new Error(`Maar deels verkocht bij Bitvavo (${fmtAmount(sold?.amount ?? 0)}); de rest (${fmtAmount(left)}) blijft open en bewaakt`);
+          throw new Error(`Maar deels verkocht bij ${this.venueLabel} (${fmtAmount(sold?.amount ?? 0)}); de rest (${fmtAmount(left)}) blijft open en bewaakt`);
         }
         fill = sold;
       }
@@ -3000,7 +3166,10 @@ export class Bot {
       ? +(((pos.entryFeeEur ?? 0) + (fill.feeEur ?? 0)) / pos.costEur * 100 + Math.max(0, pos.entrySlipPct ?? 0) + Math.max(0, sellSlip ?? 0)).toFixed(4)
       : null;
     if (this.broker.mode === 'paper') this.store.state.balanceEur += fill.costEur;
-    else if (this.liveBalance) this.liveBalance.eurFree += fill.costEur;
+    else if (this.liveBalance) {
+      this.liveBalance.eurFree += fill.costEur;
+      if (this.liveBalance.quote && Number.isFinite(fill.costQuote)) this.liveBalance.quoteFree += fill.costQuote;
+    }
     // Grootste koerswinst en -verlies tijdens de trade (MFE/MAE), in % van de instapkoers.
     const mfePct = pos.entryPrice > 0 ? +(((pos.highest ?? pos.entryPrice) / pos.entryPrice - 1) * 100).toFixed(3) : null;
     const maePct = pos.entryPrice > 0 ? +(((pos.lowest ?? pos.entryPrice) / pos.entryPrice - 1) * 100).toFixed(3) : null;

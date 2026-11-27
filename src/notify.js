@@ -20,7 +20,7 @@ export const NOTIFY_EVENTS = {
   aiFailed: 'Alle AI-modellen faalden',
   dailySummary: 'Dagelijks overzicht',
   strategy: 'Automatisch overgestapt op een nieuwe strategie (trainer)',
-  health: 'Gezondheid: bot hangt, posities niet bewaakt, Bitvavo onbereikbaar, onverwacht herstart (en opgelost)',
+  health: 'Gezondheid: bot hangt, posities niet bewaakt, beurs (Bitvavo of Bybit) onbereikbaar, onverwacht herstart (en opgelost)',
   learning: 'Leert hij echt? Weekoverzicht (maandag) en direct bij een ❌ (alleen het admin-account)',
 };
 

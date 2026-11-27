@@ -16,7 +16,8 @@ import { VENUES, venueOf, toVenuePair, toBasePair, liveAllowedOnVenue, venueAgen
 const PW = 'lang-genoeg-123';
 const quiet = { info() {}, warn() {}, error() {} };
 const H = 3600000;
-const LIVE_TEXT = /Live op Bybit \(op eigen risico\) komt in de volgende stap/;
+// Fase 2: live op Bybit kan alleen met een eigen-risico-akkoord; zonder akkoord blijft alles geweigerd.
+const LIVE_TEXT = /Live op Bybit kan alleen op eigen risico/;
 
 // Nep-beurs met een vaste koers per paar. USDT/EUR (Bybit) is de omrekenkoers.
 function fakeVenue(quote, prices) {
@@ -375,10 +376,10 @@ test('server: beurs kiezen, live op Bybit geweigerd, Bybit-keys testen zonder or
     assert.equal(st.liveAllowed.ok, false);
     assert.match(st.liveAllowed.reason, LIVE_TEXT);
     assert.equal(st.venues.find((v) => v.id === 'bybit').live.ok, false);
-    // Live (server-side), ook met wachtwoord en LIVE: geweigerd.
+    // Live (server-side), ook met wachtwoord en LIVE: geweigerd (Bybit vraagt het eigen-risico-akkoord).
     const live = await post('/api/settings/mode', { mode: 'live', password: PW, confirm: 'LIVE' });
     assert.equal(live.status, 400);
-    assert.match(live.body.error, LIVE_TEXT);
+    assert.match(live.body.error, /Typ EIGEN RISICO om live op Bybit te bevestigen/);
     assert.equal(manager.get(admin.id).settings.mode, 'paper');
     // Bybit-keys: versleuteld opgeslagen, testen haalt alleen het saldo op.
     assert.equal((await post('/api/settings/keys/test', { venue: 'bybit' })).status, 400);
@@ -412,7 +413,9 @@ test('dashboard: beurskeuze, badge met beurs en live op Bybit ook in de browser 
   assert.match(html, /\$\('mode-badge'\)\.textContent = `\$\{live \? 'LIVE' : 'PAPER'\} · \$\{xname\(\)\}`/);
   // Overschakelen naar live: eerst de centrale check van de server (liveAllowed), dan pas de dialoog.
   const sw = html.slice(html.indexOf("$('mc-switch').onclick"), html.indexOf("$('mode-dialog').showModal()"));
-  assert.match(sw, /if \(toLive && s\.liveAllowed && !s\.liveAllowed\.ok\) \{[\s\S]*?return;/);
+  // Fase 2: een beurs met eigen-risico-akkoord (Bybit) opent de dialoog met EIGEN RISICO; anders melding en stoppen.
+  assert.match(sw, /const risky = toLive && Boolean\(s\.liveAllowed\?\.accord\);/);
+  assert.match(sw, /if \(toLive && s\.liveAllowed && !s\.liveAllowed\.ok && !risky\) \{[\s\S]*?return;/);
   assert.match(html, /data-name="bybitApiKey"/);
   assert.match(html, /data-name="bybitApiSecret"/);
 });

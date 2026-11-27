@@ -46,7 +46,7 @@ export function isNetworkError(err) {
 // Weigerde Bitvavo de order duidelijk (dan is er zeker niets gebeurd)? Ongeldige order, te weinig saldo,
 // keys of rechten. Bij al het andere (time-out, verbinding weg, order niet gevuld) is de uitkomst onzeker.
 export const isOrderRefusal = (err) => err instanceof ccxt.InvalidOrder || err instanceof ccxt.InsufficientFunds || err instanceof ccxt.BadSymbol || err instanceof ccxt.AuthenticationError
-  || err instanceof ccxt.PermissionDenied || err instanceof ccxt.AccountSuspended || /^Bitvavo-keys ontbreken/.test(String(err?.message ?? ''));
+  || err instanceof ccxt.PermissionDenied || err instanceof ccxt.AccountSuspended || /^(Bitvavo|Bybit)-keys ontbreken/.test(String(err?.message ?? ''));
 
 // ---------- Gedeelde marktdata voor meerdere gebruikers ----------
 // Bitvavo telt de rate limit per IP-adres, en alle gebruikers draaien op dezelfde server.
@@ -288,7 +288,8 @@ export class PaperBroker {
   }
 }
 
-// Live op een beurs waar live (nog) niet mag (fase 1: Bybit). Elke order of stop geeft dezelfde duidelijke
+// Live op een beurs waar live (nog) niet mag. Sinds fase 2 niet meer gebruikt voor Bybit (zie bybit-broker.js),
+// maar bewaard als vangnet voor een beurs zonder eigen live-broker. Elke order of stop geeft dezelfde duidelijke
 // fout als de centrale check liveAllowedOnVenue, zodat er nooit per ongeluk een echte order uitgaat.
 export class BlockedLiveBroker {
   constructor(venue) {

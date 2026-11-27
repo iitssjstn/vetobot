@@ -99,13 +99,14 @@ export function amountUnit(market, precisionMode) {
 
 const tolerance = (amount, unit, rules) => Math.max(Math.abs(amount) * rules.tolPct / 100, unit || 0);
 
-// Vergelijkt de posities van de bot met het saldo op Bitvavo. Doet zelf niets; geeft de afwijkingen.
+// Vergelijkt de posities van de bot met het saldo op ${label}. Doet zelf niets; geeft de afwijkingen.
 // positions: { pair: positie }, balance: ccxt-balans ({ total: { BTC: 0.1 }, BTC: { total } }),
 // prices: { 'BTC/EUR': koers } (voor de waarde van coins zonder positie),
-// openStops: Set met orderId's die nu openstaan bij Bitvavo (of null als onbekend),
-// stopOn: exchange-stop staat aan. Geeft [{ pair, kind: 'mist'|'extra'|'stop-mist', botAmount, exchangeAmount, note }];
+// openStops: Set met orderId's die nu openstaan bij ${label} (of null als onbekend),
+// stopOn: exchange-stop staat aan. quote/label/eurRate: munt en naam van de beurs en euro per quote-munt
+// (Bitvavo: EUR, 'Bitvavo', 1, de standaard; Bybit: USDT, 'Bybit', USDT/EUR-koers). prices zijn in de quote-munt. Geeft [{ pair, kind: 'mist'|'extra'|'stop-mist', botAmount, exchangeAmount, note }];
 // bij 'mist' ook gone: true als de coin (vrijwel) helemaal weg is.
-export function compareBalances({ positions = {}, balance = {}, prices = {}, markets = {}, precisionMode, openStops = null, stopOn = true, rules = SAFETY }) {
+export function compareBalances({ positions = {}, balance = {}, prices = {}, markets = {}, precisionMode, openStops = null, stopOn = true, rules = SAFETY, quote = 'EUR', label = 'Bitvavo', eurRate = 1 }) {
   const issues = [];
   const totalOf = (cur) => {
     const v = balance?.total?.[cur] ?? balance?.[cur]?.total;
@@ -121,38 +122,38 @@ export function compareBalances({ positions = {}, balance = {}, prices = {}, mar
     const tol = tolerance(p.amount, amountUnit(markets[p.pair], precisionMode), rules);
     if (ex < p.amount - tol) {
       issues.push({ pair: p.pair, kind: 'mist', botAmount: fmt(p.amount), exchangeAmount: fmt(ex), gone: ex <= tol,
-        note: ex <= tol ? 'De coin staat niet (meer) op Bitvavo: handmatig verkocht of de stop-order bij Bitvavo is uitgevoerd?'
-          : 'Minder op Bitvavo dan de bot denkt te hebben' });
+        note: ex <= tol ? `De coin staat niet (meer) op ${label}: handmatig verkocht of de stop-order bij ${label} is uitgevoerd?`
+          : `Minder op ${label} dan de bot denkt te hebben` });
     } else if (ex > p.amount + tol) {
-      const extraEur = prices[p.pair] > 0 ? (ex - p.amount) * prices[p.pair] : null;
+      const extraEur = prices[p.pair] > 0 && eurRate > 0 ? (ex - p.amount) * prices[p.pair] * eurRate : null;
       if (extraEur == null || extraEur > rules.extraMinEur) {
         issues.push({ pair: p.pair, kind: 'extra', botAmount: fmt(p.amount), exchangeAmount: fmt(ex),
-          note: `Meer op Bitvavo dan in de positie van de bot${extraEur != null ? ` (± € ${extraEur.toFixed(2).replace('.', ',')})` : ''}; misschien eigen coins. De bot doet er niets mee.` });
+          note: `Meer op ${label} dan in de positie van de bot${extraEur != null ? ` (± € ${extraEur.toFixed(2).replace('.', ',')})` : ''}; misschien eigen coins. De bot doet er niets mee.` });
       }
     }
     if (stopOn) {
       const id = p.exchangeStop?.orderId;
       if (!id) {
         issues.push({ pair: p.pair, kind: 'stop-mist', botAmount: fmt(p.amount), exchangeAmount: fmt(ex),
-          note: p.exchangeStop?.error ? `Geen stop-order bij Bitvavo: plaatsen mislukte (${p.exchangeStop.error})`
-            : p.exchangeStop?.skipped ? `Geen stop-order bij Bitvavo: ${p.exchangeStop.skipped}` : 'Geen stop-order bij Bitvavo voor deze positie' });
+          note: p.exchangeStop?.error ? `Geen stop-order bij ${label}: plaatsen mislukte (${p.exchangeStop.error})`
+            : p.exchangeStop?.skipped ? `Geen stop-order bij ${label}: ${p.exchangeStop.skipped}` : `Geen stop-order bij ${label} voor deze positie` });
       } else if (openStops && !openStops.has(String(id))) {
         issues.push({ pair: p.pair, kind: 'stop-mist', botAmount: fmt(p.amount), exchangeAmount: fmt(ex),
-          note: `Stop-order ${id} staat niet (meer) open bij Bitvavo` });
+          note: `Stop-order ${id} staat niet (meer) open bij ${label}` });
       }
     }
   }
   const all = new Set([...Object.keys(balance?.total ?? {}), ...Object.keys(balance ?? {}).filter((k) => balance[k] && typeof balance[k] === 'object' && 'total' in balance[k])]);
   for (const cur of all) {
-    if (cur === 'EUR' || held.has(cur) || ['info', 'free', 'used', 'total', 'timestamp', 'datetime'].includes(cur)) continue;
+    if (cur === 'EUR' || cur === quote || held.has(cur) || ['info', 'free', 'used', 'total', 'timestamp', 'datetime'].includes(cur)) continue;
     const amt = totalOf(cur);
     if (!(amt > 0)) continue;
-    const price = prices[`${cur}/EUR`];
+    const price = prices[`${cur}/${quote}`];
     if (!(price > 0)) continue; // geen koers in euro: geen waarde, niet melden
-    const eur = amt * price;
+    const eur = amt * price * (eurRate > 0 ? eurRate : 0);
     if (eur <= rules.extraMinEur) continue;
-    issues.push({ pair: `${cur}/EUR`, kind: 'extra', botAmount: 0, exchangeAmount: fmt(amt),
-      note: `${cur} op Bitvavo (± € ${eur.toFixed(2).replace('.', ',')}) zonder positie in de bot; misschien eigen coins. De bot doet er niets mee.` });
+    issues.push({ pair: `${cur}/${quote}`, kind: 'extra', botAmount: 0, exchangeAmount: fmt(amt),
+      note: `${cur} op ${label} (± € ${eur.toFixed(2).replace('.', ',')}) zonder positie in de bot; misschien eigen coins. De bot doet er niets mee.` });
   }
   return issues;
 }
