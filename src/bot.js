@@ -2239,6 +2239,11 @@ export class Bot {
     }
     // Risk Agent: is deze trade verantwoord, en met welke inzet?
     const risk = assessRisk({ pair, trades: this.store.state.trades, choice, execLog: this.store.state.execLog ?? [], mode: this.mode });
+    // Live met "nooit kleiner dan mijn inzet": de Risk Agent halveert niet (blokkeren mag hij wel).
+    if (!risk.block && this.mode === 'live' && Number(this.strategy.agentLiveSmallStart ?? 1) === 0 && risk.stakeFactor > 0 && risk.stakeFactor < 1) {
+      risk.stakeFactor = 1;
+      risk.notes = risk.notes.filter((n) => !/^halve inzet/.test(n)).concat('je eigen inzet (kleiner kopen staat bij jou uit)');
+    }
     if (risk.block) {
       this.#whyNot(risk.kind ?? 'risico', q, this.agentThreshold(agent));
       const reason = `Risk Agent: ${risk.block}`;
@@ -2543,6 +2548,12 @@ export class Bot {
       const lt = this.store.state.trades.filter((t) => t.agent);
       const avg = lt.length ? lt.reduce((x, t) => x + (t.pnlPct ?? 0), 0) / lt.length : 0;
       if (lt.length < LIVE_AGENT_PROVEN || avg <= 0) stake = Math.min(stake, LIVE_MIN_STAKE_EUR);
+    }
+    // Uit ("nooit kleiner dan mijn inzet"): live nooit onder je eigen inzet kopen, ook niet als de Risk Agent bij
+    // weinig bewijs de inzet wil halveren. Je maximale inzet en het vrije saldo blijven de bovengrens.
+    if (this.broker.mode === 'live' && indicators?.agent && !indicators.agent.explore
+      && Number(this.strategy.agentLiveSmallStart ?? 1) === 0 && stake < stakeInfo.effective) {
+      stake = stakeInfo.effective;
     }
     // Live: nooit zo klein kopen dat de positie na een daling tot de noodstop onder het minimum van Bitvavo
     // (€ 5 per order) zakt. Anders kan hij niet meer verkocht worden en krijgt hij ook geen stop bij Bitvavo.

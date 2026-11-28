@@ -861,3 +861,24 @@ test('bot: live minimum inzet van € 5 bij instellen en bij wisselen', async ()
   await assert.rejects(bot.setRisk({ stakeEur: 4.99 }), /minimaal € 5/);
   assert.equal(bot.risk.stakeEur, 5);
 });
+
+test('AI-trader live: "kleiner kopen" uit → Risk Agent halveert niet bij weinig bewijs; aan → wel', async () => {
+  const run = async (small) => {
+    const ex = fakeBitvavo();
+    ex.prices = wavy();
+    const { bot } = setup({ ex, risk: { cooldownMinutes: 0 } });
+    await bot.setRisk({ cooldownMinutes: 0, stakeEur: 20, exchangeStop: 0 });
+    await bot.setStrategy({ agentMode: 1, agentVeto: 0, agentExplore: 0, agentLiveSmallStart: small, agentSizing: 0 });
+    await goLive(bot, 1000);
+    // Geen plan per marktfase: de Risk Agent ziet "weinig bewijs" en wil de inzet halveren.
+    bot.getAgent = () => greedyAgent({ stage: 'bewezen', liveCheck: { allMet: true, checks: [] }, regimes: {} });
+    bot.settings.setAgentLiveRisky('R', 50);
+    await bot.tick();
+    return bot.store.state.positions['BTC/EUR'];
+  };
+  const off = await run(0);
+  assert.ok(off, 'gekocht');
+  assert.ok(near(off.costEur, 20 * 1.0025), `uit: eigen inzet, niet gehalveerd: ${off.costEur}`);
+  const on = await run(1);
+  assert.ok(on.costEur < 15, `aan: gehalveerd: ${on.costEur}`);
+});
