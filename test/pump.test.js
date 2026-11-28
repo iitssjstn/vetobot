@@ -119,7 +119,7 @@ function fakeBitvavo() {
 function setupLive({ mode = 'live', risk = {}, pairs = ['BTC/EUR'] } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vetobot-pump-'));
   const ex = fakeBitvavo();
-  const baseRisk = { stakeEur: 25, maxOpenTrades: 3, stopLossPct: 5, takeProfitPct: 50, maxDailyLossEur: 100, feePct: 0.25, cooldownMinutes: 0, aiExitMinPct: 0, ...risk };
+  const baseRisk = { agentOwnStop: 0, stakeEur: 25, maxOpenTrades: 3, stopLossPct: 5, takeProfitPct: 50, maxDailyLossEur: 100, feePct: 0.25, cooldownMinutes: 0, aiExitMinPct: 0, ...risk };
   const strategy = { agentMode: 1, agentVeto: 0, agentExplore: 0, agentLiveSmallStart: 0 };
   const config = { timeframe: '1h', strategy, risk: baseRisk, ai: { provider: 'none', failMode: 'reject' } };
   const settings = new Settings(dir, { liveTrading: mode === 'live', pairs, timeframe: '1h', checkIntervalMinutes: 15, risk: baseRisk, strategy, ai: { provider: 'none', model: '', baseUrl: '' } });
@@ -426,4 +426,19 @@ test('Uitschieter: oude settings.json zonder deze velden → standaardwaarden; o
   assert.throws(() => s.setRisk({ pumpTriggerPct: 51 }), /tussen 0 en 50/);
   assert.throws(() => s.setRisk({ pumpGivebackPct: 4 }), /tussen 5 en 90/);
   assert.throws(() => s.setRisk({ pumpMinGapPct: 0.1 }), /tussen 0.2 en 10/);
+});
+
+test('Mijn stop-loss voor de AI-trader live: bestaande stop bij de beurs schuift omhoog naar mijn (strakkere) stop-loss', async () => {
+  // Gekocht met alleen de noodstop (uit), daarna de instelling aan met een strakkere stop-loss van 2,5%.
+  const { bot, ex, pos, entry } = await opened();
+  const first = pos.exchangeStop.orderId;
+  assert.ok(near(pos.exchangeStop.stopPrice, entry * 0.95, 1e-3), 'eerst de noodstop');
+  await bot.setRisk({ ...bot.risk, agentOwnStop: 1, stopLossPct: 2.5 });
+  setPrice(ex, entry * 0.99);
+  assert.equal(await bot.watchPositions(), 0, 'nog niet op de stop');
+  assert.equal(ex.orders[first].status, 'canceled', 'oude stop veilig geannuleerd');
+  assert.ok(near(pos.exchangeStop.stopPrice, entry * 0.975, 1e-3), `stop op mijn stop-loss: ${pos.exchangeStop.stopPrice / entry}`);
+  assert.ok(Math.abs(ex.reserved('BTC') - pos.amount) < 1e-9, 'precies één open stop');
+  setPrice(ex, entry * 0.974);
+  assert.equal(await bot.watchPositions(), 1, 'verkocht op mijn stop-loss');
 });
