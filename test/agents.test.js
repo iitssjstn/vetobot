@@ -207,3 +207,15 @@ test('Directe bijsturing met gemiste kansen: laag gewicht, pas vanaf genoeg gela
   assert.deepEqual(c.regimes, {});
   assert.equal(onlineCorrection([], { ...LEARN, rejectedWeight: 0 }, many).rejected, 0);
 });
+
+test('Risk Agent: pauze na verliezen op rij is instelbaar (aantal, uren) en uit te zetten (0)', async () => {
+  const { assessRisk, RISK } = await import('../src/agents.js');
+  const now = Date.parse('2026-11-28T12:00:00Z');
+  const loss = (h) => ({ agent: { recipe: 'R' }, pnlEur: -1, pnlPct: -1, closedAt: new Date(now - h * 3600000).toISOString() });
+  const trades = [loss(1), loss(2), loss(3), loss(4)];
+  const choice = { why: 'best' };
+  assert.equal(assessRisk({ pair: 'X/EUR', trades, choice, now }).kind, 'verliesreeks', 'standaard: 3 op rij, 6 uur');
+  assert.equal(assessRisk({ pair: 'X/EUR', trades, choice, now, rules: { ...RISK, lossStreak: 0 } }).block, null, '0 = nooit pauzeren');
+  assert.equal(assessRisk({ pair: 'X/EUR', trades, choice, now, rules: { ...RISK, lossStreak: 5 } }).block, null, 'pas na 5');
+  assert.equal(assessRisk({ pair: 'X/EUR', trades, choice, now, rules: { ...RISK, pauseHours: 0.5 } }).block, null, 'pauze van 30 min al voorbij');
+});

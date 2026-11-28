@@ -807,7 +807,7 @@ test('settings: standaardwaarden zonder bestand (paper, alles uit behalve de vei
   // Behalve de stop bij Bitvavo en de uitschieter (eigen standaardwaarden) staat alles op 0.
   for (const [k, v] of Object.entries(s.risk)) assert.equal(v, k === 'exchangeStop' || k === 'agentOwnStop' ? 1 : PUMP_DEFAULTS[k] ?? 0, k);
   const on = ['agentLiveSmallStart', 'agentSizing', 'agentVolGuard'];
-  for (const [k, v] of Object.entries(s.strategy)) assert.equal(v, on.includes(k) ? 1 : 0, k);
+  for (const [k, v] of Object.entries(s.strategy)) assert.equal(v, ({ agentLossStreak: 3, agentPauseHours: 6 })[k] ?? (on.includes(k) ? 1 : 0), k);
   assert.deepEqual(s.agentLive.approved, []);
   assert.deepEqual(s.agentLive.risky, {});
   assert.equal(s.follow.enabled, false);
