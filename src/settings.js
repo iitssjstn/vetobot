@@ -43,6 +43,8 @@ export const RISK_LIMITS = {
   pumpTriggerPct: [0, 50],
   pumpGivebackPct: [5, 90],
   pumpMinGapPct: [0.2, 10],
+  // 1 = jouw stop-loss geldt ook voor posities van de AI-trader (de strakste van die en de noodstop van het recept).
+  agentOwnStop: [0, 1],
 };
 export const LIVE_MIN_STAKE_EUR = 5;
 // Bybit-websites met eigen accounts en API-adres (api.<site>).
@@ -61,7 +63,7 @@ export const STRATEGY_LIMITS = {
 };
 export const AI_FAIL_MODES = ['reject', 'approve'];
 // Instellingen die aan staan als ze nergens zijn opgegeven.
-const DEFAULT_ON = new Set(['agentLiveSmallStart', 'agentSizing', 'agentVolGuard', 'exchangeStop']);
+const DEFAULT_ON = new Set(['agentLiveSmallStart', 'agentSizing', 'agentVolGuard', 'exchangeStop', 'agentOwnStop']);
 const NOTIFY_DEFAULTS = {
   discordUserId: '',
   events: { startup: true, trades: true, stoploss: true, errors: true, dailyLimit: true, mode: true, aiVeto: false, dailySummary: true, aiFallback: true, aiFailed: true, strategy: true, health: true, learning: true },
@@ -72,6 +74,7 @@ const RISK_LABELS = {
   stakeEur: 'Inzet per trade',
   maxOpenTrades: 'Maximaal open trades',
   stopLossPct: 'Stop-loss',
+  agentOwnStop: 'Mijn stop-loss ook voor de AI-trader',
   takeProfitPct: 'Take-profit',
   maxDailyLossEur: 'Dagelijkse verlieslimiet',
   cooldownMinutes: 'Afkoelperiode',
@@ -292,7 +295,7 @@ export class Settings {
 
   setRisk(values) {
     // Velden die ontbreken houden hun huidige waarde.
-    this.data.risk = validated({ ...this.data.risk, ...values }, RISK_LIMITS, ['maxOpenTrades', 'cooldownMinutes', 'watchSeconds', 'limitOrders', 'limitWaitSec', 'exchangeStop']);
+    this.data.risk = validated({ ...this.data.risk, ...values }, RISK_LIMITS, ['maxOpenTrades', 'cooldownMinutes', 'watchSeconds', 'limitOrders', 'limitWaitSec', 'exchangeStop', 'agentOwnStop']);
     this.#save();
   }
 

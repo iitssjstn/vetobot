@@ -146,7 +146,7 @@ test('exchange-stop: na een live aankoop een stop-loss-order bij Bitvavo op de s
 test('exchange-stop: bij de AI-trader de veiligheidsstop van het recept', async () => {
   const fx = JSON.parse(fs.readFileSync(new URL('./fixtures/agent-parity.json', import.meta.url), 'utf8'));
   // Zonder de kleinste live-start (€ 5): een stop van € 4,60 zou onder het minimum van Bitvavo vallen.
-  const { bot, ex } = setupLive({ strategy: { agentMode: 1, agentVeto: 0, agentLiveSmallStart: 0 } });
+  const { bot, ex } = setupLive({ strategy: { agentMode: 1, agentVeto: 0, agentLiveSmallStart: 0 }, risk: { agentOwnStop: 0 } });
   const agent = { ...fx.agent, stage: 'bewezen', recipeKey: 'R', safetyStopPct: 8, liveCheck: { allMet: true, checks: [] }, entry: { ...fx.agent.entry, init: fx.agent.entry.init + 50 },
     exit: { ...fx.agent.exit, init: fx.agent.exit.init + 50 }, regimes: { stijgend: { key: 'R', why: 'best' }, zijwaarts: { key: 'R', why: 'best' }, dalend: { key: 'R', why: 'best' } } };
   bot.getAgent = () => agent;

@@ -61,12 +61,24 @@ export function exchangeStopPrice(position, risk = {}) {
   return pump && pump > (base ?? 0) ? pump : base;
 }
 
+// Stop-loss (%) van een positie met een plan. AI-trader (niet de verkenner): met "Mijn stop-loss ook voor de
+// AI-trader" aan geldt de strakste van de noodstop van het recept en jouw eigen stop-loss.
+export function planStopPct(position, risk = {}) {
+  let pct = Number(position?.plan?.stopLossPct);
+  pct = pct > 0 && pct < 100 ? pct : null;
+  const own = Number(risk.stopLossPct);
+  if (position?.agent && !position.agent.explore && Number(risk.agentOwnStop ?? 1) !== 0 && own > 0 && own < 100) {
+    pct = pct == null ? own : Math.min(pct, own);
+  }
+  return pct;
+}
+
 function emergencyStopPrice(position, risk = {}) {
   const entry = Number(position?.entryPrice);
   if (!(entry > 0)) return null;
   if (position.plan) {
-    const pct = Number(position.plan.stopLossPct);
-    return pct > 0 && pct < 100 ? entry * (1 - pct / 100) : null;
+    const pct = planStopPct(position, risk);
+    return pct ? entry * (1 - pct / 100) : null;
   }
   if (Number(risk.atrStopMult) > 0 && Number(position.atrAtEntry) > 0) {
     const p = entry - risk.atrStopMult * position.atrAtEntry;

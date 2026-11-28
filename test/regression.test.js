@@ -302,6 +302,25 @@ async function withPosition(risk) {
   return { ...s, pos, entry: pos.entryPrice };
 }
 
+test('AI-trader: mijn stop-loss geldt ook (strakste van eigen stop en noodstop); uit → alleen de noodstop; verkenner altijd noodstop', async () => {
+  const { planStopPct, exchangeStopPrice } = await import('../src/safety.js');
+  const pos = { entryPrice: 100, plan: { stopLossPct: 10 }, agent: { recipe: 'R' } };
+  assert.equal(planStopPct(pos, { stopLossPct: 2.5 }), 2.5, 'standaard aan');
+  assert.equal(planStopPct(pos, { stopLossPct: 2.5, agentOwnStop: 0 }), 10);
+  assert.equal(planStopPct(pos, { stopLossPct: 20 }), 10, 'de strakste wint');
+  assert.equal(planStopPct({ ...pos, agent: { explore: true } }, { stopLossPct: 2.5 }), 10, 'verkenner: noodstop');
+  assert.equal(planStopPct({ ...pos, agent: undefined }, { stopLossPct: 2.5 }), 10, 'strategie (geen AI-trader): plan');
+  assert.ok(Math.abs(exchangeStopPrice(pos, { stopLossPct: 2.5 }) - 97.5) < 1e-9, 'ook de stop bij de beurs');
+  // In de bewaking: AI-trader-positie verkoopt op 2,5% (aan), niet (uit).
+  for (const own of [1, 0]) {
+    const { bot, ex, pos: p, entry } = await withPosition({ stopLossPct: 2.5, takeProfitPct: 0, pumpTriggerPct: 0, agentOwnStop: own });
+    p.plan = { key: null, stopLossPct: 10, takeProfitPct: 0, maxHoldMinutes: 0 };
+    p.agent = { timeframe: '15m', recipe: 'R' };
+    ex.fetchTicker = async () => ({ last: entry * 0.97 });
+    assert.equal(await bot.watchPositions(), own, own ? 'verkocht op mijn stop-loss' : 'uit: alleen de noodstop');
+  }
+});
+
 test('stop-loss: grens precies op het percentage (net erboven open, net eronder dicht)', async () => {
   const { bot, ex, entry } = await withPosition({ stopLossPct: 5, takeProfitPct: 0 });
   ex.fetchTicker = async () => ({ last: entry * 0.9501 });
@@ -382,7 +401,7 @@ test('maximale duur: 0 = uit, anders na de tijd verkopen', async () => {
 
 test('plan van de AI-trader/strategie: eigen stop geldt, trailing stop en vaste take-profit niet', async () => {
   // Winstgrens bij een uitschieter uit: die heeft eigen tests (test/pump.test.js).
-  const { bot, ex, pos, entry } = await withPosition({ stopLossPct: 2, takeProfitPct: 1, trailingStopPct: 1, pumpTriggerPct: 0 });
+  const { bot, ex, pos, entry } = await withPosition({ stopLossPct: 2, takeProfitPct: 1, trailingStopPct: 1, pumpTriggerPct: 0, agentOwnStop: 0 });
   pos.plan = { key: null, stopLossPct: 10, takeProfitPct: 0, maxHoldMinutes: 0 };
   pos.agent = { timeframe: '15m', recipe: 'R' };
   ex.fetchTicker = async () => ({ last: entry * 1.05 });
@@ -786,7 +805,7 @@ test('settings: standaardwaarden zonder bestand (paper, alles uit behalve de vei
   assert.deepEqual(Object.keys(s.risk).sort(), Object.keys(RISK_LIMITS).sort());
   assert.deepEqual(Object.keys(s.strategy).sort(), Object.keys(STRATEGY_LIMITS).sort());
   // Behalve de stop bij Bitvavo en de uitschieter (eigen standaardwaarden) staat alles op 0.
-  for (const [k, v] of Object.entries(s.risk)) assert.equal(v, k === 'exchangeStop' ? 1 : PUMP_DEFAULTS[k] ?? 0, k);
+  for (const [k, v] of Object.entries(s.risk)) assert.equal(v, k === 'exchangeStop' || k === 'agentOwnStop' ? 1 : PUMP_DEFAULTS[k] ?? 0, k);
   const on = ['agentLiveSmallStart', 'agentSizing', 'agentVolGuard'];
   for (const [k, v] of Object.entries(s.strategy)) assert.equal(v, on.includes(k) ? 1 : 0, k);
   assert.deepEqual(s.agentLive.approved, []);

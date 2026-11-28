@@ -211,7 +211,7 @@ function fakeBybit({ minCost = 5, minAmount = 0.0001 } = {}) {
 // Bot op Bybit (USDT-paren, bedragen in euro). live: met een akkoord op eigen risico live gezet (zoals de server doet).
 async function setupBybit({ live = true, risk = {}, pairs = ['BTC/USDT'], maxLossEur = 20, ex = fakeBybit(), agent = greedyAgent } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vetobot-bybit-live-'));
-  const baseRisk = { stakeEur: 25, maxOpenTrades: 3, stopLossPct: 5, takeProfitPct: 50, maxDailyLossEur: 100, feePct: 0.1, makerFeePct: 0.1, cooldownMinutes: 0, aiExitMinPct: 0, ...risk };
+  const baseRisk = { agentOwnStop: 0, stakeEur: 25, maxOpenTrades: 3, stopLossPct: 5, takeProfitPct: 50, maxDailyLossEur: 100, feePct: 0.1, makerFeePct: 0.1, cooldownMinutes: 0, aiExitMinPct: 0, ...risk };
   const strategy = { agentMode: 1, agentVeto: 0, agentExplore: 0, agentLiveSmallStart: 0 };
   const config = { timeframe: '1h', strategy, risk: baseRisk, ai: { provider: 'none', failMode: 'reject' } };
   const settings = new Settings(dir, { liveTrading: false, pairs: pairs.map((p) => p.replace('/USDT', '/EUR')), timeframe: '1h', checkIntervalMinutes: 15, risk: baseRisk, strategy, ai: { provider: 'none', model: '', baseUrl: '' } });

@@ -9,7 +9,7 @@ import { Bandit } from './bandit.js';
 import { analyzeBook, bookProblem } from './orderbook.js';
 import { Journal, journalOptionsFromEnv, volRegimeOf, pickIndicators, ruleOf } from './journal.js';
 import { MARKET_TF, RISK, LEARN, EXPLORE, explorationOutcome, rewardSummary, onlineCorrection, correctedExpectation, exploreWanted, exploreScore, agentParts, agentForRecipe, allAgentCoins, chooseForRegime, volLoses, assessRisk, riskStake, sizeStake, slippagePct, execSummary, lossStreak } from './agents.js';
-import { SAFETY, PUMP, exchangeStopPrice, pumpLevel, stopStatus, compareBalances, issueKey } from './safety.js';
+import { SAFETY, PUMP, planStopPct, exchangeStopPrice, pumpLevel, stopStatus, compareBalances, issueKey } from './safety.js';
 import path from 'node:path';
 import { Health, alertMessage } from './health.js';
 import { EUR_RATE, venueOf, venueLabel, quoteFor, toVenuePair, liveAllowedOnVenue, venueAccord, checkAccordInput, ACCORD_VENUES, venueCostShift, venueCostPct } from './venue.js';
@@ -2645,7 +2645,7 @@ export class Bot {
   #exitReason(position, price, risk) {
     // Positie geopend met een zelflerend gekozen strategie: die regels gelden voor deze trade.
     if (position.plan) {
-      risk = { ...risk, stopLossPct: position.plan.stopLossPct, takeProfitPct: position.plan.takeProfitPct,
+      risk = { ...risk, stopLossPct: planStopPct(position, this.risk) ?? 0, takeProfitPct: position.plan.takeProfitPct,
         maxHoldMinutes: position.plan.maxHoldMinutes, atrStopMult: 0, trailingStopPct: 0 };
     }
     const changePct = ((price - position.entryPrice) / position.entryPrice) * 100;
@@ -2689,7 +2689,7 @@ export class Bot {
     if (!(Number.isFinite(price) && price > 0)) return false; // geen koers: niets beslissen
     const exit = this.#exitReason(position, price, risk) ?? (await this.#aiExit(pair, position, price, risk));
     // Live met winstgrens: de stop bij Bitvavo mee omhoog (kan de positie sluiten als die stop intussen afging).
-    if (!exit) return position.pump ? this.#raisePumpStop(pair, position, price) : false;
+    if (!exit) return position.pump || position.agent ? this.#raisePumpStop(pair, position, price) : false;
     if ((await this.#close(pair, exit)) === BUSY) return false;
     this.pairStatus[pair] = {
       ...this.pairStatus[pair], at: new Date().toISOString(), price, signal: 'sell',
@@ -2918,11 +2918,13 @@ export class Bot {
     const level = exchangeStopPrice(pos, this.risk);
     const s = pos.exchangeStop ?? {};
     const now = Date.now();
-    if (!pos.pump || !(level > 0) || !(level < price) || s.skipped) return false;
-    if (pos.pump.stopAt && now - Date.parse(pos.pump.stopAt) < PUMP.stopEveryMs) return false;
+    // Omhoog schuiven bij een uitschieter, of als je eigen (strakkere) stop-loss nu geldt voor deze positie.
+    if (!(level > 0) || !(level < price) || s.skipped) return false;
+    const lastRaise = pos.pump ? pos.pump.stopAt : pos.stopRaisedAt;
+    if (lastRaise && now - Date.parse(lastRaise) < PUMP.stopEveryMs) return false;
     if (!s.orderId) {
       // Geen werkende stop (bijv. vervangen mislukte): sneller opnieuw dan de gewone 10 minuten.
-      if (!s.error && !s.canceledAt) return false;
+      if (!pos.pump || (!s.error && !s.canceledAt)) return false;
       pos.pump.stopAt = new Date(now).toISOString();
       await this.#placeExchangeStop(pair, pos);
       this.#saveNow(pair);
@@ -2933,7 +2935,8 @@ export class Bot {
     // Onder het minimum van Bitvavo zou de nieuwe stop niet geplaatst worden: dan de huidige laten staan.
     const minCost = this.minOrderQuote(pair, level);
     if (pos.amount * level < minCost) return false;
-    pos.pump.stopAt = new Date(now).toISOString();
+    if (pos.pump) pos.pump.stopAt = new Date(now).toISOString();
+    else pos.stopRaisedAt = new Date(now).toISOString();
     const stopAmt = s.amount ?? pos.amount;
     this.ordering.add(pair);
     try {
