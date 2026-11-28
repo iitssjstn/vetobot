@@ -2238,7 +2238,11 @@ export class Bot {
       return { buy: false, reason };
     }
     // Risk Agent: is deze trade verantwoord, en met welke inzet?
-    const risk = assessRisk({ pair, trades: this.store.state.trades, choice, execLog: this.store.state.execLog ?? [], mode: this.mode });
+    // Pauze na verliezen op rij: jouw instelling (0 = nooit), anders de standaard van de Risk Agent.
+    const ls = Number(this.strategy.agentLossStreak);
+    const ph = Number(this.strategy.agentPauseHours);
+    const rules = { ...RISK, lossStreak: Number.isFinite(ls) ? ls : RISK.lossStreak, pauseHours: ph > 0 ? ph : RISK.pauseHours };
+    const risk = assessRisk({ pair, trades: this.store.state.trades, choice, execLog: this.store.state.execLog ?? [], mode: this.mode, rules });
     // Live met "nooit kleiner dan mijn inzet": de Risk Agent halveert niet (blokkeren mag hij wel).
     if (!risk.block && this.mode === 'live' && Number(this.strategy.agentLiveSmallStart ?? 1) === 0 && risk.stakeFactor > 0 && risk.stakeFactor < 1) {
       risk.stakeFactor = 1;

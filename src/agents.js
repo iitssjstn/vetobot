@@ -94,7 +94,8 @@ export function assessRisk({ pair, trades = [], choice = null, execLog = [], now
   const notes = [];
   let small = false;
   const streak = lossStreak(trades);
-  if (streak >= rules.lossStreak) {
+  // 0 = nooit pauzeren na verliezen op rij.
+  if (rules.lossStreak > 0 && streak >= rules.lossStreak) {
     const last = trades.find((t) => t.agent && !t.agent.explore);
     const left = rules.pauseHours * 3600000 - (now - Date.parse(last?.closedAt ?? 0));
     if (left > 0 && mode !== 'paper') {

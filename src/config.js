@@ -41,6 +41,8 @@ export const config = {
     agentVolGuard: num('AGENT_VOL_GUARD', 1),
     // Eigen bijstelling van de koopdrempel van de AI-trader in %-punt (0 = de drempel uit de training).
     agentThrAdjust: num('AGENT_THR_ADJUST', 0),
+    agentLossStreak: num('AGENT_LOSS_STREAK', 3),
+    agentPauseHours: num('AGENT_PAUSE_HOURS', 6),
   },
 
   // Harde limieten. De AI kan hier nooit aan komen.

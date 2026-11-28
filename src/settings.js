@@ -60,9 +60,14 @@ export const STRATEGY_LIMITS = {
   agentVolGuard: [0, 1],
   // Eigen bijstelling van de koopdrempel van de AI-trader (%-punt; negatief = eerder kopen). Nooit onder 0%.
   agentThrAdjust: [-1, 1],
+  // Risk Agent: na zoveel verliezen op rij (0 = nooit pauzeren) zoveel uur geen nieuwe aankopen (live).
+  agentLossStreak: [0, 20],
+  agentPauseHours: [0.5, 72],
 };
 export const AI_FAIL_MODES = ['reject', 'approve'];
 // Instellingen die aan staan als ze nergens zijn opgegeven.
+// Standaardwaarden die geen 0/1 zijn.
+const DEFAULT_VALUES = { agentLossStreak: 3, agentPauseHours: 6 };
 const DEFAULT_ON = new Set(['agentLiveSmallStart', 'agentSizing', 'agentVolGuard', 'exchangeStop', 'agentOwnStop']);
 const NOTIFY_DEFAULTS = {
   discordUserId: '',
@@ -94,6 +99,8 @@ const RISK_LABELS = {
   agentSizing: 'AI-trader kiest zelf de inzet',
   agentVolGuard: 'Strategy Agent let op volatiliteit',
   agentThrAdjust: 'Koopdrempel bijstellen',
+  agentLossStreak: 'Pauze na verliezen op rij',
+  agentPauseHours: 'Pauze duurt (uur)',
   exchangeStop: 'Stop-loss ook bij Bitvavo zetten (live)',
   aiExitMinPct: 'AI winst nemen vanaf',
   aiExitEveryMin: 'AI winstcheck elke',
@@ -151,7 +158,7 @@ export class Settings {
       },
       // Ontbreekt een instelling, dan 0 (uit); alleen de kleinste live-start, de eigen inzet van de AI-trader (die
       // alleen werkt als je een maximale inzet instelt) en de volatiliteitscheck staan standaard aan.
-      strategy: Object.fromEntries(Object.keys(STRATEGY_LIMITS).map((k) => [k, saved.strategy?.[k] ?? defaults.strategy?.[k] ?? (DEFAULT_ON.has(k) ? 1 : 0)])),
+      strategy: Object.fromEntries(Object.keys(STRATEGY_LIMITS).map((k) => [k, saved.strategy?.[k] ?? defaults.strategy?.[k] ?? DEFAULT_VALUES[k] ?? (DEFAULT_ON.has(k) ? 1 : 0)])),
       pairs: saved.pairs ?? defaults.pairs,
       timeframe: saved.timeframe ?? defaults.timeframe,
       checkIntervalMinutes: saved.checkIntervalMinutes ?? defaults.checkIntervalMinutes,
@@ -340,7 +347,7 @@ export class Settings {
   }
 
   setStrategy(values) {
-    const next = validated({ ...this.data.strategy, ...values }, STRATEGY_LIMITS, ['mlBandit', 'mlTrialPaper', 'agentMode', 'agentVeto', 'agentExplore', 'agentLiveSmallStart', 'agentSizing', 'agentVolGuard']);
+    const next = validated({ ...this.data.strategy, ...values }, STRATEGY_LIMITS, ['mlBandit', 'mlTrialPaper', 'agentMode', 'agentVeto', 'agentExplore', 'agentLiveSmallStart', 'agentSizing', 'agentVolGuard', 'agentLossStreak']);
     this.data.strategy = next;
     this.#save();
   }
