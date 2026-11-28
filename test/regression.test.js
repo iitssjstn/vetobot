@@ -302,6 +302,25 @@ async function withPosition(risk) {
   return { ...s, pos, entry: pos.entryPrice };
 }
 
+test('AI-trader: mijn stop-loss geldt ook (strakste van eigen stop en noodstop); uit → alleen de noodstop; verkenner altijd noodstop', async () => {
+  const { planStopPct, exchangeStopPrice } = await import('../src/safety.js');
+  const pos = { entryPrice: 100, plan: { stopLossPct: 10 }, agent: { recipe: 'R' } };
+  assert.equal(planStopPct(pos, { stopLossPct: 2.5 }), 2.5, 'standaard aan');
+  assert.equal(planStopPct(pos, { stopLossPct: 2.5, agentOwnStop: 0 }), 10);
+  assert.equal(planStopPct(pos, { stopLossPct: 20 }), 10, 'de strakste wint');
+  assert.equal(planStopPct({ ...pos, agent: { explore: true } }, { stopLossPct: 2.5 }), 10, 'verkenner: noodstop');
+  assert.equal(planStopPct({ ...pos, agent: undefined }, { stopLossPct: 2.5 }), 10, 'strategie (geen AI-trader): plan');
+  assert.ok(Math.abs(exchangeStopPrice(pos, { stopLossPct: 2.5 }) - 97.5) < 1e-9, 'ook de stop bij de beurs');
+  // In de bewaking: AI-trader-positie verkoopt op 2,5% (aan), niet (uit).
+  for (const own of [1, 0]) {
+    const { bot, ex, pos: p, entry } = await withPosition({ stopLossPct: 2.5, takeProfitPct: 0, pumpTriggerPct: 0, agentOwnStop: own });
+    p.plan = { key: null, stopLossPct: 10, takeProfitPct: 0, maxHoldMinutes: 0 };
+    p.agent = { timeframe: '15m', recipe: 'R' };
+    ex.fetchTicker = async () => ({ last: entry * 0.97 });
+    assert.equal(await bot.watchPositions(), own, own ? 'verkocht op mijn stop-loss' : 'uit: alleen de noodstop');
+  }
+});
+
 test('stop-loss: grens precies op het percentage (net erboven open, net eronder dicht)', async () => {
   const { bot, ex, entry } = await withPosition({ stopLossPct: 5, takeProfitPct: 0 });
   ex.fetchTicker = async () => ({ last: entry * 0.9501 });
@@ -860,23 +879,4 @@ test('bot: live minimum inzet van € 5 bij instellen en bij wisselen', async ()
   await bot.switchMode('live');
   await assert.rejects(bot.setRisk({ stakeEur: 4.99 }), /minimaal € 5/);
   assert.equal(bot.risk.stakeEur, 5);
-});
-
-test('AI-trader: mijn stop-loss geldt ook (strakste van eigen stop en noodstop); uit → alleen de noodstop; verkenner altijd noodstop', async () => {
-  const { planStopPct, exchangeStopPrice } = await import('../src/safety.js');
-  const pos = { entryPrice: 100, plan: { stopLossPct: 10 }, agent: { recipe: 'R' } };
-  assert.equal(planStopPct(pos, { stopLossPct: 2.5 }), 2.5, 'standaard aan');
-  assert.equal(planStopPct(pos, { stopLossPct: 2.5, agentOwnStop: 0 }), 10);
-  assert.equal(planStopPct(pos, { stopLossPct: 20 }), 10, 'de strakste wint');
-  assert.equal(planStopPct({ ...pos, agent: { explore: true } }, { stopLossPct: 2.5 }), 10, 'verkenner: noodstop');
-  assert.equal(planStopPct({ ...pos, agent: undefined }, { stopLossPct: 2.5 }), 10, 'strategie (geen AI-trader): plan');
-  assert.ok(Math.abs(exchangeStopPrice(pos, { stopLossPct: 2.5 }) - 97.5) < 1e-9, 'ook de stop bij de beurs');
-  // In de bewaking: AI-trader-positie verkoopt op 2,5% (aan), niet (uit).
-  for (const own of [1, 0]) {
-    const { bot, ex, pos: p, entry } = await withPosition({ stopLossPct: 2.5, takeProfitPct: 0, pumpTriggerPct: 0, agentOwnStop: own });
-    p.plan = { key: null, stopLossPct: 10, takeProfitPct: 0, maxHoldMinutes: 0 };
-    p.agent = { timeframe: '15m', recipe: 'R' };
-    ex.fetchTicker = async () => ({ last: entry * 0.97 });
-    assert.equal(await bot.watchPositions(), own, own ? 'verkocht op mijn stop-loss' : 'uit: alleen de noodstop');
-  }
 });
