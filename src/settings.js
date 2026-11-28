@@ -87,7 +87,7 @@ const RISK_LABELS = {
   agentMode: 'AI-trader',
   agentVeto: 'AI-controleur bij de AI-trader',
   agentExplore: 'Verkenner (alleen paper)',
-  agentLiveSmallStart: 'Live beginnen met de kleinste inzet',
+  agentLiveSmallStart: 'Live kleiner kopen dan je eigen inzet',
   agentSizing: 'AI-trader kiest zelf de inzet',
   agentVolGuard: 'Strategy Agent let op volatiliteit',
   agentThrAdjust: 'Koopdrempel bijstellen',
